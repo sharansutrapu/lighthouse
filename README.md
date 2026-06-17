@@ -244,7 +244,7 @@ graph TD
     Sch -->|Cloud SDKs| Cloud[S3 / MinIO / GCS / Azure]
     
     Hub <-->|WebSocket RPC| Spoke
-    Spoke -->|Docker API| LocalSocket[/var/run/docker.sock]
+    Spoke -->|Docker API| LocalSocket["/var/run/docker.sock"]
 ```
 
 ### 📡 Spoke Node connecting to the Hub
