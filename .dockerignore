@@ -1,0 +1,33 @@
+# Git
+.git
+.gitignore
+
+# Go
+bin/
+lighthouse
+vendor/
+go.work
+
+# Frontend
+node_modules/
+dist/
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.*
+
+# Database
+*.db
+*.db-journal
+data/
+
+# Docker
+Dockerfile
+docker-compose.yaml
+.dockerignore
+
+# OS/IDE
+.DS_Store
+.vscode/
+.idea/
+*.swp

@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+  <!-- Sweeping beacon glow -->
+  <path d="M 50 20 L 10 0 L 10 40 Z" fill="url(#beacon-glow)" opacity="0.6"/>
+  <path d="M 50 20 L 90 0 L 90 40 Z" fill="url(#beacon-glow)" opacity="0.6"/>
+  
+  <!-- Base rock/island -->
+  <path d="M 25 85 Q 50 75 75 85 L 85 100 L 15 100 Z" fill="#1e293b"/>
+  
+  <!-- Lighthouse Tower Base -->
+  <path d="M 40 85 L 45 30 L 55 30 L 60 85 Z" fill="#334155"/>
+  <path d="M 40 85 L 45 30 L 50 30 L 50 85 Z" fill="#475569"/> <!-- shading -->
+
+  <!-- Red/Accent Stripes -->
+  <path d="M 43 50 L 41.5 70 L 58.5 70 L 57 50 Z" fill="#ef4444"/>
+  
+  <!-- Lantern Room Gallery Deck -->
+  <rect x="42" y="28" width="16" height="2" fill="#0f172a"/>
+  
+  <!-- Lantern Glass -->
+  <path d="M 45 28 L 45 18 L 55 18 L 55 28 Z" fill="#38bdf8" opacity="0.8"/>
+  <path d="M 45 28 L 45 18 L 50 18 L 50 28 Z" fill="#7dd3fc" opacity="0.9"/>
+  
+  <!-- Roof/Cupola -->
+  <path d="M 43 18 L 50 10 L 57 18 Z" fill="#0f172a"/>
+  
+  <!-- Core Light -->
+  <circle cx="50" cy="23" r="3" fill="#fff" filter="url(#glow)"/>
+  
+  <defs>
+    <linearGradient id="beacon-glow" x1="50%" y1="100%" x2="50%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.8" />
+      <stop offset="100%" stop-color="#38bdf8" stop-opacity="0" />
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="2" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+</svg>
