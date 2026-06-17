@@ -210,12 +210,12 @@ By default, LightHouse creates an administrator account on first boot:
 ### 🏗️ Micro-Architecture
 ```mermaid
 graph TD
-    subgraph Frontend (Vue 3 Client)
+    subgraph Frontend [Frontend Vue 3 Client]
         UI[Glassmorphic UI]
         Term[Terminal xterm.js]
     end
 
-    subgraph Backend Engine (Go / Echo)
+    subgraph Backend [Backend Engine Go / Echo]
         Router[Echo Routing Engine]
         AM[Alert Manager]
         GitMgr[GitOps Manager]
@@ -223,12 +223,12 @@ graph TD
         DockerSDK[Docker Socket Client]
     end
 
-    subgraph Clustering Layer
+    subgraph ClusteringLayer [Clustering Layer]
         Hub[Hub Multiplexer]
         Spoke[Spoke Node Agent]
     end
 
-    subgraph Database
+    subgraph Database [Database]
         GORM[SQLite / Postgres]
     end
 
