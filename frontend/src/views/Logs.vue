@@ -154,7 +154,10 @@
           <!-- Status dot indicator -->
           <div class="card-status-dot" :class="c.state"></div>
           <div class="card-info">
-            <span class="card-name">{{ c.name }}</span>
+            <span class="card-name">
+              {{ c.name }}
+              <span v-if="c.is_platform" class="platform-badge" style="font-size: 0.6rem; padding: 0.1rem 0.3rem; margin-left: 0.3rem;">⚡ PLATFORM</span>
+            </span>
             <span class="card-image-tag">{{ c.image }}</span>
           </div>
 
@@ -348,11 +351,18 @@ const fetchStatsNow = async (id) => {
 };
 
 const filteredContainers = computed(() => {
-  if (!sharedState.searchQuery) return containers.value;
-  const q = sharedState.searchQuery.toLowerCase();
-  return containers.value.filter(
-    (c) => c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q),
-  );
+  let list = containers.value;
+  if (sharedState.searchQuery) {
+    const q = sharedState.searchQuery.toLowerCase();
+    list = list.filter(
+      (c) => c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q),
+    );
+  }
+  return [...list].sort((a, b) => {
+    if (a.is_platform && !b.is_platform) return -1;
+    if (!a.is_platform && b.is_platform) return 1;
+    return 0;
+  });
 });
 const selectedIds = ref([]);
 const isSidebarHidden = ref(window.innerWidth < 1024);

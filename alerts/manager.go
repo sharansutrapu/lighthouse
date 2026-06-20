@@ -310,11 +310,8 @@ func (am *AlertManager) processContainerEvent(msg events.Message) { //nolint:goc
 		// matching (the Docker action is "health_status: healthy" etc.).
 		for _, ev := range splitTrim(rule.EventTypes, ",") {
 			switch {
-			case ev == "die" && action == "die",
-				ev == "oom" && action == "oom",
-				ev == "health_status" && strings.HasPrefix(action, "health_status"):
-
-				if action == "die" || action == "oom" || strings.Contains(action, "unhealthy") {
+			case ev == action || (ev == "health_status" && strings.HasPrefix(action, "health_status")):
+				if action == "die" || action == "oom" || action == "kill" || action == "stop" || strings.Contains(action, "unhealthy") {
 					am.downStateMu.Lock()
 					am.downState[containerName] = true
 					am.downStateMu.Unlock()

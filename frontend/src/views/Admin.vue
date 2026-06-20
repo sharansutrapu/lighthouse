@@ -26,7 +26,7 @@
           </button>
           <button
             v-if="activeSection === 'alerts' && isAdmin"
-            @click="alertsManagerRef?.openCreateModal()"
+            @click="openNewAlertModal"
             class="page-btn primary"
           >
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="3">
@@ -50,8 +50,19 @@
     </section>
 
     <!-- ── Metrics row ────────────────────────────────────────────────────────── -->
-    <section class="page-metrics animate-slide-up">
-      <div class="page-metric-card">
+    <section class="page-metrics animate-slide-up" style="display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 0.5rem;">
+      <div class="page-metric-card" style="padding: 1rem;">
+        <div class="stat-header">
+          <div class="stat-icon success"><AppIcon name="checkCircle"/></div>
+          <span class="badge badge-success">Active</span>
+        </div>
+        <div class="stat-content">
+          <span class="stat-label">Status</span>
+          <span class="stat-value">Online</span>
+        </div>
+      </div>
+
+      <div class="page-metric-card" style="padding: 1rem;">
         <div class="stat-header">
           <div class="stat-icon"><AppIcon name="users"/></div>
           <span class="badge badge-dim">Staff</span>
@@ -62,18 +73,18 @@
         </div>
       </div>
 
-      <div class="page-metric-card">
+      <div class="page-metric-card" style="padding: 1rem;">
         <div class="stat-header">
-          <div class="stat-icon success"><AppIcon name="checkCircle"/></div>
-          <span class="badge badge-success">Active</span>
+          <div class="stat-icon"><AppIcon name="users"/></div>
+          <span class="badge badge-dim">Groups</span>
         </div>
         <div class="stat-content">
-          <span class="stat-label">System status</span>
-          <span class="stat-value">Online</span>
+          <span class="stat-label">Teams</span>
+          <span class="stat-value">{{ teamsCount }}</span>
         </div>
       </div>
 
-      <div class="page-metric-card">
+      <div class="page-metric-card" style="padding: 1rem;">
         <div class="stat-header">
           <div class="stat-icon"><AppIcon name="shield"/></div>
           <span class="badge badge-dim">Audit</span>
@@ -84,33 +95,54 @@
         </div>
       </div>
 
-      <div class="page-metric-card" :class="{ active: activeSection === 'alerts' }" style="cursor:pointer" @click="activeSection = 'alerts'">
+      <div class="page-metric-card" :class="{ active: activeSection === 'alerts' }" style="cursor:pointer; padding: 1rem;" @click="activeSection = 'alerts'">
         <div class="stat-header">
-          <div class="stat-icon warning"><AppIcon name="alert"/></div>
-          <span class="badge badge-warning">Alerts</span>
+          <div class="stat-icon warning">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            </svg>
+          </div>
+          <span class="badge badge-warning">Rules</span>
         </div>
         <div class="stat-content">
-          <span class="stat-label">Alert rules</span>
+          <span class="stat-label">Alerts</span>
           <span class="stat-value">{{ alertRulesCount ?? '—' }}</span>
+        </div>
+      </div>
+
+      <div class="page-metric-card" style="padding: 1rem;">
+        <div class="stat-header">
+          <div class="stat-icon critical">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5">
+              <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+          </div>
+          <span class="badge badge-critical">History</span>
+        </div>
+        <div class="stat-content">
+          <span class="stat-label">Triggered</span>
+          <span class="stat-value">{{ alertsTriggeredCount ?? '—' }}</span>
+        </div>
+      </div>
+
+      <div class="page-metric-card" style="padding: 1rem;">
+        <div class="stat-header">
+          <div class="stat-icon">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5">
+              <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+            </svg>
+          </div>
+          <span class="badge badge-dim">Policy</span>
+        </div>
+        <div class="stat-content">
+          <span class="stat-label">Retention</span>
+          <span class="stat-value">{{ settings.metrics_retention_days || 30 }} Days</span>
         </div>
       </div>
     </section>
 
     <!-- ── Section tab bar ───────────────────────────────────────────────────── -->
     <div class="admin-tab-bar">
-      <button
-        class="admin-tab"
-        :class="{ active: activeSection === 'users' }"
-        @click="activeSection = 'users'"
-      >
-        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5">
-          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
-          <circle cx="9" cy="7" r="4"/>
-          <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
-          <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-        </svg>
-        Users
-      </button>
       <button
         class="admin-tab"
         :class="{ active: activeSection === 'audit' }"
@@ -139,6 +171,20 @@
         Teams
       </button>
 
+      <button
+        class="admin-tab"
+        :class="{ active: activeSection === 'users' }"
+        @click="activeSection = 'users'"
+      >
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5">
+          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+          <circle cx="9" cy="7" r="4"/>
+          <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+          <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+        </svg>
+        Users
+      </button>
+
       <!-- Alerts tab — admin-gated -->
       <button
         v-if="isAdmin"
@@ -149,7 +195,7 @@
         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5">
           <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
         </svg>
-        Alert Rules
+        Alerts
       </button>
 
       <!-- Settings tab -->
@@ -191,11 +237,11 @@
 
       <!-- Teams panel -->
       <div v-show="activeSection === 'teams'">
-        <TeamManager ref="teamManagerRef" :token="token" />
+        <TeamManager ref="teamManagerRef" :token="token" @update-count="(n) => (teamsCount = n)" />
       </div>
 
       <!-- Alerts panel — admin-gated render guard -->
-      <div v-if="activeSection === 'alerts'">
+      <div v-show="activeSection === 'alerts'">
         <div v-if="!isAdmin" class="access-denied">
           <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.5">
             <circle cx="12" cy="12" r="10"/>
@@ -802,6 +848,8 @@ const activeSection   = ref('users');
 const staffUsersCount = ref(0);
 const auditLogsCount  = ref(0);
 const alertRulesCount = ref(null);
+const teamsCount = ref(0);
+const alertsTriggeredCount = ref(0);
 const currentUser = ref({});
 const settings = ref({
   metrics_retention_days: 30,
@@ -824,50 +872,68 @@ const settings = ref({
 });
 
 const backupTesting = ref(false);
+const token = secureStorage.getItem('token');
 
 // ── Permission guard ──────────────────────────────────────────────────────────
 const isAdmin = computed(() => sharedState.currentUser?.is_admin === true);
 
 onMounted(async () => {
-  if (isAdmin.value) {
-    const fetchAlertRulesCount = async () => {
-      try {
-        const currentToken = secureStorage.getItem('token');
-        if (!currentToken) return;
-        const res = await apiFetch('/api/admin/alerts/rules', {
-          headers: { Authorization: `Bearer ${currentToken}` }
-        });
-        if (res.ok) {
-          const rules = await res.json();
-          alertRulesCount.value = rules ? rules.length : 0;
-        } else {
-          alertRulesCount.value = 0;
-        }
-      } catch (e) {
-        console.error('Failed to fetch alert rules count:', e);
+  const fetchAlertRulesCount = async () => {
+    try {
+      const currentToken = secureStorage.getItem('token');
+      if (!currentToken) return;
+      const res = await apiFetch('/api/admin/alerts/rules', {
+        headers: { Authorization: `Bearer ${currentToken}` }
+      });
+      if (res.ok) {
+        const rules = await res.json();
+        alertRulesCount.value = rules ? rules.length : 0;
+      } else {
+        alertRulesCount.value = 0;
       }
-    };
-    fetchAlertRulesCount();
+    } catch (e) {
+      console.error('Failed to fetch alert rules count:', e);
+    }
+  };
+  fetchAlertRulesCount();
 
-    const fetchSettings = async () => {
-      try {
-        const token = secureStorage.getItem('token');
-        if (!token) return;
-        const res = await apiFetch('/api/admin/settings', {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        if (res.ok) {
-          const data = await res.json();
-          settings.value = data;
-        } else {
-          console.error('Failed to fetch settings');
-        }
-      } catch (e) {
-        console.error('Failed to fetch settings:', e);
+  const fetchAlertsTriggeredCount = async () => {
+    try {
+      const currentToken = secureStorage.getItem('token');
+      if (!currentToken) return;
+      const res = await apiFetch('/api/admin/alerts/history?limit=1000', {
+        headers: { Authorization: `Bearer ${currentToken}` }
+      });
+      if (res.ok) {
+        const history = await res.json();
+        alertsTriggeredCount.value = history ? history.length : 0;
+      } else {
+        alertsTriggeredCount.value = 0;
       }
-    };
-    fetchSettings();
-  }
+    } catch (e) {
+      console.error('Failed to fetch alerts triggered count:', e);
+    }
+  };
+  fetchAlertsTriggeredCount();
+
+  const fetchSettings = async () => {
+    try {
+      const token = secureStorage.getItem('token');
+      if (!token) return;
+      const res = await apiFetch('/api/admin/settings', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        settings.value = data;
+      } else {
+        console.error('Failed to fetch settings');
+      }
+    } catch (e) {
+      console.error('Failed to fetch settings:', e);
+    }
+  };
+  fetchSettings();
 });
 
 // ── Handlers ──────────────────────────────────────────────────────────────────

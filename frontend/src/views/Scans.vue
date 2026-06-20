@@ -34,9 +34,12 @@
     </div>
 
     <div v-else class="scans-grid">
-      <article v-for="c in containers" :key="c.id" class="scan-card shadow-lg">
+      <article v-for="c in sortedContainers" :key="c.id" class="scan-card shadow-lg" :class="{ 'is-platform': c.is_platform }">
         <div class="card-header">
-          <h3>{{ c.name.replace(/^\//, '') }}</h3>
+          <h3>
+            {{ c.name.replace(/^\//, '') }}
+            <span v-if="c.is_platform" class="platform-badge" style="font-size: 0.6rem; padding: 0.1rem 0.3rem; margin-left: 0.3rem;">⚡ PLATFORM</span>
+          </h3>
           <span :class="['status-badge', c.state]">{{ c.state }}</span>
         </div>
         <div class="card-body">
@@ -132,13 +135,21 @@
 </template>
 
 <script setup>
-import { ref, onMounted, watch } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { useContainers } from '../composables/useContainers';
 import { apiFetch } from '../utils/apiFetch';
 import { secureStorage } from '../utils/storage';
 import { showToast, sharedState } from '../utils/sharedState';
 
 const { containers, loading, fetchContainers } = useContainers();
+
+const sortedContainers = computed(() => {
+  return [...containers.value].sort((a, b) => {
+    if (a.is_platform && !b.is_platform) return -1;
+    if (!a.is_platform && b.is_platform) return 1;
+    return 0;
+  });
+});
 
 const scanning = ref({});
 const scanResults = ref({});

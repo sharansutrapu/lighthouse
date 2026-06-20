@@ -38,12 +38,6 @@
           </svg>
           Refresh
         </button>
-        <button @click="openCreateModal" class="page-btn primary">
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3">
-            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-          </svg>
-          New Rule
-        </button>
       </div>
     </div>
 
@@ -116,7 +110,7 @@
             </div>
             <template v-if="rule.event_types">
               <span v-for="ev in splitEvents(rule.event_types)" :key="ev" class="crit-chip event">
-                {{ ev }}
+                {{ formatEventName(ev) }}
               </span>
             </template>
             <div v-if="rule.log_pattern" class="crit-chip log">
@@ -261,7 +255,7 @@
     <!-- ────────────────────────────────────────────────────────────────────── -->
     <Teleport to="body">
       <Transition name="modal-bounce">
-        <div v-if="showDetailsModal" class="modal-overlay" @mousedown.self="showDetailsModal = false">
+        <div v-if="showModal" class="modal-overlay" @mousedown.self="showModal = false">
           <div class="modal-card alert-editor glass shadow-2xl">
             <!-- Header -->
             <div class="modal-card-header">
@@ -359,12 +353,12 @@
 
                   <!-- Events -->
                   <div class="input-group">
-                    <label class="label-caps">System & Feature Triggers</label>
-                    <div class="checkbox-row" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem;">
+                    <label class="label-caps">Container Lifecycle Triggers</label>
+                    <div class="checkbox-row" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem; margin-bottom: 1rem;">
                       <label class="choice-chip" :class="{ 'info active': form.events.die }">
                         <input type="checkbox" v-model="form.events.die" style="display:none"/>
                         <strong>💀 Container Die</strong>
-                        <span>Container stops or crashes</span>
+                        <span>Container crashes or stops</span>
                       </label>
                       <label class="choice-chip" :class="{ 'warning active': form.events.oom }">
                         <input type="checkbox" v-model="form.events.oom" style="display:none"/>
@@ -376,15 +370,44 @@
                         <strong>💔 Health Status</strong>
                         <span>Docker healthcheck fails</span>
                       </label>
+                      <label class="choice-chip" :class="{ 'info active': form.events.restart }">
+                        <input type="checkbox" v-model="form.events.restart" style="display:none"/>
+                        <strong>🔄 Container Restart</strong>
+                        <span>Container enters restart loop</span>
+                      </label>
+                      <label class="choice-chip" :class="{ 'warning active': form.events.kill }">
+                        <input type="checkbox" v-model="form.events.kill" style="display:none"/>
+                        <strong>🔪 Container Kill</strong>
+                        <span>Container forcefully killed</span>
+                      </label>
+                      <label class="choice-chip" :class="{ 'info active': form.events.stop }">
+                        <input type="checkbox" v-model="form.events.stop" style="display:none"/>
+                        <strong>🛑 Container Stop</strong>
+                        <span>Container stopped normally</span>
+                      </label>
+                    </div>
+
+                    <label class="label-caps">System, Security & Delivery Triggers</label>
+                    <div class="checkbox-row" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem;">
                       <label class="choice-chip" :class="{ 'info active': form.events.audit }">
                         <input type="checkbox" v-model="form.events.audit" style="display:none"/>
                         <strong>🛡️ System Audit</strong>
                         <span>Security & audit events</span>
                       </label>
+                      <label class="choice-chip" :class="{ 'critical active': form.events.auth_failed }">
+                        <input type="checkbox" v-model="form.events.auth_failed" style="display:none"/>
+                        <strong>🚨 Auth Failed</strong>
+                        <span>Multiple failed logins</span>
+                      </label>
                       <label class="choice-chip" :class="{ 'warning active': form.events.vulnerability_found }">
                         <input type="checkbox" v-model="form.events.vulnerability_found" style="display:none"/>
                         <strong>🦠 Vulnerability Found</strong>
                         <span>Critical/High CVEs discovered</span>
+                      </label>
+                      <label class="choice-chip" :class="{ 'warning active': form.events.image_pull_error }">
+                        <input type="checkbox" v-model="form.events.image_pull_error" style="display:none"/>
+                        <strong>📥 Image Pull Error</strong>
+                        <span>Image pull backoff</span>
                       </label>
                       <label class="choice-chip" :class="{ 'info active': form.events.gitops_success }">
                         <input type="checkbox" v-model="form.events.gitops_success" style="display:none"/>
@@ -395,6 +418,11 @@
                         <input type="checkbox" v-model="form.events.gitops_failed" style="display:none"/>
                         <strong>❌ GitOps Sync Failed</strong>
                         <span>Deployment failed</span>
+                      </label>
+                      <label class="choice-chip" :class="{ 'critical active': form.events.deployment_failed }">
+                        <input type="checkbox" v-model="form.events.deployment_failed" style="display:none"/>
+                        <strong>💔 Deployment Failed</strong>
+                        <span>General deployment failure</span>
                       </label>
                       <label class="choice-chip" :class="{ 'info active': form.events.backup_success }">
                         <input type="checkbox" v-model="form.events.backup_success" style="display:none"/>
@@ -584,6 +612,52 @@
       </Transition>
     </Teleport>
 
+    <!-- ── View Details Modal ────────────────────────────────────────────────── -->
+    <Teleport to="body">
+      <Transition name="modal-bounce">
+        <div v-if="showDetailsModal" class="modal-overlay" @mousedown.self="showDetailsModal = false">
+          <div class="modal-card glass shadow-2xl" style="max-width:500px">
+            <div class="modal-card-header">
+              <div class="header-content">
+                <div class="header-icon accent">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                    <circle cx="12" cy="12" r="3"></circle>
+                  </svg>
+                </div>
+                <div>
+                  <h3 class="modal-title">Alert Details</h3>
+                  <p class="modal-subtitle">Full summary of the triggered alert</p>
+                </div>
+              </div>
+              <button class="close-btn" @click="showDetailsModal = false">×</button>
+            </div>
+            <div class="modal-card-body" v-if="viewDetailsEntry">
+              <div class="input-group">
+                <label class="label-caps">Rule Name</label>
+                <div class="premium-input">{{ viewDetailsEntry.rule_name || '—' }}</div>
+              </div>
+              <div class="input-group" style="margin-top: 1rem;">
+                <label class="label-caps">Container</label>
+                <div class="premium-input">{{ viewDetailsEntry.container_name }}</div>
+              </div>
+              <div class="input-group" style="margin-top: 1rem;">
+                <label class="label-caps">Time</label>
+                <div class="premium-input">{{ formatDate(viewDetailsEntry.timestamp) }} {{ formatTime(viewDetailsEntry.timestamp) }}</div>
+              </div>
+              <div class="input-group" style="margin-top: 1rem;">
+                <label class="label-caps">Details</label>
+                <textarea class="premium-input" style="height: 100px; resize: none;" readonly>{{ viewDetailsEntry.details }}</textarea>
+              </div>
+            </div>
+            <div class="modal-card-footer">
+              <button @click="showDetailsModal = false" class="btn-primary" style="margin-left: auto;">Close</button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
   </div>
 </template>
 
@@ -658,12 +732,18 @@ const emptyForm = () => ({
     die: false, 
     oom: false, 
     health_status: false, 
+    restart: false,
+    kill: false,
+    stop: false,
     audit: false,
+    auth_failed: false,
     vulnerability_found: false,
     gitops_success: false,
     gitops_failed: false,
     backup_success: false,
-    backup_failed: false
+    backup_failed: false,
+    deployment_failed: false,
+    image_pull_error: false
   },
   log_pattern: '',
   cooldown_seconds: 300,
@@ -750,12 +830,18 @@ const openEditModal = (rule) => {
       die: evList.includes('die'),
       oom: evList.includes('oom'),
       health_status: evList.includes('health_status'),
+      restart: evList.includes('restart'),
+      kill: evList.includes('kill'),
+      stop: evList.includes('stop'),
       audit: evList.includes('audit'),
+      auth_failed: evList.includes('auth_failed'),
       vulnerability_found: evList.includes('vulnerability_found'),
       gitops_success: evList.includes('gitops_success'),
       gitops_failed: evList.includes('gitops_failed'),
       backup_success: evList.includes('backup_success'),
       backup_failed: evList.includes('backup_failed'),
+      deployment_failed: evList.includes('deployment_failed'),
+      image_pull_error: evList.includes('image_pull_error'),
     },
     log_pattern: rule.log_pattern || '',
     cooldown_seconds: rule.cooldown_seconds ?? 300,
@@ -880,6 +966,26 @@ const deleteRule = async () => {
 // ── Formatting helpers ────────────────────────────────────────────────────────
 
 const splitEvents  = (s) => (s || '').split(',').map(e => e.trim()).filter(Boolean);
+const formatEventName = (ev) => {
+  const map = {
+    'die': 'Container Die',
+    'oom': 'OOM Kill',
+    'health_status': 'Health Status',
+    'restart': 'Container Restart',
+    'kill': 'Container Kill',
+    'stop': 'Container Stop',
+    'audit': 'System Audit',
+    'auth_failed': 'Auth Failed',
+    'vulnerability_found': 'Vulnerability Found',
+    'image_pull_error': 'Image Pull Error',
+    'gitops_success': 'GitOps Sync Success',
+    'gitops_failed': 'GitOps Sync Failed',
+    'deployment_failed': 'Deployment Failed',
+    'backup_success': 'Backup Success',
+    'backup_failed': 'Backup Failed'
+  };
+  return map[ev] || ev;
+};
 
 const formatCooldown = (s) => {
   if (!s) return '5m';

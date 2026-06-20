@@ -47,7 +47,7 @@ Keep your infrastructure secure with native image scanning:
 
 ### 🚨 Alerting & Webhooks
 Never miss a critical event with the highly customizable Alerting Engine:
-- **Extensive Rules:** Comes with 11 default alert rules covering CPU/Memory spikes, container crashes, OOM kills, and more.
+- **Extensive Rules:** Comes with 17 default alert rules covering CPU/Memory spikes, container crashes, OOM kills, and more.
 - **Resource Thresholds:** Set specific CPU and Memory limits (e.g., alert if CPU > 80% for 5 minutes).
 - **Log Pattern Matching:** Trigger alerts when specific Regex patterns or error strings appear in a container's log stream.
 - **System & Feature Events:** Trigger notifications on critical platform events like container crashes, OOM kills, Vulnerability Scan results, GitOps deployment status, and database Backup results.

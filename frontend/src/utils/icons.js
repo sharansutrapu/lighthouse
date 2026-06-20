@@ -122,4 +122,9 @@ export const icons = {
     { tag: "polyline", attrs: { points: "15 3 21 3 21 9" } },
     { tag: "line", attrs: { x1: 10, y1: 14, x2: 21, y2: 3 } },
   ],
+  database: [
+    { tag: "ellipse", attrs: { cx: 12, cy: 5, rx: 9, ry: 3 } },
+    { tag: "path", attrs: { d: "M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" } },
+    { tag: "path", attrs: { d: "M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" } },
+  ],
 };

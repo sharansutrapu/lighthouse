@@ -323,8 +323,14 @@ func seedDefaults() {
 		{Name: "System Low Storage", ContainerPattern: "system", MetricStorageThreshold: 90, EnableGenericWebhook: true, Enabled: true},
 		{Name: "OOM Killed", ContainerPattern: ".*", EventTypes: "oom", EnableGenericWebhook: true, Enabled: true},
 		{Name: "Deployment Failed", ContainerPattern: ".*", EventTypes: "deployment_failed", EnableGenericWebhook: true, Enabled: true},
-		{Name: "High Vulnerability Detected", ContainerPattern: ".*", EventTypes: "vulnerability_high", EnableGenericWebhook: true, Enabled: true},
+		{Name: "High Vulnerability Detected", ContainerPattern: ".*", EventTypes: "vulnerability_found", EnableGenericWebhook: true, Enabled: true},
 		{Name: "Image Pull BackOff", ContainerPattern: ".*", EventTypes: "image_pull_error", EnableGenericWebhook: true, Enabled: true},
+		{Name: "Container Stopped", ContainerPattern: ".*", EventTypes: "stop", EnableGenericWebhook: true, Enabled: true},
+		{Name: "Container Killed", ContainerPattern: ".*", EventTypes: "kill", EnableGenericWebhook: true, Enabled: true},
+		{Name: "System Audit Event", ContainerPattern: "system", EventTypes: "audit", EnableGenericWebhook: true, Enabled: true},
+		{Name: "Authentication Failed", ContainerPattern: "system", EventTypes: "auth_failed", EnableGenericWebhook: true, Enabled: true},
+		{Name: "GitOps Sync Failed", ContainerPattern: "system", EventTypes: "gitops_failed", EnableGenericWebhook: true, Enabled: true},
+		{Name: "Backup Failed", ContainerPattern: "system", EventTypes: "backup_failed", EnableGenericWebhook: true, Enabled: true},
 	}
 	for _, r := range defaultRules {
 		var existing AlertRule
@@ -332,4 +338,8 @@ func seedDefaults() {
 			GormDB.Create(&r)
 		}
 	}
+
+	// Hotfix: Ensure "High Vulnerability Detected" rule has correct event type if it was created with the bugged value previously
+	GormDB.Model(&AlertRule{}).Where("name = ? AND event_types = ?", "High Vulnerability Detected", "vulnerability_high").Update("event_types", "vulnerability_found")
 }
+
