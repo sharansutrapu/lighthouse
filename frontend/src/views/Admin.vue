@@ -941,7 +941,6 @@ const themeDescription = computed(() => {
 const newPassword = ref("");
 const confirmPassword = ref("");
 const currentPassword = ref("");
-const loading = ref(false);
 const error = ref("");
 
 const handlePasswordUpdate = async () => {
