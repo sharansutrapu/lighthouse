@@ -59,9 +59,9 @@
               <div
                 :class="[
                   'premium-toggle',
-                  { active: u.is_active, disabled: u.is_admin },
+                  { active: u.is_active, disabled: u.id === 1 },
                 ]"
-                @click="!u.is_admin && toggleUserStatus(u)"
+                @click="u.id !== 1 && toggleUserStatus(u)"
               >
                 <div class="toggle-rail">
                   <div class="toggle-handle"></div>
@@ -72,7 +72,7 @@
               </div>
             </td>
             <td class="text-right" data-label="Actions">
-              <div class="action-group justify-end" v-if="!u.is_admin">
+              <div class="action-group justify-end" v-if="u.id !== sharedState.currentUser?.id">
                 <button
                   @click="openResetPassword(u)"
                   class="icon-btn"
@@ -98,6 +98,7 @@
                   </svg>
                 </button>
                 <button
+                  v-if="u.id !== 1"
                   @click="openPermissions(u)"
                   class="icon-btn"
                   data-tooltip="Manage Permissions"
@@ -116,6 +117,7 @@
                   </svg>
                 </button>
                 <button
+                  v-if="u.id !== 1"
                   @click="openDeleteConfirm(u)"
                   class="icon-btn stop"
                   data-tooltip="Delete User"
@@ -261,7 +263,26 @@
                     </div>
                   </template>
 
-                  <div v-if="!activeUser.team_id" class="input-group" :style="{ gridColumn: newUser.authMethod === 'invite' ? 'auto' : 'span 2' }">
+                  <div v-if="sharedState.currentUser?.is_admin" class="input-group" style="grid-column: span 2;">
+                    <label class="label-caps" style="margin-bottom: 0.5rem; display: block;">Administrative Rights</label>
+                    <div
+                      :class="[
+                        'premium-toggle',
+                        { active: newUser.is_admin }
+                      ]"
+                      @click="newUser.is_admin = !newUser.is_admin"
+                      style="width: fit-content; display: inline-flex;"
+                    >
+                      <div class="toggle-rail">
+                        <div class="toggle-handle"></div>
+                      </div>
+                      <span class="status-label" style="margin-left: 0.5rem; font-weight: 600; font-size: 0.85rem; color: var(--text-main);">
+                        {{ newUser.is_admin ? "Full Admin Access Granted" : "Grant Full Admin Access" }}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div v-if="!activeUser.team_id && !newUser.is_admin" class="input-group" :style="{ gridColumn: newUser.authMethod === 'invite' ? 'auto' : 'span 2' }">
                     <label class="label-caps">Assign Role Template</label>
                     <select v-model="newUser.role_template_id" class="premium-input">
                       <option v-for="role in roleTemplates" :key="role.id" :value="role.id">
@@ -275,7 +296,8 @@
                   </p>
                 </div>
 
-                <div class="input-group mb-4" style="padding: 0 1.5rem;">
+                <template v-if="!newUser.is_admin">
+                  <div class="input-group mb-4" style="padding: 0 1.5rem;">
                   <label class="label-caps">Assign Team (Optional)</label>
                   <select v-model="activeUser.team_id" class="premium-input">
                     <option value="">No Team</option>
@@ -442,6 +464,7 @@
                   </div>
                 </div>
             </div> <!-- End of v-if !activeUser.team_id -->
+            </template>
             </div>
 
             <div class="modal-card-footer">
@@ -625,6 +648,7 @@ const newUser = ref({
   is_restricted: true,
   allowed_containers: ".*",
   team_id: "",
+  is_admin: false,
 });
 const editingUser = ref({});
 const resetTargetUser = ref(null);
@@ -780,7 +804,7 @@ const fetchStaff = async () => {
     if (res.ok) {
       const data = await res.json();
       staffUsers.value = data.users || [];
-      emit("update-count", nonAdminUsers.value.length);
+      emit("update-count", staffUsers.value.length);
     }
   } catch (err) {
     console.error(err);
@@ -817,7 +841,7 @@ const fetchTeams = async () => {
 };
 
 const createUser = async () => {
-  if (!newUser.value.role_template_id) return;
+  if (!newUser.value.is_admin && !newUser.value.role_template_id && !newUser.value.team_id) return;
   if (newUser.value.authMethod === 'invite' && !newUser.value.email) return;
   if (newUser.value.authMethod === 'local' && (!newUser.value.username || !newUser.value.password)) return;
 
@@ -836,6 +860,7 @@ const createUser = async () => {
     if (newUser.value.team_id) {
       formData.append("team_id", newUser.value.team_id);
     }
+    formData.append("is_admin", newUser.value.is_admin ? "true" : "false");
 
     const res = await apiFetch("/api/admin/users", {
       method: "POST",

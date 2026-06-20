@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"lighthouse/alerts"
 	"lighthouse/db"
 
 	"github.com/robfig/cron/v3"
@@ -46,8 +47,10 @@ func ReloadSchedule() {
 			err := RunBackup(settings)
 			if err != nil {
 				log.Printf("[Backup] Failed: %v", err)
+				alerts.Global.TriggerSystemAlert("backup_failed", fmt.Sprintf("Scheduled backup to %s failed: %v", settings.BackupProvider, err))
 			} else {
 				log.Println("[Backup] Successfully completed scheduled backup")
+				alerts.Global.TriggerSystemAlert("backup_success", fmt.Sprintf("Scheduled backup to %s completed successfully.", settings.BackupProvider))
 			}
 		})
 		if err == nil {

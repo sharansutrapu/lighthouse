@@ -3,6 +3,8 @@
 // canonical payload sent to every downstream notification channel.
 package alerts
 
+import "time"
+
 // AlertRule mirrors a row in the alert_rules table.
 // Container pattern and channel configuration are stored as raw strings so
 // they can be persisted directly to/from SQLite without any extra marshalling.
@@ -21,18 +23,15 @@ type AlertRule struct {
 	// CooldownSeconds is the minimum number of seconds that must elapse between
 	// two consecutive notifications for the same rule, preventing alert storms.
 	CooldownSeconds int    `json:"cooldown_seconds"`
-	// ChannelType identifies the notification adapter.
-	// Supported values: "slack", "generic_webhook".
-	ChannelType     string `json:"channel_type"`
-	// ChannelConfig is a JSON object whose schema is determined by ChannelType.
-	// For "slack" / "generic_webhook":  { "url": "https://..." }
-	ChannelConfig   string `json:"channel_config"`
-	EnableWebhook   bool   `json:"enable_webhook"`
+	EnableSlack            bool    `json:"enable_slack"`
+	EnableMSTeams          bool    `json:"enable_msteams"`
+	EnableGChat            bool    `json:"enable_gchat"`
+	EnableGenericWebhook   bool    `json:"enable_generic_webhook"`
 	EnableEmail     bool   `json:"enable_email"`
 	EmailAddress    string `json:"email_address"`
 	MetricCPUThreshold float64 `json:"metric_cpu_threshold"`
 	MetricMemThreshold int64   `json:"metric_mem_threshold"`
-	CreatedAt       string `json:"created_at,omitempty"`
+	CreatedAt       *time.Time `json:"created_at,omitempty"`
 }
 
 // NotificationPayload is the normalised message that the AlertManager passes

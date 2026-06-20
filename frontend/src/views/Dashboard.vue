@@ -231,6 +231,98 @@
       </div>
     </section>
 
+    <!-- Storage & Networking -->
+    <section class="top-consumers animate-slide-up" style="animation-delay: 0.095s">
+      <div class="panel-toolbar" style="margin-bottom: 0.75rem;">
+        <div class="toolbar-left">
+          <h2>Storage & Networking</h2>
+          <p class="toolbar-sub">Docker engine resources overview</p>
+        </div>
+      </div>
+      <div class="consumers-grid">
+        <!-- Images Tile -->
+        <div class="metric-card consumer-card">
+          <div class="consumer-header">
+            <strong class="consumer-name">Images</strong>
+            <span class="metric-badge success">{{ images.length }} total</span>
+          </div>
+          <div class="host-body">
+            <div class="host-stat">
+              <div class="host-stat-head">
+                <span>Disk Usage</span>
+                <strong>{{ formatBytes(totalImageSize) }}</strong>
+              </div>
+            </div>
+            <div class="host-stat">
+              <div class="host-stat-head">
+                <span>Dangling</span>
+                <strong :style="{ color: danglingImagesCount > 0 ? 'var(--warning)' : 'inherit' }">{{ danglingImagesCount }} unused</strong>
+              </div>
+            </div>
+            <div style="margin-top: auto; padding-top: 1rem;">
+              <router-link to="/images" class="dash-action-btn" style="width: 100%; justify-content: center;">
+                Manage Images
+              </router-link>
+            </div>
+          </div>
+        </div>
+
+        <!-- Volumes Tile -->
+        <div class="metric-card consumer-card">
+          <div class="consumer-header">
+            <strong class="consumer-name">Volumes</strong>
+            <span class="metric-badge accent">{{ volumes.length }} total</span>
+          </div>
+          <div class="host-body">
+            <div class="host-stat">
+              <div class="host-stat-head">
+                <span>Local Driver</span>
+                <strong>{{ localVolumesCount }} volume(s)</strong>
+              </div>
+            </div>
+            <div class="host-stat">
+              <div class="host-stat-head">
+                <span>Other Drivers</span>
+                <strong>{{ volumes.length - localVolumesCount }} volume(s)</strong>
+              </div>
+            </div>
+            <div style="margin-top: auto; padding-top: 1rem;">
+              <router-link to="/volumes" class="dash-action-btn" style="width: 100%; justify-content: center;">
+                Manage Volumes
+              </router-link>
+            </div>
+          </div>
+        </div>
+
+        <!-- Networks Tile -->
+        <div class="metric-card consumer-card">
+          <div class="consumer-header">
+            <strong class="consumer-name">Networks</strong>
+            <span class="metric-badge success">{{ networks.length }} total</span>
+          </div>
+          <div class="host-body">
+            <div class="host-stat">
+              <div class="host-stat-head">
+                <span>Bridge Driver</span>
+                <strong>{{ bridgeNetworksCount }} network(s)</strong>
+              </div>
+            </div>
+            <div class="host-stat">
+              <div class="host-stat-head">
+                <span>Other Drivers</span>
+                <strong>{{ networks.length - bridgeNetworksCount }} network(s)</strong>
+              </div>
+            </div>
+            <div style="margin-top: auto; padding-top: 1rem;">
+              <router-link to="/networks" class="dash-action-btn" style="width: 100%; justify-content: center;">
+                Manage Networks
+              </router-link>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- Container table -->
     <section class="table-panel animate-slide-up" style="animation-delay: 0.1s">
       <div class="panel-toolbar">
@@ -259,7 +351,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, onMounted } from "vue";
 import AppIcon from "../components/AppIcon.vue";
 import ContainerTable from "../components/ContainerTable.vue";
 import { useContainers } from "../composables/useContainers";
@@ -392,7 +484,60 @@ const statColor = (val) => {
   return "var(--accent)";
 };
 
-const refresh = () => fetchContainers();
+// Docker Engine Resources State
+const images = ref([]);
+const volumes = ref([]);
+const networks = ref([]);
+
+const totalImageSize = computed(() => {
+  return images.value.reduce((acc, img) => acc + (img.Size || 0), 0);
+});
+
+const danglingImagesCount = computed(() => {
+  return images.value.filter(img => !img.RepoTags || img.RepoTags.length === 0 || img.RepoTags.includes('<none>:<none>')).length;
+});
+
+const localVolumesCount = computed(() => {
+  return volumes.value.filter(v => v.Driver === 'local').length;
+});
+
+const bridgeNetworksCount = computed(() => {
+  return networks.value.filter(n => n.Driver === 'bridge').length;
+});
+
+const fetchEngineResources = async () => {
+  try {
+    const [imgRes, volRes, netRes] = await Promise.all([
+      apiFetch('/api/images'),
+      apiFetch('/api/volumes'),
+      apiFetch('/api/networks')
+    ]);
+    
+    if (imgRes.ok) {
+      const data = await imgRes.json();
+      images.value = Array.isArray(data?.Items) ? data.Items : (Array.isArray(data) ? data : []);
+    }
+    if (volRes.ok) {
+      const data = await volRes.json();
+      volumes.value = Array.isArray(data?.Volumes) ? data.Volumes : (Array.isArray(data?.Items) ? data.Items : (Array.isArray(data) ? data : []));
+    }
+    if (netRes.ok) {
+      const data = await netRes.json();
+      networks.value = Array.isArray(data?.Items) ? data.Items : (Array.isArray(data) ? data : []);
+    }
+  } catch (err) {
+    console.error('Failed to fetch engine resources', err);
+  }
+};
+
+onMounted(() => {
+  fetchEngineResources();
+});
+
+const refresh = () => {
+  fetchContainers();
+  fetchEngineResources();
+};
 </script>
 
 <style scoped>

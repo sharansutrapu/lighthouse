@@ -78,7 +78,13 @@ func containerNameImageFromInspect(name string, configImage string) (string, str
 	return strings.TrimPrefix(strings.TrimSpace(name), "/"), configImage
 }
 
-func inspectContainerExcluded(name, configImage string) bool {
+func inspectContainerExcluded(isAdmin bool, name, configImage string) bool {
+	if isAdmin {
+		return false
+	}
 	containerName, containerImage := containerNameImageFromInspect(name, configImage)
+	if isLightHouseSelfContainer(containerName, containerImage) {
+		return false
+	}
 	return isExcludedContainer(containerName, containerImage)
 }

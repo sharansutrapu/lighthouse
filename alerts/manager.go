@@ -87,6 +87,9 @@ func NewAlertManager(cli *client.Client) *AlertManager {
 // It is safe to call Start only once.
 func (am *AlertManager) Start() {
 	am.ReloadRules()
+	db.OnAuditLogged = func(action, resource, status, details string) {
+		am.TriggerSystemAlert("audit", fmt.Sprintf("Action: %s\nResource: %s\nStatus: %s\n%s", action, resource, status, details))
+	}
 	go am.listenToDockerEvents()
 	go am.syncLogTailersLoop()
 	go am.checkMetricsLoop()
@@ -125,9 +128,10 @@ func (am *AlertManager) ReloadRules() {
 			LogPattern:       dbR.LogPattern,
 			Enabled:          dbR.Enabled,
 			CooldownSeconds:  dbR.CooldownSeconds,
-			ChannelType:      dbR.ChannelType,
-			ChannelConfig:    dbR.ChannelConfig,
-			EnableWebhook:    dbR.EnableWebhook,
+			EnableSlack:      dbR.EnableSlack,
+			EnableMSTeams:    dbR.EnableMSTeams,
+			EnableGChat:      dbR.EnableGChat,
+			EnableGenericWebhook: dbR.EnableGenericWebhook,
 			EnableEmail:      dbR.EnableEmail,
 			EmailAddress:     dbR.EmailAddress,
 			MetricCPUThreshold: dbR.MetricCpuThreshold,
@@ -226,6 +230,35 @@ func (am *AlertManager) TriggerSystemAlert(eventType string, details string) {
 		for _, ev := range splitTrim(rule.EventTypes, ",") {
 			if ev == eventType {
 				am.triggerAlert(rule, "System", "system", details)
+				break
+			}
+		}
+	}
+}
+
+// TriggerContainerEvent manually triggers an event tied to a specific container.
+// This is used by external subsystems (e.g. vulnerability scans) to emit alerts
+// that correctly evaluate against the rule's ContainerPattern.
+func (am *AlertManager) TriggerContainerEvent(eventType string, containerName string, details string) {
+	if am == nil {
+		return
+	}
+	am.rulesMu.RLock()
+	defer am.rulesMu.RUnlock()
+
+	for _, rule := range am.rules {
+		if rule.EventTypes == "" {
+			continue
+		}
+
+		matched, err := regexp.MatchString(rule.ContainerPattern, containerName)
+		if err != nil || !matched {
+			continue
+		}
+
+		for _, ev := range splitTrim(rule.EventTypes, ",") {
+			if ev == eventType {
+				am.triggerAlert(rule, containerName, "event", details)
 				break
 			}
 		}
@@ -546,16 +579,10 @@ func (am *AlertManager) deliverAlert(rule *AlertRule, containerName, alertType, 
 
 	var setting db.Setting
 	err := db.GormDB.First(&setting, 1).Error
-	globalWebhookType := setting.WebhookType
-	globalWebhookURL := setting.WebhookUrl
 	if err != nil {
-		globalWebhookType = "generic_webhook"
+		log.Printf("[Alerts] Failed to fetch setting: %v", err)
 	}
-	channelType := globalWebhookType
-	cfgMap := map[string]string{"url": globalWebhookURL}
-	cfgBytes, _ := json.Marshal(cfgMap)
-	channelConfig := string(cfgBytes)
-	enableWebhook := rule.EnableWebhook
+
 	enableEmail := rule.EnableEmail
 	emailAddress := rule.EmailAddress
 	payload := NotificationPayload{
@@ -570,15 +597,29 @@ func (am *AlertManager) deliverAlert(rule *AlertRule, containerName, alertType, 
 		var statusMsgs []string
 		var channels []string
 
-		if enableWebhook {
+		deliverCh := func(channelType, url string, enabled bool) {
+			if !enabled {
+				return
+			}
 			channels = append(channels, channelType)
-			if err := DeliverNotification(channelType, channelConfig, payload); err != nil {
-				log.Printf("[Alerts] Delivery failed for rule %q: %v", payload.RuleName, err)
-				statusMsgs = append(statusMsgs, fmt.Sprintf("Webhook Failed: %v", err))
+			if url == "" {
+				statusMsgs = append(statusMsgs, fmt.Sprintf("%s Failed: URL not configured", channelType))
+				return
+			}
+			cfgMap := map[string]string{"url": url}
+			cfgBytes, _ := json.Marshal(cfgMap)
+			if err := DeliverNotification(channelType, string(cfgBytes), payload); err != nil {
+				log.Printf("[Alerts] Delivery failed for rule %q (%s): %v", payload.RuleName, channelType, err)
+				statusMsgs = append(statusMsgs, fmt.Sprintf("%s Failed: %v", channelType, err))
 			} else {
-				statusMsgs = append(statusMsgs, "Webhook Success")
+				statusMsgs = append(statusMsgs, fmt.Sprintf("%s Success", channelType))
 			}
 		}
+
+		deliverCh("slack", setting.SlackWebhookUrl, rule.EnableSlack)
+		deliverCh("msteams", setting.MSTeamsWebhookUrl, rule.EnableMSTeams)
+		deliverCh("gchat", setting.GChatWebhookUrl, rule.EnableGChat)
+		deliverCh("generic_webhook", setting.GenericWebhookUrl, rule.EnableGenericWebhook)
 		if enableEmail && emailAddress != "" {
 			channels = append(channels, "email")
 			if setting.SmtpHost == "" {

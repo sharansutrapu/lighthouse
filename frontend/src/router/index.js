@@ -24,6 +24,24 @@ const routes = [
     meta: { requiresAuth: true, layout: 'main', title: 'Container Details' }
   },
   { 
+    path: '/images', 
+    name: 'Images', 
+    component: () => import('../views/Images.vue'),
+    meta: { requiresAuth: true, layout: 'main', title: 'Docker Images' }
+  },
+  { 
+    path: '/volumes', 
+    name: 'Volumes', 
+    component: () => import('../views/Volumes.vue'),
+    meta: { requiresAuth: true, layout: 'main', title: 'Docker Volumes' }
+  },
+  { 
+    path: '/networks', 
+    name: 'Networks', 
+    component: () => import('../views/Networks.vue'),
+    meta: { requiresAuth: true, layout: 'main', title: 'Docker Networks' }
+  },
+  { 
     path: '/logs', 
     name: 'Logs', 
     component: () => import('../views/Logs.vue'),

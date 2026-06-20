@@ -101,7 +101,6 @@ func printConfig() {
 	fmt.Printf("  port                 %s\n", envOrDefault("PORT", "8000"))
 	fmt.Printf("  db_path              %s\n", envOrDefault("DB_PATH", "lighthouse.db"))
 	fmt.Printf("  docker_host          %s\n", envOrDefault("DOCKER_HOST", "unix:///var/run/docker.sock"))
-	fmt.Printf("  disable_auth         %s\n", boolEnv("DISABLE_AUTH", false))
 	fmt.Printf("  client_access        %s\n", envOrDefault("CLIENT_ACCESS", "strict"))
 	if excluded := strings.TrimSpace(os.Getenv("EXCLUDE_CONTAINERS")); excluded != "" {
 		fmt.Printf("  exclude_containers     %s\n", excluded)

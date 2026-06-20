@@ -155,22 +155,27 @@ const handleBackendError = () => {
 };
 
 export function userCanStart(user) {
+  if (user?.is_admin) return true;
   return sharedState.envStartPermission && user?.can_start === true;
 }
 
 export function userCanStop(user) {
+  if (user?.is_admin) return true;
   return sharedState.envStopPermission && user?.can_stop === true;
 }
 
 export function userCanRestart(user) {
+  if (user?.is_admin) return true;
   return sharedState.envRestartPermission && user?.can_restart === true;
 }
 
 export function userCanDelete(user) {
+  if (user?.is_admin) return true;
   return sharedState.envDeletePermission && user?.can_delete === true;
 }
 
 export function userCanShell(user) {
+  if (user?.is_admin) return true;
   return sharedState.envShellPermission && user?.can_shell === true;
 }
 

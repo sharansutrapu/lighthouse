@@ -95,6 +95,15 @@
             <span>Stop</span>
           </button>
           <button
+            v-if="!container.is_platform && userCanDelete(sharedState.currentUser)"
+            type="button"
+            class="action-chip delete"
+            @click="triggerConfirm(container.id, 'remove')"
+          >
+            <AppIcon name="trash" :size="16" />
+            <span>Delete</span>
+          </button>
+          <button
             type="button"
             class="action-chip"
             @click="triggerScan"
@@ -128,6 +137,15 @@
           <span class="stat-value">{{ cpuLimitLabel }}</span>
         </article>
         <article class="stat-card">
+          <span class="stat-label">Memory limit</span>
+          <span class="stat-value">{{ memLimit > 0 ? formatBytes(memLimit) : 'No Limit' }}</span>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">Storage</span>
+          <span class="stat-value sm">{{ formatBytes(resolvedInspect?.SizeRw || container?.size_rw) }} RW</span>
+          <span class="stat-sub">{{ formatBytes(resolvedInspect?.SizeRootFs || container?.size_root_fs) }} Total</span>
+        </article>
+        <article class="stat-card">
           <span class="stat-label">Network (Rx / Tx)</span>
           <span class="stat-value sm">{{ formatBytes(liveStats.net_rx) }}/s ↓</span>
           <span class="stat-sub">{{ formatBytes(liveStats.net_tx) }}/s ↑</span>
@@ -140,6 +158,14 @@
         <article class="stat-card">
           <span class="stat-label">Created</span>
           <span class="stat-value sm">{{ formatDate(container.created) }}</span>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">Processes</span>
+          <span class="stat-value">{{ liveStats.pids }}</span>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">Restarts</span>
+          <span class="stat-value">{{ resolvedInspect?.RestartCount || 0 }}</span>
         </article>
       </section>
 
@@ -177,11 +203,11 @@
             </div>
             <div class="kv-item">
               <span class="kv-label">Disk RW (Used)</span>
-              <span class="kv-value">{{ formatBytes(container.size_rw) || "—" }}</span>
+              <span class="kv-value">{{ formatBytes(resolvedInspect?.SizeRw || container?.size_rw) || "—" }}</span>
             </div>
             <div class="kv-item">
               <span class="kv-label">Disk RootFs</span>
-              <span class="kv-value">{{ formatBytes(container.size_root_fs) || "—" }}</span>
+              <span class="kv-value">{{ formatBytes(resolvedInspect?.SizeRootFs || container?.size_root_fs) || "—" }}</span>
             </div>
             <div class="kv-item full-width" style="grid-column: 1 / -1; margin-top: 1rem;">
               <span class="kv-label">Vulnerability Scan</span>
@@ -234,7 +260,21 @@
               {{ port }}
             </div>
           </div>
-          <p v-else class="panel-empty">No published ports.</p>
+          <div v-else class="empty-state">No exposed ports</div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Live Events</h2>
+            <span class="badge badge-dim">{{ containerEvents.length }}</span>
+          </div>
+          <div v-if="containerEvents.length" class="events-list">
+            <div v-for="evt in containerEvents" :key="evt.id" class="event-row">
+              <span class="event-time">{{ evt.time }}</span>
+              <span class="event-action" :class="evt.action">{{ evt.action }}</span>
+            </div>
+          </div>
+          <div v-else class="empty-state">Waiting for events...</div>
         </article>
 
         <article class="panel panel-wide">
@@ -405,6 +445,8 @@ import { useRoute, useRouter } from "vue-router";
 import AppIcon from "../components/AppIcon.vue";
 import { useContainers } from "../composables/useContainers";
 import { apiFetch } from "../utils/apiFetch";
+import { sharedState, showToast, formatBytes } from "../utils/sharedState";
+import { createAuthenticatedWebSocket } from "../utils/wsAuth";
 import { secureStorage } from "../utils/storage";
 import { Line } from "vue-chartjs";
 import {
@@ -430,9 +472,6 @@ ChartJS.register(
   Filler,
 );
 import {
-  sharedState,
-  showToast,
-  formatBytes,
   userCanStart,
   userCanStop,
   userCanRestart,
@@ -463,6 +502,8 @@ const scanResults = ref({
   loading: false,
   data: null
 });
+const containerEvents = ref([]);
+let eventsWs = null;
 
 const fetchScanResults = async () => {
   if (!container.value || !container.value.image) return;
@@ -515,7 +556,7 @@ const triggerScan = async () => {
 const inspectData = ref(null);
 const inspectLoading = ref(true);
 const isActionLoading = ref(false);
-const liveStats = ref({ cpu: 0, memory: 0, net_rx: 0, net_tx: 0, disk_read: 0, disk_write: 0 });
+const liveStats = ref({ cpu: 0, memory: 0, net_rx: 0, net_tx: 0, disk_read: 0, disk_write: 0, pids: 0 });
 const envQuery = ref("");
 const revealedEnvs = ref([]);
 
@@ -801,6 +842,7 @@ async function fetchLiveStats() {
         net_tx: Number(data.net_tx) || 0,
         disk_read: Number(data.disk_read) || 0,
         disk_write: Number(data.disk_write) || 0,
+        pids: Number(data.pids) || 0,
       };
     }
   } catch (err) {
@@ -821,6 +863,26 @@ function stopStatsPolling() {
   }
 }
 
+const connectEventsWS = () => {
+  if (eventsWs) eventsWs.close();
+  eventsWs = createAuthenticatedWebSocket("/ws/events");
+  eventsWs.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      if (data.Type === 'container' && data.Actor && data.Actor.ID && data.Actor.ID.startsWith(containerId.value)) {
+        containerEvents.value.unshift({
+          id: data.timeNano || Date.now() + Math.random(),
+          action: data.Action,
+          time: new Date((data.timeNano / 1000000) || (data.time * 1000) || Date.now()).toLocaleTimeString()
+        });
+        if (containerEvents.value.length > 50) containerEvents.value.pop();
+      }
+    } catch (e) {
+      console.error("Failed to parse event:", e);
+    }
+  };
+};
+
 async function confirmAction() {
   const action = pendingAction.value;
   isActionLoading.value = true;
@@ -830,12 +892,7 @@ async function confirmAction() {
       router.push("/containers");
       return;
     }
-    if (cid) {
-      startLiveStats(cid);
-      fetchContainerInfo(cid).then(() => {
-        fetchScanResults();
-      });
-    }  await fetchInspect();
+    await fetchInspect();
   } finally {
     isActionLoading.value = false;
   }
@@ -1114,9 +1171,9 @@ onUnmounted(() => {
 }
 
 .action-chip.shell:hover {
+  background: rgba(139, 92, 246, 0.15);
   color: #8b5cf6;
-  border-color: rgba(139, 92, 246, 0.35);
-  background: rgba(139, 92, 246, 0.1);
+  border-color: rgba(139, 92, 246, 0.4);
 }
 
 .action-chip.start:hover {
@@ -1528,5 +1585,44 @@ onUnmounted(() => {
     min-width: 0;
     width: 100%;
   }
+}
+
+.events-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 0.5rem 0;
+}
+
+.event-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+.event-time {
+  color: var(--text-mute);
+}
+
+.event-action {
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.event-action.die, .event-action.kill, .event-action.oom {
+  color: var(--danger);
+}
+
+.event-action.start, .event-action.restart {
+  color: var(--success);
 }
 </style>

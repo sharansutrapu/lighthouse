@@ -86,19 +86,13 @@
           <!-- Card top bar: name + toggle -->
           <div class="rule-card-header">
             <div class="rule-name-group">
-              <div class="rule-channel-icon" :class="rule.channel_type">
-                <svg v-if="rule.channel_type === 'slack'" viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
-                  <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zM6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zM8.834 6.313a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zM18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zM17.688 8.834a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312zM15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zM15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z"/>
-                </svg>
-                <svg v-else viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5">
-                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-                  <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+              <div class="rule-channel-icon">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
                 </svg>
               </div>
-              <div>
-                <span class="rule-name">{{ rule.name }}</span>
-                <span class="rule-channel-label">{{ rule.channel_type === 'slack' ? 'Slack / Discord' : 'Webhook' }}</span>
-              </div>
+              <span class="rule-name">{{ rule.name }}</span>
             </div>
             <!-- Toggle switch -->
             <button
@@ -268,51 +262,8 @@
     <Teleport to="body">
       <Transition name="modal-bounce">
         <div v-if="showDetailsModal" class="modal-overlay" @mousedown.self="showDetailsModal = false">
-          <div class="modal-card wide-modal glass shadow-2xl">
-            <div class="modal-card-header">
-              <div class="header-content">
-                <div class="header-icon accent">
-                  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5">
-                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle>
-                  </svg>
-                </div>
-                <div>
-                  <h3 class="modal-title">Alert Details</h3>
-                  <p class="modal-subtitle">Full payload of the triggered alert</p>
-                </div>
-              </div>
-              <button class="close-btn" @click="showDetailsModal = false">×</button>
-            </div>
-            <div class="modal-card-body" style="padding: 1.5rem;" v-if="viewDetailsEntry">
-              <div style="margin-bottom: 1.5rem; padding: 1rem; background: var(--bg-subtle); border-radius: 8px; border: 1px solid var(--border);">
-                <div style="display: flex; justify-content: space-between; margin-bottom: 0.75rem;">
-                  <span class="label-caps" style="margin: 0;">Delivery Channels</span>
-                  <strong>{{ viewDetailsEntry.delivery_channel || 'None' }}</strong>
-                </div>
-                <div style="display: flex; justify-content: space-between;">
-                  <span class="label-caps" style="margin: 0;">Delivery Status</span>
-                  <span :class="{'text-accent': viewDetailsEntry.delivery_status?.toLowerCase().includes('success'), 'text-error': viewDetailsEntry.delivery_status?.toLowerCase().includes('fail')}">
-                    {{ viewDetailsEntry.delivery_status || 'Pending' }}
-                  </span>
-                </div>
-              </div>
-              <label class="label-caps" style="margin-bottom: 0.5rem; display: block;">Alert Payload</label>
-              <pre class="premium-code-block" style="margin: 0; white-space: pre-wrap; font-size: 0.85rem; color: var(--text-main); background: var(--bg-subtle); padding: 1rem; border-radius: 8px; border: 1px solid var(--border);">{{ viewDetailsEntry.details }}</pre>
-            </div>
-          </div>
-        </div>
-      </Transition>
-    </Teleport>
-
-    <!-- ────────────────────────────────────────────────────────────────────── -->
-    <!-- Rule Create / Edit Modal                                               -->
-    <!-- ────────────────────────────────────────────────────────────────────── -->
-    <Teleport to="body">
-      <Transition name="modal-bounce">
-        <div v-if="showModal" class="modal-overlay" @mousedown.self="closeModal">
-          <div class="modal-card wide-modal glass shadow-2xl">
-
-            <!-- Modal header -->
+          <div class="modal-card alert-editor glass shadow-2xl">
+            <!-- Header -->
             <div class="modal-card-header">
               <div class="header-content">
                 <div class="header-icon" :class="editingRule ? 'warning' : 'accent'">
@@ -320,135 +271,219 @@
                     <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
                   </svg>
                 </div>
-                <div>
-                  <h3 class="modal-title">{{ editingRule ? 'Edit Alert Rule' : 'New Alert Rule' }}</h3>
+                <div class="header-copy">
+                  <div class="header-title-row">
+                    <h3 class="modal-title">{{ editingRule ? 'Edit Alert Rule' : 'New Alert Rule' }}</h3>
+                  </div>
                   <p class="modal-subtitle">Configure notification criteria and delivery channel</p>
                 </div>
               </div>
-              <button class="close-btn" @click="closeModal">×</button>
+              
+              <div class="header-toggle" style="margin-left: 1rem; align-self: center;">
+                <label class="premium-toggle" :class="{ active: form.enabled }">
+                  <span class="status-label">{{ form.enabled ? 'ON' : 'OFF' }}</span>
+                  <div class="toggle-rail">
+                    <div class="toggle-handle"></div>
+                  </div>
+                  <input type="checkbox" v-model="form.enabled" style="display: none" />
+                </label>
+              </div>
+              <button class="close-btn" @click="closeModal" style="margin-left: 1rem;">×</button>
             </div>
 
-            <!-- Modal body -->
-            <div class="modal-card-body">
-              <div v-if="formError" class="form-error">{{ formError }}</div>
+            <!-- Editor Shell -->
+            <div class="editor-shell">
+              <!-- Left Sidebar Nav -->
+              <nav class="editor-nav">
+                <button
+                  v-for="sec in editorSections"
+                  :key="sec.id"
+                  class="editor-nav-btn"
+                  :class="{ active: activeSection === sec.id }"
+                  @click.prevent="scrollToSection(sec.id)"
+                >
+                  <span class="nav-step">{{ sec.step }}</span>
+                  <div class="nav-copy">
+                    <strong>{{ sec.label }}</strong>
+                    <span>{{ sec.hint }}</span>
+                  </div>
+                </button>
+              </nav>
 
-              <!-- Name -->
-              <div class="input-group">
-                <label class="label-caps">Rule Name <span class="req">*</span></label>
-                <input
-                  v-model="form.name"
-                  type="text"
-                  class="premium-input"
-                  placeholder="e.g. Nginx crash alert"
-                  autofocus
-                />
-              </div>
+              <!-- Right Body -->
+              <div class="editor-body" ref="editorBodyRef" @scroll.passive="syncActiveSection">
+                <div v-if="formError" class="form-error">{{ formError }}</div>
 
-              <!-- Container Pattern -->
-              <div class="input-group">
-                <label class="label-caps">
-                  Container Name Pattern <span class="req">*</span>
-                  <span class="label-hint">(Go regex)</span>
-                </label>
-                <input
-                  v-model="form.container_pattern"
-                  type="text"
-                  class="premium-input mono"
-                  placeholder="^nginx-.*$  or  .*  for all containers"
-                />
-              </div>
+                <!-- Section 1: Basics -->
+                <section id="section-basics" class="editor-section">
+                  <div class="section-head compact">
+                    <div>
+                      <h4>Rule Basics</h4>
+                      <p>Name and container scope</p>
+                    </div>
+                  </div>
+                  
+                  <div class="input-group">
+                    <label class="label-caps">Rule Name <span class="req">*</span></label>
+                    <input
+                      v-model="form.name"
+                      type="text"
+                      class="premium-input"
+                      placeholder="e.g. Nginx crash alert"
+                      autofocus
+                    />
+                  </div>
 
-              <!-- Event Triggers -->
-              <div class="input-group">
-                <label class="label-caps">Docker Event Triggers</label>
-                <div class="checkbox-row">
-                  <label class="check-pill" :class="{ active: form.events.die }">
-                    <input type="checkbox" v-model="form.events.die" style="display:none"/>
-                    <span class="check-dot" :class="{ on: form.events.die }"/>
-                    💀 Container Die
-                  </label>
-                  <label class="check-pill" :class="{ active: form.events.oom }">
-                    <input type="checkbox" v-model="form.events.oom" style="display:none"/>
-                    <span class="check-dot" :class="{ on: form.events.oom }"/>
-                    🔥 OOM Kill
-                  </label>
-                  <label class="check-pill" :class="{ active: form.events.health_status }">
-                    <input type="checkbox" v-model="form.events.health_status" style="display:none"/>
-                    <span class="check-dot" :class="{ on: form.events.health_status }"/>
-                    💔 Health Status
-                  </label>
-                </div>
-              </div>
+                  <div class="input-group">
+                    <label class="label-caps">
+                      Container Name Pattern <span class="req">*</span>
+                      <span class="label-hint">(Go regex)</span>
+                    </label>
+                    <input
+                      v-model="form.container_pattern"
+                      type="text"
+                      class="premium-input mono"
+                      placeholder="^nginx-.*$  or  .*  for all containers"
+                    />
+                  </div>
+                </section>
 
-              <!-- Log Pattern -->
-              <div class="input-group">
-                <label class="label-caps">
-                  Log Keyword Regex
-                  <span class="label-hint">(optional — scans stdout/stderr)</span>
-                </label>
-                <input
-                  v-model="form.log_pattern"
-                  type="text"
-                  class="premium-input mono"
-                  placeholder="(?i)error|exception|fatal|panic"
-                />
-              </div>
+                <!-- Section 2: Trigger -->
+                <section id="section-trigger" class="editor-section">
+                  <div class="section-head compact">
+                    <div>
+                      <h4>Trigger Criteria</h4>
+                      <p>Mix and match events, logs, and metrics</p>
+                    </div>
+                  </div>
 
-              <div class="form-grid dual">
-                <!-- CPU Threshold -->
-                <div class="input-group">
-                  <label class="label-caps">
-                    CPU Threshold (%)
-                    <span class="label-hint">(0 to disable)</span>
-                  </label>
-                  <input
-                    v-model.number="form.metric_cpu_threshold"
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    class="premium-input"
-                    placeholder="e.g. 80.00"
-                  />
-                </div>
+                  <!-- Events -->
+                  <div class="input-group">
+                    <label class="label-caps">System & Feature Triggers</label>
+                    <div class="checkbox-row" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem;">
+                      <label class="choice-chip" :class="{ 'info active': form.events.die }">
+                        <input type="checkbox" v-model="form.events.die" style="display:none"/>
+                        <strong>💀 Container Die</strong>
+                        <span>Container stops or crashes</span>
+                      </label>
+                      <label class="choice-chip" :class="{ 'warning active': form.events.oom }">
+                        <input type="checkbox" v-model="form.events.oom" style="display:none"/>
+                        <strong>🔥 OOM Kill</strong>
+                        <span>Out of memory kills</span>
+                      </label>
+                      <label class="choice-chip" :class="{ 'critical active': form.events.health_status }">
+                        <input type="checkbox" v-model="form.events.health_status" style="display:none"/>
+                        <strong>💔 Health Status</strong>
+                        <span>Docker healthcheck fails</span>
+                      </label>
+                      <label class="choice-chip" :class="{ 'info active': form.events.audit }">
+                        <input type="checkbox" v-model="form.events.audit" style="display:none"/>
+                        <strong>🛡️ System Audit</strong>
+                        <span>Security & audit events</span>
+                      </label>
+                      <label class="choice-chip" :class="{ 'warning active': form.events.vulnerability_found }">
+                        <input type="checkbox" v-model="form.events.vulnerability_found" style="display:none"/>
+                        <strong>🦠 Vulnerability Found</strong>
+                        <span>Critical/High CVEs discovered</span>
+                      </label>
+                      <label class="choice-chip" :class="{ 'info active': form.events.gitops_success }">
+                        <input type="checkbox" v-model="form.events.gitops_success" style="display:none"/>
+                        <strong>🚀 GitOps Sync Success</strong>
+                        <span>Deployment successful</span>
+                      </label>
+                      <label class="choice-chip" :class="{ 'critical active': form.events.gitops_failed }">
+                        <input type="checkbox" v-model="form.events.gitops_failed" style="display:none"/>
+                        <strong>❌ GitOps Sync Failed</strong>
+                        <span>Deployment failed</span>
+                      </label>
+                      <label class="choice-chip" :class="{ 'info active': form.events.backup_success }">
+                        <input type="checkbox" v-model="form.events.backup_success" style="display:none"/>
+                        <strong>💾 Backup Success</strong>
+                        <span>Automated backup completed</span>
+                      </label>
+                      <label class="choice-chip" :class="{ 'critical active': form.events.backup_failed }">
+                        <input type="checkbox" v-model="form.events.backup_failed" style="display:none"/>
+                        <strong>⚠️ Backup Failed</strong>
+                        <span>Automated backup failed</span>
+                      </label>
+                    </div>
+                  </div>
 
-                <!-- Memory Threshold -->
-                <div class="input-group">
-                  <label class="label-caps">
-                    Memory Threshold (MB)
-                    <span class="label-hint">(0 to disable)</span>
-                  </label>
-                  <input
-                    v-model.number="form.metric_mem_threshold"
-                    type="number"
-                    min="0"
-                    class="premium-input"
-                    placeholder="e.g. 512"
-                  />
-                </div>
-              </div>
+                  <!-- Logs -->
+                  <div class="input-group">
+                    <label class="label-caps">
+                      Log Keyword Regex
+                      <span class="label-hint">(optional)</span>
+                    </label>
+                    <input
+                      v-model="form.log_pattern"
+                      type="text"
+                      class="premium-input mono"
+                      placeholder="(?i)error|exception|fatal|panic"
+                    />
+                  </div>
 
-              <div class="form-grid dual">
-                <!-- Cooldown -->
-                <div class="input-group">
-                  <label class="label-caps">Cooldown Window</label>
-                  <select v-model="form.cooldown_seconds" class="premium-input">
-                    <option :value="30">30 seconds</option>
-                    <option :value="60">1 minute</option>
-                    <option :value="300">5 minutes (default)</option>
-                    <option :value="900">15 minutes</option>
-                    <option :value="1800">30 minutes</option>
-                    <option :value="3600">1 hour</option>
-                  </select>
-                </div>
+                  <!-- Metrics -->
+                  <div class="form-grid dual">
+                    <div class="input-group">
+                      <label class="label-caps">
+                        CPU Threshold (%)
+                        <span class="label-hint">(0 to disable)</span>
+                      </label>
+                      <input
+                        v-model.number="form.metric_cpu_threshold"
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        class="premium-input"
+                        placeholder="e.g. 80.00"
+                      />
+                    </div>
+                    <div class="input-group">
+                      <label class="label-caps">
+                        Memory Threshold (MB)
+                        <span class="label-hint">(0 to disable)</span>
+                      </label>
+                      <input
+                        v-model.number="form.metric_mem_threshold"
+                        type="number"
+                        min="0"
+                        class="premium-input"
+                        placeholder="e.g. 512"
+                      />
+                    </div>
+                  </div>
+                </section>
 
-                <!-- Delivery Toggles -->
-                <div class="input-group">
-                  <label class="label-caps">Delivery Methods</label>
+                <!-- Section 3: Destinations -->
+                <section id="section-destinations" class="editor-section">
+                  <div class="section-head compact">
+                    <div>
+                      <h4>Destinations</h4>
+                      <p>Where should we deliver this alert?</p>
+                    </div>
+                  </div>
+                  
                   <div class="events-group">
-                    <label class="check-pill" :class="{ active: form.enable_webhook }">
-                      <input type="checkbox" v-model="form.enable_webhook" style="display:none"/>
-                      <span class="check-dot" :class="{ on: form.enable_webhook }"/>
-                      Webhook
+                    <label class="check-pill" :class="{ active: form.enable_slack }">
+                      <input type="checkbox" v-model="form.enable_slack" style="display:none"/>
+                      <span class="check-dot" :class="{ on: form.enable_slack }"/>
+                      Slack
+                    </label>
+                    <label class="check-pill" :class="{ active: form.enable_msteams }">
+                      <input type="checkbox" v-model="form.enable_msteams" style="display:none"/>
+                      <span class="check-dot" :class="{ on: form.enable_msteams }"/>
+                      MS Teams
+                    </label>
+                    <label class="check-pill" :class="{ active: form.enable_gchat }">
+                      <input type="checkbox" v-model="form.enable_gchat" style="display:none"/>
+                      <span class="check-dot" :class="{ on: form.enable_gchat }"/>
+                      GChat
+                    </label>
+                    <label class="check-pill" :class="{ active: form.enable_generic_webhook }">
+                      <input type="checkbox" v-model="form.enable_generic_webhook" style="display:none"/>
+                      <span class="check-dot" :class="{ on: form.enable_generic_webhook }"/>
+                      Generic
                     </label>
                     <label class="check-pill" :class="{ active: form.enable_email }">
                       <input type="checkbox" v-model="form.enable_email" style="display:none"/>
@@ -456,41 +491,47 @@
                       Email
                     </label>
                   </div>
-                </div>
-              </div>
 
+                  <template v-if="form.enable_email">
+                    <div class="input-group" style="margin-top: 0.5rem;">
+                      <label class="label-caps">
+                        Email Address <span class="req">*</span>
+                      </label>
+                      <input
+                        v-model="form.email_address"
+                        type="email"
+                        class="premium-input"
+                        placeholder="alerts@example.com"
+                      />
+                    </div>
+                  </template>
+                </section>
 
-              <!-- Email Config -->
-              <template v-if="form.enable_email">
-                <div class="input-group">
-                  <label class="label-caps">
-                    Email Address <span class="req">*</span>
-                  </label>
-                  <input
-                    v-model="form.email_address"
-                    type="email"
-                    class="premium-input"
-                    placeholder="alerts@example.com"
-                  />
-                </div>
-              </template>
+                <!-- Section 4: Throttling -->
+                <section id="section-throttle" class="editor-section">
+                  <div class="section-head compact">
+                    <div>
+                      <h4>Throttling</h4>
+                      <p>Prevent alert storms</p>
+                    </div>
+                  </div>
+                  <div class="input-group">
+                    <label class="label-caps">Cooldown Window</label>
+                    <select v-model="form.cooldown_seconds" class="premium-input">
+                      <option :value="30">30 seconds</option>
+                      <option :value="60">1 minute</option>
+                      <option :value="300">5 minutes (default)</option>
+                      <option :value="900">15 minutes</option>
+                      <option :value="1800">30 minutes</option>
+                      <option :value="3600">1 hour</option>
+                    </select>
+                  </div>
+                </section>
 
-              <!-- Enabled toggle -->
-              <div class="input-group enabled-row">
-                <label class="label-caps" style="margin:0">Rule Active</label>
-                <button
-                  class="toggle-switch"
-                  :class="{ on: form.enabled }"
-                  @click="form.enabled = !form.enabled"
-                  :aria-label="form.enabled ? 'Disable' : 'Enable'"
-                  type="button"
-                >
-                  <span class="toggle-thumb"/>
-                </button>
               </div>
             </div>
 
-            <!-- Modal footer -->
+            <!-- Footer -->
             <div class="modal-card-footer">
               <button @click="closeModal" class="btn-secondary">Cancel</button>
               <button @click="saveRule" class="btn-primary" :disabled="saving">
@@ -554,6 +595,8 @@ import { showToast } from '../utils/sharedState';
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
+const emit = defineEmits(["update-count"]);
+
 const authHeaders = () => ({
   Authorization: `Bearer ${secureStorage.getItem('token')}`,
 });
@@ -568,6 +611,38 @@ const history     = ref([]);
 const historyLoading = ref(false);
 const historySearch  = ref('');
 
+const activeSection = ref('basics');
+const editorBodyRef = ref(null);
+const editorSections = computed(() => [
+  { id: 'basics', step: '1', label: 'Basics', hint: 'Name and scope' },
+  { id: 'trigger', step: '2', label: 'Trigger', hint: 'What fires the alert' },
+  { id: 'destinations', step: '3', label: 'Destinations', hint: 'Where to send' },
+  { id: 'throttle', step: '4', label: 'Throttling', hint: 'Noise control' },
+]);
+
+function scrollToSection(id) {
+  activeSection.value = id;
+  const el = document.getElementById(`section-${id}`);
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+function syncActiveSection() {
+  const container = editorBodyRef.value;
+  if (!container) return;
+  const offset = container.scrollTop + 120;
+  const sections = editorSections.value;
+  for (let i = sections.length - 1; i >= 0; i -= 1) {
+    const section = sections[i];
+    const el = document.getElementById(`section-${section.id}`);
+    if (el && el.offsetTop <= offset) {
+      activeSection.value = section.id;
+      break;
+    }
+  }
+}
+
 const showModal       = ref(false);
 const showDeleteModal = ref(false);
 const showDetailsModal = ref(false);
@@ -579,12 +654,23 @@ const formError       = ref('');
 const emptyForm = () => ({
   name: '',
   container_pattern: '.*',
-  events: { die: false, oom: false, health_status: false },
+  events: { 
+    die: false, 
+    oom: false, 
+    health_status: false, 
+    audit: false,
+    vulnerability_found: false,
+    gitops_success: false,
+    gitops_failed: false,
+    backup_success: false,
+    backup_failed: false
+  },
   log_pattern: '',
   cooldown_seconds: 300,
-  channel_type: 'slack',
-  webhook_url: '',
-  enable_webhook: true,
+  enable_slack: false,
+  enable_msteams: false,
+  enable_gchat: false,
+  enable_generic_webhook: false,
   enable_email: false,
   email_address: '',
   metric_cpu_threshold: 0,
@@ -614,8 +700,12 @@ const loadRules = async () => {
   loading.value = true;
   try {
     const res = await apiFetch(`${apiBase}/rules`, { headers: authHeaders() });
-    if (res.ok) rules.value = await res.json();
-    else showToast('Error', 'Failed to load alert rules', 'error');
+    if (res.ok) {
+      rules.value = await res.json();
+      emit("update-count", rules.value.length);
+    } else {
+      showToast('Error', 'Failed to load alert rules', 'error');
+    }
   } catch (e) {
     showToast('Error', 'Network error loading rules', 'error');
   } finally {
@@ -660,14 +750,19 @@ const openEditModal = (rule) => {
       die: evList.includes('die'),
       oom: evList.includes('oom'),
       health_status: evList.includes('health_status'),
+      audit: evList.includes('audit'),
+      vulnerability_found: evList.includes('vulnerability_found'),
+      gitops_success: evList.includes('gitops_success'),
+      gitops_failed: evList.includes('gitops_failed'),
+      backup_success: evList.includes('backup_success'),
+      backup_failed: evList.includes('backup_failed'),
     },
     log_pattern: rule.log_pattern || '',
     cooldown_seconds: rule.cooldown_seconds ?? 300,
-    channel_type: rule.channel_type || 'slack',
-    webhook_url: (() => {
-      try { return JSON.parse(rule.channel_config || '{}').url || ''; } catch { return ''; }
-    })(),
-    enable_webhook: rule.enable_webhook !== false,
+    enable_slack: !!rule.enable_slack,
+    enable_msteams: !!rule.enable_msteams,
+    enable_gchat: !!rule.enable_gchat,
+    enable_generic_webhook: !!rule.enable_generic_webhook,
     enable_email: !!rule.enable_email,
     email_address: rule.email_address || '',
     metric_cpu_threshold: rule.metric_cpu_threshold || 0,
@@ -695,8 +790,8 @@ const validate = () => {
     if (!form.value.email_address.trim()) return 'Email address is required.';
     if (!form.value.email_address.includes('@')) return 'Please enter a valid email address.';
   }
-  if (!form.value.enable_webhook && !form.value.enable_email) {
-    return 'Select at least one delivery method (Webhook or Email).';
+  if (!form.value.enable_slack && !form.value.enable_msteams && !form.value.enable_gchat && !form.value.enable_generic_webhook && !form.value.enable_email) {
+    return 'Select at least one delivery method.';
   }
   const hasEvent = Object.values(form.value.events).some(Boolean);
   const hasLog   = !!form.value.log_pattern.trim();
@@ -716,9 +811,10 @@ const saveRule = async () => {
     body.append('event_types',       buildEventTypes());
     body.append('log_pattern',       form.value.log_pattern.trim());
     body.append('cooldown_seconds',  String(form.value.cooldown_seconds));
-    body.append('channel_type',      'generic_webhook');
-    body.append('channel_config',    '{}');
-    body.append('enable_webhook',    String(form.value.enable_webhook));
+    body.append('enable_slack',      String(form.value.enable_slack));
+    body.append('enable_msteams',    String(form.value.enable_msteams));
+    body.append('enable_gchat',      String(form.value.enable_gchat));
+    body.append('enable_generic_webhook', String(form.value.enable_generic_webhook));
     body.append('enable_email',      String(form.value.enable_email));
     body.append('email_address',     form.value.email_address.trim());
     body.append('metric_cpu_threshold', String(form.value.metric_cpu_threshold));
@@ -1248,4 +1344,339 @@ select.premium-input { cursor: pointer; }
   .modal-card { max-height: 95vh; }
   .modal-card-header, .modal-card-body, .modal-card-footer { padding-left: 1.25rem; padding-right: 1.25rem; }
 }
+
+/* Editor modal */
+.editor-overlay {
+  padding: 1rem;
+}
+
+.alert-editor {
+  width: min(920px, 100%);
+  max-height: min(92vh, 960px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  overflow: hidden;
+}
+
+.modal-card-header {
+  padding: 1.35rem 1.5rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.header-content {
+  display: flex;
+  gap: 0.85rem;
+  align-items: flex-start;
+  min-width: 0;
+  flex: 1;
+}
+
+.header-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.header-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.header-icon {
+  width: 44px;
+  height: 44px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.modal-title {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: var(--text-main);
+}
+
+.modal-subtitle {
+  margin: 0.2rem 0 0;
+  font-size: 0.82rem;
+  color: var(--text-mute);
+  line-height: 1.45;
+}
+
+.close-btn {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-input);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.close-btn:hover {
+  color: var(--text-main);
+  border-color: var(--border-active);
+  background: var(--bg-subtle);
+}
+
+.editor-shell {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.editor-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 1rem;
+  border-right: 1px solid var(--border);
+  background: var(--bg-subtle);
+}
+
+.editor-nav-btn {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  width: 100%;
+  padding: 0.7rem 0.75rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.editor-nav-btn:hover {
+  background: var(--bg-card);
+  border-color: var(--border);
+}
+
+.editor-nav-btn.active {
+  background: var(--bg-card);
+  border-color: rgba(var(--accent-rgb), 0.35);
+  box-shadow: 0 8px 20px -14px var(--shadow);
+}
+
+.nav-step {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  font-size: 0.68rem;
+  font-weight: 800;
+  color: var(--text-mute);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.editor-nav-btn.active .nav-step {
+  background: var(--accent);
+  border-color: transparent;
+  color: #fff;
+}
+
+.nav-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.nav-copy strong {
+  font-size: 0.8rem;
+  font-weight: 800;
+  color: var(--text-main);
+}
+
+.nav-copy span {
+  font-size: 0.72rem;
+  color: var(--text-mute);
+  line-height: 1.35;
+}
+
+.editor-body {
+  padding: 1.25rem 1.5rem 1.5rem;
+  overflow-y: auto;
+  min-height: 0;
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+  scroll-behavior: smooth;
+}
+
+.editor-section {
+  display: grid;
+  gap: 0.9rem;
+  padding: 1rem 1.05rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  scroll-margin-top: 0.75rem;
+}
+
+.section-head h4 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: var(--text-main);
+}
+
+.section-head p {
+  margin: 0.2rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text-mute);
+  line-height: 1.45;
+}
+
+.form-grid {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.form-grid.dual {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.premium-input {
+  width: 100%;
+  padding: 0.75rem 0.95rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text-main);
+  font-size: 0.86rem;
+  font-weight: 600;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.premium-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.12);
+  background: var(--bg-subtle);
+}
+
+.premium-input.mono {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+}
+
+.choice-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.75rem 0.85rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+}
+
+.choice-chip strong {
+  font-size: 0.82rem;
+  font-weight: 800;
+  color: var(--text-main);
+}
+
+.choice-chip span {
+  font-size: 0.72rem;
+  color: var(--text-mute);
+}
+
+.choice-chip.info.active {
+  border-color: rgba(8, 145, 178, 0.45);
+  background: rgba(8, 145, 178, 0.1);
+}
+
+.choice-chip.warning.active {
+  border-color: rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.choice-chip.critical.active {
+  border-color: rgba(239, 68, 68, 0.45);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.premium-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.toggle-rail {
+  width: 36px;
+  height: 20px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  position: relative;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  flex-shrink: 0;
+}
+
+.premium-toggle.active .toggle-rail {
+  background: var(--success);
+  border-color: var(--success);
+  box-shadow: 0 0 12px rgba(16, 185, 129, 0.2);
+}
+
+.toggle-handle {
+  width: 14px;
+  height: 14px;
+  background: #fff;
+  border-radius: 50%;
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.premium-toggle.active .toggle-handle {
+  transform: translateX(16px);
+}
+
+.status-label {
+  font-size: 0.72rem;
+  font-weight: 800;
+  color: var(--text-mute);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  min-width: 1.5rem;
+}
+
+.premium-toggle.active .status-label {
+  color: var(--success);
+}
+
 </style>

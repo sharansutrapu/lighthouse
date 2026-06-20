@@ -36,7 +36,7 @@ func processProjects() {
 		err := processProject(p)
 		if err != nil {
 			log.Printf("[GitOps] Project %s sync failed: %v", p.Name, err)
-			alerts.Global.TriggerSystemAlert("system:gitops_sync_failed", fmt.Sprintf("GitOps Project %s sync failed: %v", p.Name, err))
+			alerts.Global.TriggerSystemAlert("gitops_failed", fmt.Sprintf("GitOps Project %s sync failed: %v", p.Name, err))
 		}
 	}
 }
@@ -163,5 +163,6 @@ func processProject(p db.GitProject) error {
 		"last_commit": commitSHA,
 	})
 	log.Printf("[GitOps] Project %s deployed successfully", p.Name)
+	alerts.Global.TriggerSystemAlert("gitops_success", fmt.Sprintf("GitOps Project %s successfully deployed commit %s", p.Name, commitSHA))
 	return nil
 }

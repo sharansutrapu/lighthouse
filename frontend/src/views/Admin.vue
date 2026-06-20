@@ -785,7 +785,7 @@ const userManagerRef   = ref(null);
 const auditManagerRef  = ref(null);
 const alertsManagerRef = ref(null);
 const teamManagerRef   = ref(null);
-const token            = secureStorage.getItem('token');
+const loading          = ref(false);
 const settingsSaving   = ref(false);
 const archivalTesting  = ref(false);
 
@@ -830,17 +830,24 @@ const isAdmin = computed(() => sharedState.currentUser?.is_admin === true);
 
 onMounted(async () => {
   if (isAdmin.value) {
-    try {
-      const res = await apiFetch('/api/admin/alerts/rules', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const rules = await res.json();
-        alertRulesCount.value = rules.length;
+    const fetchAlertRulesCount = async () => {
+      try {
+        const currentToken = secureStorage.getItem('token');
+        if (!currentToken) return;
+        const res = await apiFetch('/api/admin/alerts/rules', {
+          headers: { Authorization: `Bearer ${currentToken}` }
+        });
+        if (res.ok) {
+          const rules = await res.json();
+          alertRulesCount.value = rules ? rules.length : 0;
+        } else {
+          alertRulesCount.value = 0;
+        }
+      } catch (e) {
+        console.error('Failed to fetch alert rules count:', e);
       }
-    } catch (e) {
-      console.error('Failed to fetch alert rules count:', e);
-    }
+    };
+    fetchAlertRulesCount();
 
     const fetchSettings = async () => {
       try {

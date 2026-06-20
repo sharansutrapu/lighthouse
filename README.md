@@ -42,15 +42,17 @@ Manage your Docker infrastructure using modern GitOps practices:
 ### 🛡️ Vulnerability Scanning (Trivy)
 Keep your infrastructure secure with native image scanning:
 - **Trivy Integration:** Built-in wrapper for `aquasec/trivy`, the industry standard for container security.
-- **Instant Scans:** Scan any running container's image directly from the Container Details dashboard with a single click.
+- **Instant Scans:** Scan any running container's image directly from the Container Details dashboard with a single click, or **Scan All** containers at once.
 - **Detailed Reporting:** View comprehensive CVE reports, severity badges (Critical, High, Medium, Low), and identify exactly which packages are vulnerable without leaving the UI.
 
 ### 🚨 Alerting & Webhooks
 Never miss a critical event with the highly customizable Alerting Engine:
+- **Extensive Rules:** Comes with 11 default alert rules covering CPU/Memory spikes, container crashes, OOM kills, and more.
 - **Resource Thresholds:** Set specific CPU and Memory limits (e.g., alert if CPU > 80% for 5 minutes).
 - **Log Pattern Matching:** Trigger alerts when specific Regex patterns or error strings appear in a container's log stream.
+- **System & Feature Events:** Trigger notifications on critical platform events like container crashes, OOM kills, Vulnerability Scan results, GitOps deployment status, and database Backup results.
 - **Targeted Monitoring:** Apply rules globally, or restrict them to specific containers using Regex names (e.g., `^prod-.*$`).
-- **Flexible Dispatch:** Instantly route notifications to Slack, Discord, or any custom Webhook endpoint.
+- **Flexible Dispatch:** Instantly route notifications to Slack, Discord, MS Teams, Email, or any custom Webhook endpoint.
 - **Spam Prevention:** Built-in cooldown mechanisms ensure your channels aren't flooded during persistent issues.
 
 ### 💾 Automated Cloud Backups
@@ -75,8 +77,10 @@ Unparalleled visibility and control over your running containers:
 
 ### 🔐 Advanced RBAC & Audit Logs
 Enterprise-grade security controls to keep your team and infrastructure safe:
+- **Multi-Team Management:** Organize users into logical Teams and map multiple Teams to environments, users, or projects seamlessly.
 - **Granular Permissions:** Assign specific operational rights to users, including `Start`, `Stop`, `Restart`, `Delete`, and `Shell` access.
 - **Regex-Based Visibility:** Restrict which containers a user can see or manage using wildcards (`backend-*`) or full regular expressions (`^prod-.*$`).
+- **BOLA Protection:** Robust Broken Object Level Authorization (BOLA) defenses ensure that users can only access endpoints and actions authorized for their assigned containers and GitOps projects.
 - **Complete Audit Trails:** Every administrative action, shell session, and container operation is permanently recorded in the Audit Logs, tracking exactly *who* did *what* and *when*.
 - **Single Sign-On (SSO):** Authenticate using Google OAuth securely.
 

@@ -303,13 +303,18 @@ const {
 } = useContainers();
 
 const displayContainers = computed(() => {
+  let list = filteredContainers.value;
   if (props.stateFilter === 'running') {
-    return filteredContainers.value.filter((c) => c.state === 'running');
+    list = list.filter((c) => c.state === 'running');
+  } else if (props.stateFilter === 'stopped') {
+    list = list.filter((c) => c.state !== 'running');
   }
-  if (props.stateFilter === 'stopped') {
-    return filteredContainers.value.filter((c) => c.state !== 'running');
-  }
-  return filteredContainers.value;
+  
+  return [...list].sort((a, b) => {
+    if (a.is_platform && !b.is_platform) return -1;
+    if (!a.is_platform && b.is_platform) return 1;
+    return 0;
+  });
 });
 </script>
 

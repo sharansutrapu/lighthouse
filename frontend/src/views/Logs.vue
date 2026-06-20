@@ -498,7 +498,7 @@ watch(() => route.query, syncStateFromUrl);
 
 /* SIDEBAR UI FIXES */
 .resources-sidebar {
-  width: 300px;
+  width: 380px;
   height: 100%;
   flex-shrink: 0;
   display: flex;
@@ -520,7 +520,7 @@ watch(() => route.query, syncStateFromUrl);
   align-items: center;
   gap: 0.75rem;
   text-decoration: none;
-  width: 280px;
+  width: 100%;
 }
 
 .logo-img-sidebar {
@@ -598,6 +598,10 @@ watch(() => route.query, syncStateFromUrl);
   transition: border-color 0.2s, background 0.2s, transform 0.2s;
   position: relative;
   overflow: hidden;
+  min-width: 0;
+  width: 100%;
+  flex-shrink: 0;
+  box-sizing: border-box;
 }
 
 .resource-card:hover {
@@ -678,9 +682,9 @@ watch(() => route.query, syncStateFromUrl);
 .card-info {
   display: flex;
   flex-direction: column;
-  overflow: hidden;
   min-width: 0;
   flex: 1;
+  box-sizing: border-box;
 }
 
 .card-name {
@@ -691,7 +695,8 @@ watch(() => route.query, syncStateFromUrl);
   overflow: hidden !important;
   text-overflow: ellipsis !important;
   display: block;
-  max-width: 100%;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .card-image-tag {
@@ -701,8 +706,11 @@ watch(() => route.query, syncStateFromUrl);
   white-space: nowrap !important;
   overflow: hidden !important;
   text-overflow: ellipsis !important;
-  max-width: 100%;
+  width: 100%;
   display: block;
+  line-height: 1.4;
+  padding-bottom: 2px;
+  box-sizing: border-box;
 }
 
 /* SIDEBAR CONTROLS */

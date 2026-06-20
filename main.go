@@ -41,29 +41,30 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 
-	"github.com/moby/moby/client"
 	"github.com/moby/moby/api/pkg/stdcopy"
+	"github.com/moby/moby/client"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
 	"github.com/shirou/gopsutil/v3/mem"
 	"github.com/shirou/gopsutil/v3/net"
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/time/rate"
 )
 
 var (
-	SECRET_KEY = []byte("secret-key-change-this")
+	SECRET_KEY        []byte // set by initSecretKey() from SECRET_KEY env var; never hardcoded
 	maxPasswordLength = 128
-	upgrader   = websocket.Upgrader{
+	upgrader          = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool { return true },
 	}
-	CanStart     bool
-	CanStop      bool
-	CanRestart   bool
-	CanDelete    bool
-	AllowShell bool
+	CanStart         bool
+	CanStop          bool
+	CanRestart       bool
+	CanDelete        bool
+	AllowShell       bool
 	pendingAuthCodes sync.Map
-	LighthouseMode string
-	NodeID string
+	LighthouseMode   string
+	NodeID           string
 )
 
 func generateSecureCode() string {
@@ -89,10 +90,10 @@ type Container struct {
 }
 
 type UserClaims struct {
-	ID                 int    `json:"id"`
-	Username           string `json:"username"`
-	IsAdmin            bool   `json:"is_admin"`
-	IsRestrictedAccess bool   `json:"is_restricted_access"`
+	ID                   int    `json:"id"`
+	Username             string `json:"username"`
+	IsAdmin              bool   `json:"is_admin"`
+	IsRestrictedAccess   bool   `json:"is_restricted_access"`
 	CanStart             bool   `json:"can_start"`
 	CanStop              bool   `json:"can_stop"`
 	CanRestart           bool   `json:"can_restart"`
@@ -103,11 +104,11 @@ type UserClaims struct {
 	CanCreateDeployments bool   `json:"can_create_deployments"`
 	CanEditDeployments   bool   `json:"can_edit_deployments"`
 	CanDeleteDeployments bool   `json:"can_delete_deployments"`
-	AllowedContainers  string `json:"allowed_containers"`
-	IsActive           bool   `json:"is_active"`
-	PasswordChanged    bool   `json:"password_changed"`
-	PasswordVersion    int    `json:"password_version"`
-	TokenType          string `json:"token_type,omitempty"`
+	AllowedContainers    string `json:"allowed_containers"`
+	IsActive             bool   `json:"is_active"`
+	PasswordChanged      bool   `json:"password_changed"`
+	PasswordVersion      int    `json:"password_version"`
+	TokenType            string `json:"token_type,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -138,6 +139,10 @@ func logAudit(userID int, username, action, resource, status, message string) {
 	if err := db.GormDB.Create(&entry).Error; err != nil {
 		log.Printf("Failed to write audit log: %v", err)
 	}
+
+	if db.OnAuditLogged != nil {
+		db.OnAuditLogged(action, resource, status, message)
+	}
 }
 
 func getAuthorizedPatterns(userID int) []string {
@@ -146,7 +151,7 @@ func getAuthorizedPatterns(userID int) []string {
 		return []string{"^$"}
 	}
 	isRestricted := user.IsRestrictedAccess || (user.Team != nil)
-	
+
 	allowedContainers := user.AllowedContainers
 	if user.Team != nil && user.Team.AllowedContainers != "" {
 		if allowedContainers == "" || allowedContainers == ".*" {
@@ -271,6 +276,7 @@ func main() {
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
 	e.Use(securityHeadersMiddleware())
+	e.Use(middleware.RateLimiter(middleware.NewRateLimiterMemoryStore(rate.Limit(50))))
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
 		AllowOriginFunc: func(origin string) (bool, error) {
 			return corsOriginAllowed(origin), nil
@@ -302,13 +308,13 @@ func main() {
 	// Start Alerting Engine
 	alertMgr := alerts.NewAlertManager(cli)
 	alertMgr.Start()
-	
+
 	// Start background backup scheduler
 	backup.InitScheduler()
-	
+
 	// Start background archival scheduler
 	archival.InitScheduler()
-	
+
 	gitops.StartManager()
 	defer alertMgr.Stop()
 
@@ -318,10 +324,10 @@ func main() {
 		if hubURL == "" || hubToken == "" {
 			log.Fatalf("Spoke mode requires HUB_URL and HUB_TOKEN")
 		}
-		
+
 		// In spoke mode, the API server doesn't run, we just connect to hub and wait
 		log.Printf("Starting Spoke mode connected to %s", hubURL)
-		
+
 		cluster.StartSpokeAgent(hubURL, hubToken, NodeID, cli)
 		return
 	}
@@ -350,7 +356,7 @@ func main() {
 		if inviteToken != "" {
 			state = state + ":" + inviteToken
 		}
-		
+
 		// Set cookie for state validation
 		c.SetCookie(&http.Cookie{
 			Name:     "oauth_state",
@@ -415,7 +421,7 @@ func main() {
 		if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
 			return c.Redirect(http.StatusTemporaryRedirect, "/?error="+url.QueryEscape("Failed to parse user info from Google."))
 		}
-		
+
 		nameToUse := userInfo.Name
 		if nameToUse == "" {
 			nameToUse = userInfo.Email
@@ -424,7 +430,7 @@ func main() {
 		// Look up user by email
 		var user db.User
 		err = db.GormDB.Preload("Team").Where("email = ?", userInfo.Email).First(&user).Error
-		
+
 		if err == gorm.ErrRecordNotFound {
 			// Check if this is the first user (bootstrap Admin)
 			var count int64
@@ -449,7 +455,7 @@ func main() {
 				IsRestrictedAccess: !isFirstUser,
 			}
 			err = db.GormDB.Create(&newUser).Error
-			
+
 			if err == nil {
 				user = newUser
 			} else {
@@ -525,23 +531,23 @@ func main() {
 		}
 
 		claims := &UserClaims{
-			ID:                 id,
-			Username:           userInfo.Email, // Store email as username
-			IsAdmin:            user.IsAdmin,
-			CanStart:           canStart,
-			CanStop:            canStop,
-			CanRestart:         canRestart,
-			CanDelete:          canDelete,
-			CanShell:           canShell,
-			CanViewSystemHealth: canViewHealth,
-			CanRunScans:        canRunScans,
+			ID:                   id,
+			Username:             userInfo.Email, // Store email as username
+			IsAdmin:              user.IsAdmin,
+			CanStart:             canStart,
+			CanStop:              canStop,
+			CanRestart:           canRestart,
+			CanDelete:            canDelete,
+			CanShell:             canShell,
+			CanViewSystemHealth:  canViewHealth,
+			CanRunScans:          canRunScans,
 			CanCreateDeployments: canCreateDep,
 			CanEditDeployments:   canEditDep,
 			CanDeleteDeployments: canDeleteDep,
-			IsRestrictedAccess: user.IsRestrictedAccess,
-			AllowedContainers:  allowedContainers,
-			PasswordVersion:    user.PasswordVersion,
-			IsActive:           isActive,
+			IsRestrictedAccess:   user.IsRestrictedAccess,
+			AllowedContainers:    allowedContainers,
+			PasswordVersion:      user.PasswordVersion,
+			IsActive:             isActive,
 		}
 
 		accessToken, refreshToken, err := issueTokenPair(claims)
@@ -561,7 +567,7 @@ func main() {
 			time.Sleep(60 * time.Second)
 			pendingAuthCodes.Delete(c)
 		}(code)
-		
+
 		return c.Redirect(http.StatusTemporaryRedirect, fmt.Sprintf("/?code=%s", code))
 	})
 	e.POST("/api/token/exchange", func(c echo.Context) error {
@@ -630,29 +636,30 @@ func main() {
 		}
 
 		claims := &UserClaims{
-			ID:                 int(user.ID),
-			Username:           username,
-			IsAdmin:            user.IsAdmin,
-			PasswordChanged:    user.PasswordChanged,
-			CanStart:           canStart,
-			CanStop:            canStop,
-			CanRestart:         canRestart,
-			CanDelete:          canDelete,
-			CanShell:           canShell,
-			CanViewSystemHealth: canViewHealth,
-			CanRunScans:        canRunScans,
+			ID:                   int(user.ID),
+			Username:             username,
+			IsAdmin:              user.IsAdmin,
+			PasswordChanged:      user.PasswordChanged,
+			CanStart:             canStart,
+			CanStop:              canStop,
+			CanRestart:           canRestart,
+			CanDelete:            canDelete,
+			CanShell:             canShell,
+			CanViewSystemHealth:  canViewHealth,
+			CanRunScans:          canRunScans,
 			CanCreateDeployments: canCreateDep,
 			CanEditDeployments:   canEditDep,
 			CanDeleteDeployments: canDeleteDep,
-			IsRestrictedAccess: user.IsRestrictedAccess,
-			AllowedContainers:  allowedContainers,
-			IsActive:           user.IsActive,
-			PasswordVersion:    user.PasswordVersion,
+			IsRestrictedAccess:   user.IsRestrictedAccess,
+			AllowedContainers:    allowedContainers,
+			IsActive:             user.IsActive,
+			PasswordVersion:      user.PasswordVersion,
 		}
 
 		accessToken, refreshToken, err := issueTokenPair(claims)
 		if err != nil {
-			return err
+			log.Printf("Failed to issue token pair: %v", err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to generate authentication tokens"})
 		}
 
 		return c.JSON(http.StatusOK, map[string]interface{}{
@@ -684,7 +691,8 @@ func main() {
 
 		accessToken, newRefreshToken, err := issueTokenPair(claims)
 		if err != nil {
-			return err
+			log.Printf("Failed to issue refreshed token pair: %v", err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to generate authentication tokens"})
 		}
 
 		return c.JSON(http.StatusOK, map[string]interface{}{
@@ -726,7 +734,6 @@ func main() {
 				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Invalid token"})
 			}
 
-
 			if err := refreshClaimsFromDB(claims); err != nil {
 				switch errMsg := err.Error(); errMsg {
 				case "account deactivated":
@@ -760,6 +767,10 @@ func main() {
 		}
 	})
 
+	RegisterImageRoutes(r, cli)
+	RegisterVolumeRoutes(r, cli)
+	RegisterNetworkRoutes(r, cli)
+
 	r.GET("/containers", func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
 		user := token.Claims.(*UserClaims)
@@ -771,11 +782,12 @@ func main() {
 
 		res, err := cli.ContainerList(context.Background(), client.ContainerListOptions{All: true, Size: true})
 		if err != nil {
-			return err
+			log.Printf("ContainerList error: %v", err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to list containers"})
 		}
 
 		containers := extractContainers(res.Items)
-		
+
 		if LighthouseMode == "hub" {
 			cluster.GlobalHub.RLock()
 			for nodeID, spContainers := range cluster.GlobalHub.SpokeContainers {
@@ -793,7 +805,7 @@ func main() {
 		}
 		log.Printf("User %d (DB Admin: %v) authorized patterns: %v", user.ID, dbIsAdmin, patterns)
 
-		var list []Container
+		var visibleContainers []map[string]interface{}
 		for _, ctr := range containers {
 			name := "unknown"
 			names, _ := ctr["Names"].([]interface{})
@@ -802,26 +814,18 @@ func main() {
 			}
 
 			image, _ := ctr["Image"].(string)
-			state, _ := ctr["State"].(string)
 
-			// Handle both "Id" and "ID"
 			id, ok := ctr["ID"].(string)
 			if !ok {
 				id, _ = ctr["Id"].(string)
 			}
-
 			if id == "" {
-				continue // Skip invalid containers
+				continue
 			}
 
 			isPlatform := isLightHouseSelfContainer(name, image)
 			if !isPlatform && isExcludedContainer(name, image) {
-				continue // skip user-defined EXCLUDE_CONTAINERS, but always show platform
-			}
-
-			shortID := id
-			if len(id) > 12 {
-				shortID = id[:12]
+				continue
 			}
 
 			visible := dbIsAdmin
@@ -835,10 +839,38 @@ func main() {
 			}
 
 			if visible {
-				createdVal, _ := ctr["Created"].(float64)
-				statusVal, _ := ctr["Status"].(string)
+				ctr["_parsed_name"] = name
+				ctr["_parsed_image"] = image
+				ctr["_parsed_id"] = id
+				ctr["_is_platform"] = isPlatform
+				visibleContainers = append(visibleContainers, ctr)
+			}
+		}
 
-				// Fetch detailed limits
+		var list []Container
+		var listMu sync.Mutex
+		var wg sync.WaitGroup
+
+		for _, ctr := range visibleContainers {
+			wg.Add(1)
+			go func(c map[string]interface{}) {
+				defer wg.Done()
+
+				id := c["_parsed_id"].(string)
+				name := c["_parsed_name"].(string)
+				image := c["_parsed_image"].(string)
+				isPlatform := c["_is_platform"].(bool)
+
+				shortID := id
+				if len(id) > 12 {
+					shortID = id[:12]
+				}
+
+				state, _ := c["State"].(string)
+				createdVal, _ := c["Created"].(float64)
+				statusVal, _ := c["Status"].(string)
+
+				// Concurrent Inspect
 				inspect, _ := cli.ContainerInspect(context.Background(), id, client.ContainerInspectOptions{})
 				cpuLimit := 0.0
 				memLimit := int64(0)
@@ -849,7 +881,7 @@ func main() {
 					memLimit = inspect.Container.HostConfig.Memory
 				}
 
-				// Fetch latest stats snapshot
+				// Concurrent DB Fetch
 				var lastCPU float64
 				var lastMem float64
 				var stat db.Stat
@@ -857,20 +889,20 @@ func main() {
 				lastCPU = stat.CPU
 				lastMem = float64(stat.Memory)
 
-				sizeRwVal, _ := ctr["SizeRw"].(int64)
-				sizeRootFsVal, _ := ctr["SizeRootFs"].(int64)
-				// JSON unmarshaling might yield float64 for sizes
+				sizeRwVal, _ := c["SizeRw"].(int64)
+				sizeRootFsVal, _ := c["SizeRootFs"].(int64)
 				if sizeRwVal == 0 {
-					if f, ok := ctr["SizeRw"].(float64); ok {
+					if f, ok := c["SizeRw"].(float64); ok {
 						sizeRwVal = int64(f)
 					}
 				}
 				if sizeRootFsVal == 0 {
-					if f, ok := ctr["SizeRootFs"].(float64); ok {
+					if f, ok := c["SizeRootFs"].(float64); ok {
 						sizeRootFsVal = int64(f)
 					}
 				}
 
+				listMu.Lock()
 				list = append(list, Container{
 					ID:         shortID,
 					Name:       name,
@@ -886,13 +918,20 @@ func main() {
 					SizeRootFs: sizeRootFsVal,
 					IsPlatform: isPlatform,
 				})
-			}
+				listMu.Unlock()
+			}(ctr)
 		}
+
+		wg.Wait()
+
 		return c.JSON(http.StatusOK, list)
 	})
 
 	r.GET("/containers/:id/inspect", func(c echo.Context) error {
 		id := c.Param("id")
+		if !isValidContainerID(id) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		}
 		token := c.Get("user").(*jwt.Token)
 		userClaims := token.Claims.(*UserClaims)
 
@@ -901,7 +940,7 @@ func main() {
 		db.GormDB.Select("is_admin").First(&u, userClaims.ID)
 		dbIsAdmin := u.IsAdmin
 
-		container, err := cli.ContainerInspect(context.Background(), id, client.ContainerInspectOptions{})
+		container, err := cli.ContainerInspect(context.Background(), id, client.ContainerInspectOptions{Size: true})
 		if err != nil {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "Container not found"})
 		}
@@ -942,6 +981,9 @@ func main() {
 
 	r.POST("/containers/:id/action", func(c echo.Context) error {
 		id := c.Param("id")
+		if !isValidContainerID(id) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		}
 		action := c.FormValue("action")
 		token := c.Get("user").(*jwt.Token)
 		userClaims := token.Claims.(*UserClaims)
@@ -972,7 +1014,7 @@ func main() {
 			if action == "stop" || action == "remove" {
 				return c.JSON(http.StatusForbidden, map[string]string{"error": "Cannot stop or remove the LightHouse platform container."})
 			}
-		} else if inspectContainerExcluded(target.Container.Name, targetImage) {
+		} else if inspectContainerExcluded(userClaims.IsAdmin, target.Container.Name, targetImage) {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "Target container not found."})
 		}
 
@@ -1008,87 +1050,87 @@ func main() {
 		timeout := 60
 		switch action {
 		case "start":
-		// Check if it belongs to a spoke
-		if LighthouseMode == "hub" {
-			nodeID := ""
-			cluster.GlobalHub.RLock()
-			for nID, spContainers := range cluster.GlobalHub.SpokeContainers {
-				for _, ctr := range spContainers {
-					cID, _ := ctr["ID"].(string)
-					cId, _ := ctr["Id"].(string)
-					if cID == id || cId == id {
-						nodeID = nID
-						break
+			// Check if it belongs to a spoke
+			if LighthouseMode == "hub" {
+				nodeID := ""
+				cluster.GlobalHub.RLock()
+				for nID, spContainers := range cluster.GlobalHub.SpokeContainers {
+					for _, ctr := range spContainers {
+						cID, _ := ctr["ID"].(string)
+						cId, _ := ctr["Id"].(string)
+						if cID == id || cId == id {
+							nodeID = nID
+							break
+						}
 					}
 				}
-			}
-			cluster.GlobalHub.RUnlock()
+				cluster.GlobalHub.RUnlock()
 
-			if nodeID != "" {
-				err = cluster.SendCommandToSpoke(nodeID, "start", id)
+				if nodeID != "" {
+					err = cluster.SendCommandToSpoke(nodeID, "start", id)
+				} else {
+					_, err = cli.ContainerStart(ctx, id, client.ContainerStartOptions{})
+				}
 			} else {
 				_, err = cli.ContainerStart(ctx, id, client.ContainerStartOptions{})
 			}
-		} else {
-			_, err = cli.ContainerStart(ctx, id, client.ContainerStartOptions{})
-		}
 		case "stop":
-		// Check if it belongs to a spoke
-		if LighthouseMode == "hub" {
-			nodeID := ""
-			cluster.GlobalHub.RLock()
-			for nID, spContainers := range cluster.GlobalHub.SpokeContainers {
-				for _, ctr := range spContainers {
-					cID, _ := ctr["ID"].(string)
-					cId, _ := ctr["Id"].(string)
-					if cID == id || cId == id {
-						nodeID = nID
-						break
+			// Check if it belongs to a spoke
+			if LighthouseMode == "hub" {
+				nodeID := ""
+				cluster.GlobalHub.RLock()
+				for nID, spContainers := range cluster.GlobalHub.SpokeContainers {
+					for _, ctr := range spContainers {
+						cID, _ := ctr["ID"].(string)
+						cId, _ := ctr["Id"].(string)
+						if cID == id || cId == id {
+							nodeID = nID
+							break
+						}
 					}
 				}
-			}
-			cluster.GlobalHub.RUnlock()
+				cluster.GlobalHub.RUnlock()
 
-			if nodeID != "" {
-				err = cluster.SendCommandToSpoke(nodeID, "stop", id)
+				if nodeID != "" {
+					err = cluster.SendCommandToSpoke(nodeID, "stop", id)
+				} else {
+					_, err = cli.ContainerStop(ctx, id, client.ContainerStopOptions{Timeout: &timeout})
+				}
 			} else {
 				_, err = cli.ContainerStop(ctx, id, client.ContainerStopOptions{Timeout: &timeout})
 			}
-		} else {
-			_, err = cli.ContainerStop(ctx, id, client.ContainerStopOptions{Timeout: &timeout})
-		}
 		case "restart":
 			_, err = cli.ContainerRestart(ctx, id, client.ContainerRestartOptions{Timeout: &timeout})
 		case "remove":
-		// Check if it belongs to a spoke
-		if LighthouseMode == "hub" {
-			nodeID := ""
-			cluster.GlobalHub.RLock()
-			for nID, spContainers := range cluster.GlobalHub.SpokeContainers {
-				for _, ctr := range spContainers {
-					cID, _ := ctr["ID"].(string)
-					cId, _ := ctr["Id"].(string)
-					if cID == id || cId == id {
-						nodeID = nID
-						break
+			// Check if it belongs to a spoke
+			if LighthouseMode == "hub" {
+				nodeID := ""
+				cluster.GlobalHub.RLock()
+				for nID, spContainers := range cluster.GlobalHub.SpokeContainers {
+					for _, ctr := range spContainers {
+						cID, _ := ctr["ID"].(string)
+						cId, _ := ctr["Id"].(string)
+						if cID == id || cId == id {
+							nodeID = nID
+							break
+						}
 					}
 				}
-			}
-			cluster.GlobalHub.RUnlock()
+				cluster.GlobalHub.RUnlock()
 
-			if nodeID != "" {
-				err = cluster.SendCommandToSpoke(nodeID, "delete", id)
+				if nodeID != "" {
+					err = cluster.SendCommandToSpoke(nodeID, "delete", id)
+				} else {
+					_, err = cli.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true})
+				}
 			} else {
 				_, err = cli.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true})
 			}
-		} else {
-			_, err = cli.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true})
-		}
 		}
 
 		if err != nil {
 			logAudit(userClaims.ID, userClaims.Username, action, id, "Error", "System Error: "+err.Error())
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "System Error: " + err.Error()})
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to execute container action"})
 		}
 
 		logAudit(userClaims.ID, userClaims.Username, action, id, "Success", "Action executed successfully.")
@@ -1101,8 +1143,11 @@ func main() {
 		if !userClaims.IsAdmin && !userClaims.CanRunScans {
 			return c.JSON(http.StatusForbidden, map[string]string{"error": "Access Denied"})
 		}
-		
+
 		id := c.Param("id")
+		if !isValidContainerID(id) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		}
 
 		if LighthouseMode == "hub" {
 			nodeID := ""
@@ -1121,6 +1166,7 @@ func main() {
 
 			if nodeID != "" {
 				cluster.SendCommandToSpoke(nodeID, "scan", id)
+				logAudit(userClaims.ID, userClaims.Username, "SCAN", "Container:"+id, "Success", "Triggered vulnerability scan on Spoke node")
 				return c.JSON(http.StatusOK, map[string]string{"status": "scanning", "message": "Scan dispatched to Spoke node"})
 			}
 		}
@@ -1154,11 +1200,12 @@ func main() {
 
 			// Check for critical vulnerabilities
 			if strings.Contains(string(b), `"Severity":"CRITICAL"`) || strings.Contains(string(b), `"Severity": "CRITICAL"`) {
-				alerts.Global.TriggerSystemAlert("system:critical_vulnerability", fmt.Sprintf("CRITICAL vulnerabilities found during scan of image: %s", imageName))
+				alerts.Global.TriggerContainerEvent("vulnerability_found", strings.TrimPrefix(ctr.Container.Name, "/"), fmt.Sprintf("CRITICAL vulnerabilities found during scan of image: %s", imageName))
 			}
 			log.Printf("Scan complete for %s", imageName)
 		}()
 
+		logAudit(userClaims.ID, userClaims.Username, "SCAN", "Container:"+id, "Success", fmt.Sprintf("Triggered vulnerability scan for container %s (image: %s)", id, imageParam))
 		return c.JSON(http.StatusOK, map[string]string{"status": "scanning", "message": "Scan started in background"})
 	})
 
@@ -1176,6 +1223,9 @@ func main() {
 
 	r.GET("/containers/:id/logs/download", func(c echo.Context) error {
 		id := c.Param("id")
+		if !isValidContainerID(id) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		}
 		token := c.Get("user").(*jwt.Token)
 		userClaims := token.Claims.(*UserClaims)
 
@@ -1187,7 +1237,7 @@ func main() {
 		if container.Container.Config != nil {
 			downloadImage = container.Container.Config.Image
 		}
-		if inspectContainerExcluded(container.Container.Name, downloadImage) {
+		if inspectContainerExcluded(userClaims.IsAdmin, container.Container.Name, downloadImage) {
 			return c.NoContent(http.StatusNotFound)
 		}
 		containerName := strings.TrimPrefix(container.Container.Name, "/")
@@ -1215,7 +1265,8 @@ func main() {
 
 		out, err := cli.ContainerLogs(context.Background(), id, options)
 		if err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch logs: " + err.Error()})
+			log.Printf("Failed to fetch container logs for %s: %v", id, err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch logs"})
 		}
 		defer out.Close()
 
@@ -1231,6 +1282,9 @@ func main() {
 
 	r.GET("/containers/:id/logs", func(c echo.Context) error {
 		id := c.Param("id")
+		if !isValidContainerID(id) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		}
 		untilStr := c.QueryParam("until")
 
 		token := c.Get("user").(*jwt.Token)
@@ -1244,7 +1298,7 @@ func main() {
 		if container.Container.Config != nil {
 			logsImage = container.Container.Config.Image
 		}
-		if inspectContainerExcluded(container.Container.Name, logsImage) {
+		if inspectContainerExcluded(userClaims.IsAdmin, container.Container.Name, logsImage) {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "Container not found"})
 		}
 
@@ -1272,7 +1326,8 @@ func main() {
 
 		out, err := cli.ContainerLogs(context.Background(), id, options)
 		if err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			log.Printf("Failed to fetch container logs: %v", err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch logs"})
 		}
 		defer out.Close()
 
@@ -1348,6 +1403,9 @@ func main() {
 
 	r.GET("/containers/:id/logs/count", func(c echo.Context) error {
 		id := c.Param("id")
+		if !isValidContainerID(id) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		}
 		token := c.Get("user").(*jwt.Token)
 		userClaims := token.Claims.(*UserClaims)
 
@@ -1359,7 +1417,7 @@ func main() {
 		if container.Container.Config != nil {
 			countImage = container.Container.Config.Image
 		}
-		if inspectContainerExcluded(container.Container.Name, countImage) {
+		if inspectContainerExcluded(userClaims.IsAdmin, container.Container.Name, countImage) {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "Container not found"})
 		}
 
@@ -1386,7 +1444,8 @@ func main() {
 
 		out, err := cli.ContainerLogs(context.Background(), id, options)
 		if err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			log.Printf("Failed to fetch container logs: %v", err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch logs"})
 		}
 		defer out.Close()
 
@@ -1403,6 +1462,9 @@ func main() {
 
 	r.GET("/containers/:id/stats", func(c echo.Context) error {
 		id := c.Param("id")
+		if !isValidContainerID(id) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		}
 		token := c.Get("user").(*jwt.Token)
 		userClaims := token.Claims.(*UserClaims)
 
@@ -1414,7 +1476,7 @@ func main() {
 		if container.Container.Config != nil {
 			statsImage = container.Container.Config.Image
 		}
-		if inspectContainerExcluded(container.Container.Name, statsImage) {
+		if inspectContainerExcluded(userClaims.IsAdmin, container.Container.Name, statsImage) {
 			return c.NoContent(http.StatusNotFound)
 		}
 		containerName := strings.TrimPrefix(container.Container.Name, "/")
@@ -1435,7 +1497,8 @@ func main() {
 
 		stats, err := cli.ContainerStats(context.Background(), id, client.ContainerStatsOptions{Stream: true})
 		if err != nil {
-			return err
+			log.Printf("ContainerStats error: %v", err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch container stats"})
 		}
 		defer stats.Body.Close()
 
@@ -1459,6 +1522,9 @@ func main() {
 
 	r.GET("/containers/:id/stats-now", func(c echo.Context) error {
 		id := c.Param("id")
+		if !isValidContainerID(id) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		}
 		token := c.Get("user").(*jwt.Token)
 		userClaims := token.Claims.(*UserClaims)
 
@@ -1470,7 +1536,7 @@ func main() {
 		if container.Container.Config != nil {
 			nowImage = container.Container.Config.Image
 		}
-		if inspectContainerExcluded(container.Container.Name, nowImage) {
+		if inspectContainerExcluded(userClaims.IsAdmin, container.Container.Name, nowImage) {
 			return c.NoContent(http.StatusNotFound)
 		}
 		containerName := strings.TrimPrefix(container.Container.Name, "/")
@@ -1493,7 +1559,8 @@ func main() {
 		// We'll take a quick 200ms sample to stay responsive.
 		s1, err := cli.ContainerStats(context.Background(), id, client.ContainerStatsOptions{Stream: false})
 		if err != nil {
-			return err
+			log.Printf("ContainerStats error (sample 1): %v", err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch container stats"})
 		}
 		var v1 struct {
 			CPUStats struct {
@@ -1520,7 +1587,8 @@ func main() {
 
 		s2, err := cli.ContainerStats(context.Background(), id, client.ContainerStatsOptions{Stream: false})
 		if err != nil {
-			return err
+			log.Printf("ContainerStats error (sample 2): %v", err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch container stats"})
 		}
 		defer s2.Body.Close()
 
@@ -1546,9 +1614,13 @@ func main() {
 					Value uint64 `json:"value"`
 				} `json:"io_service_bytes_recursive"`
 			} `json:"blkio_stats"`
+			PidsStats struct {
+				Current uint64 `json:"current"`
+			} `json:"pids_stats"`
 		}
 		if err := json.NewDecoder(s2.Body).Decode(&v2); err != nil {
-			return err
+			log.Printf("Failed to decode container stats: %v", err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to parse container stats"})
 		}
 
 		cpuDelta := float64(v2.CPUStats.CPUUsage.TotalUsage) - float64(v1.CPUStats.CPUUsage.TotalUsage)
@@ -1573,20 +1645,30 @@ func main() {
 		}
 
 		var rx1, tx1, r1, w1 uint64
-		for _, netIf := range v1.Networks { rx1 += netIf.RxBytes; tx1 += netIf.TxBytes }
+		for _, netIf := range v1.Networks {
+			rx1 += netIf.RxBytes
+			tx1 += netIf.TxBytes
+		}
 		for _, io := range v1.BlkioStats.IoServiceBytesRecursive {
 			switch op := strings.ToLower(io.Op); op {
-			case "read": r1 += io.Value
-			case "write": w1 += io.Value
+			case "read":
+				r1 += io.Value
+			case "write":
+				w1 += io.Value
 			}
 		}
 
 		var rx2, tx2, r2, w2 uint64
-		for _, netIf := range v2.Networks { rx2 += netIf.RxBytes; tx2 += netIf.TxBytes }
+		for _, netIf := range v2.Networks {
+			rx2 += netIf.RxBytes
+			tx2 += netIf.TxBytes
+		}
 		for _, io := range v2.BlkioStats.IoServiceBytesRecursive {
 			switch op := strings.ToLower(io.Op); op {
-			case "read": r2 += io.Value
-			case "write": w2 += io.Value
+			case "read":
+				r2 += io.Value
+			case "write":
+				w2 += io.Value
 			}
 		}
 
@@ -1603,11 +1685,15 @@ func main() {
 			"net_tx":     txRate,
 			"disk_read":  readRate,
 			"disk_write": writeRate,
+			"pids":       v2.PidsStats.Current,
 		})
 	})
 
 	r.GET("/containers/:id/history", func(c echo.Context) error {
 		id := c.Param("id")
+		if !isValidContainerID(id) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		}
 		token := c.Get("user").(*jwt.Token)
 		userClaims := token.Claims.(*UserClaims)
 
@@ -1619,7 +1705,7 @@ func main() {
 		if container.Container.Config != nil {
 			historyImage = container.Container.Config.Image
 		}
-		if inspectContainerExcluded(container.Container.Name, historyImage) {
+		if inspectContainerExcluded(userClaims.IsAdmin, container.Container.Name, historyImage) {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "Container not found"})
 		}
 
@@ -1681,13 +1767,14 @@ func main() {
 		var stat syscall.Statfs_t
 		err := syscall.Statfs("/", &stat)
 		if err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			log.Printf("Failed to get storage stats: %v", err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to query storage"})
 		}
-		
+
 		totalSize := int64(stat.Blocks) * int64(stat.Bsize)
 		freeSize := int64(stat.Bavail) * int64(stat.Bsize)
 		usedSize := totalSize - freeSize
-		
+
 		return c.JSON(http.StatusOK, map[string]interface{}{
 			"total_bytes": totalSize,
 			"used_bytes":  usedSize,
@@ -1707,17 +1794,17 @@ func main() {
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to query DB"})
 		}
-		
+
 		var history []map[string]interface{}
 		for _, stat := range systemStats {
 			history = append(history, map[string]interface{}{
-				"cpu":              stat.CPU,
-				"memory":           stat.Memory,
-				"net_rx":           stat.NetRxBytes,
-				"net_tx":           stat.NetTxBytes,
-				"disk_read":        stat.DiskReadBytes,
-				"disk_write":       stat.DiskWriteBytes,
-				"timestamp":        stat.Timestamp,
+				"cpu":        stat.CPU,
+				"memory":     stat.Memory,
+				"net_rx":     stat.NetRxBytes,
+				"net_tx":     stat.NetTxBytes,
+				"disk_read":  stat.DiskReadBytes,
+				"disk_write": stat.DiskWriteBytes,
+				"timestamp":  stat.Timestamp,
 			})
 		}
 		return c.JSON(http.StatusOK, history)
@@ -1787,28 +1874,28 @@ func main() {
 				"code":  "ACCOUNT_DEACTIVATED",
 			})
 		}
-		
+
 		response := map[string]interface{}{
-			"id":                   dbUser.ID,
-			"username":             dbUser.Username,
-			"is_admin":             dbUser.IsAdmin,
-			"can_start":            dbUser.CanStart || (dbUser.Team != nil && dbUser.Team.CanStart),
-			"can_stop":             dbUser.CanStop || (dbUser.Team != nil && dbUser.Team.CanStop),
-			"can_restart":          dbUser.CanRestart || (dbUser.Team != nil && dbUser.Team.CanRestart),
-			"can_delete":           dbUser.CanDelete || (dbUser.Team != nil && dbUser.Team.CanDelete),
-			"can_shell":            dbUser.CanShell || (dbUser.Team != nil && dbUser.Team.CanShell),
+			"id":                     dbUser.ID,
+			"username":               dbUser.Username,
+			"is_admin":               dbUser.IsAdmin,
+			"can_start":              dbUser.CanStart || (dbUser.Team != nil && dbUser.Team.CanStart),
+			"can_stop":               dbUser.CanStop || (dbUser.Team != nil && dbUser.Team.CanStop),
+			"can_restart":            dbUser.CanRestart || (dbUser.Team != nil && dbUser.Team.CanRestart),
+			"can_delete":             dbUser.CanDelete || (dbUser.Team != nil && dbUser.Team.CanDelete),
+			"can_shell":              dbUser.CanShell || (dbUser.Team != nil && dbUser.Team.CanShell),
 			"can_view_system_health": dbUser.CanViewSystemHealth || (dbUser.Team != nil && dbUser.Team.CanViewSystemHealth),
 			"can_run_scans":          dbUser.CanRunScans || (dbUser.Team != nil && dbUser.Team.CanRunScans),
 			"can_create_deployments": dbUser.CanCreateDeployments || (dbUser.Team != nil && dbUser.Team.CanCreateDeployments),
 			"can_edit_deployments":   dbUser.CanEditDeployments || (dbUser.Team != nil && dbUser.Team.CanEditDeployments),
 			"can_delete_deployments": dbUser.CanDeleteDeployments || (dbUser.Team != nil && dbUser.Team.CanDeleteDeployments),
-			"is_restricted_access": dbUser.IsRestrictedAccess || (dbUser.Team != nil),
-			"allowed_containers":   dbUser.AllowedContainers, // this is raw, frontend doesn't need to merge it for UI display
-			"password_changed":     dbUser.PasswordChanged,
-			"is_active":            dbUser.IsActive,
-			"team_id":              dbUser.TeamID,
+			"is_restricted_access":   dbUser.IsRestrictedAccess || (dbUser.Team != nil),
+			"allowed_containers":     dbUser.AllowedContainers, // this is raw, frontend doesn't need to merge it for UI display
+			"password_changed":       dbUser.PasswordChanged,
+			"is_active":              dbUser.IsActive,
+			"team_id":                dbUser.TeamID,
 		}
-		
+
 		return c.JSON(http.StatusOK, response)
 	})
 
@@ -1848,18 +1935,18 @@ func main() {
 
 		team := db.Team{
 			Name: name, Description: description, AllowedContainers: allowedContainers,
-			CanStart:   c.FormValue("can_start") == "true",
-			CanStop:    c.FormValue("can_stop") == "true",
-			CanRestart: c.FormValue("can_restart") == "true",
-			CanDelete:  c.FormValue("can_delete") == "true",
-			CanShell:   c.FormValue("can_shell") == "true",
+			CanStart:             c.FormValue("can_start") == "true",
+			CanStop:              c.FormValue("can_stop") == "true",
+			CanRestart:           c.FormValue("can_restart") == "true",
+			CanDelete:            c.FormValue("can_delete") == "true",
+			CanShell:             c.FormValue("can_shell") == "true",
 			CanViewSystemHealth:  c.FormValue("can_view_system_health") == "true",
 			CanRunScans:          c.FormValue("can_run_scans") == "true",
 			CanCreateDeployments: c.FormValue("can_create_deployments") == "true",
 			CanEditDeployments:   c.FormValue("can_edit_deployments") == "true",
 			CanDeleteDeployments: c.FormValue("can_delete_deployments") == "true",
 		}
-		
+
 		roleTmpl := c.FormValue("role_template_id")
 		if roleTmpl != "" && roleTmpl != "null" {
 			idUint, err := strconv.ParseUint(roleTmpl, 10, 32)
@@ -1877,26 +1964,29 @@ func main() {
 
 	admin.PUT("/teams/:id", func(c echo.Context) error {
 		id := c.Param("id")
+		if !isValidContainerID(id) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		}
 		name := c.FormValue("name")
 		description := c.FormValue("description")
 		allowedContainers := c.FormValue("allowed_containers")
 		if allowedContainers == "" {
 			allowedContainers = ".*"
 		}
-		
+
 		updates := map[string]interface{}{
 			"name": name, "description": description, "allowed_containers": allowedContainers,
-			"can_start":   c.FormValue("can_start") == "true",
-			"can_stop":    c.FormValue("can_stop") == "true",
-			"can_restart": c.FormValue("can_restart") == "true",
-			"can_delete":  c.FormValue("can_delete") == "true",
-			"can_shell":   c.FormValue("can_shell") == "true",
-			"can_view_system_health":  c.FormValue("can_view_system_health") == "true",
-			"can_run_scans":           c.FormValue("can_run_scans") == "true",
-			"can_create_deployments":  c.FormValue("can_create_deployments") == "true",
-			"can_edit_deployments":    c.FormValue("can_edit_deployments") == "true",
-			"can_delete_deployments":  c.FormValue("can_delete_deployments") == "true",
-			"role_template_id": nil,
+			"can_start":              c.FormValue("can_start") == "true",
+			"can_stop":               c.FormValue("can_stop") == "true",
+			"can_restart":            c.FormValue("can_restart") == "true",
+			"can_delete":             c.FormValue("can_delete") == "true",
+			"can_shell":              c.FormValue("can_shell") == "true",
+			"can_view_system_health": c.FormValue("can_view_system_health") == "true",
+			"can_run_scans":          c.FormValue("can_run_scans") == "true",
+			"can_create_deployments": c.FormValue("can_create_deployments") == "true",
+			"can_edit_deployments":   c.FormValue("can_edit_deployments") == "true",
+			"can_delete_deployments": c.FormValue("can_delete_deployments") == "true",
+			"role_template_id":       nil,
 		}
 
 		roleTmpl := c.FormValue("role_template_id")
@@ -1914,10 +2004,12 @@ func main() {
 
 	admin.DELETE("/teams/:id", func(c echo.Context) error {
 		id := c.Param("id")
+		if !isValidContainerID(id) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		}
 		db.GormDB.Where("id = ?", id).Delete(&db.Team{})
 		return c.NoContent(http.StatusOK)
 	})
-
 
 	admin.GET("/users", func(c echo.Context) error {
 		page, _ := strconv.Atoi(c.QueryParam("page"))
@@ -1933,29 +2025,29 @@ func main() {
 		var dbUsers []db.User
 		if err := db.GormDB.Preload("Team").Limit(limit).Offset(offset).Find(&dbUsers).Error; err != nil {
 			log.Printf("Failed to query users: %v", err)
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch users: " + err.Error()})
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch users"})
 		}
-		
+
 		users := make([]map[string]interface{}, 0, len(dbUsers))
 		for _, u := range dbUsers {
 			users = append(users, map[string]interface{}{
-				"id":                   u.ID,
-				"username":             u.Username,
-				"is_admin":             u.IsAdmin,
-				"can_start":            u.CanStart || (u.Team != nil && u.Team.CanStart),
-				"can_stop":             u.CanStop || (u.Team != nil && u.Team.CanStop),
-				"can_restart":          u.CanRestart || (u.Team != nil && u.Team.CanRestart),
-				"can_delete":           u.CanDelete || (u.Team != nil && u.Team.CanDelete),
-				"can_shell":            u.CanShell || (u.Team != nil && u.Team.CanShell),
+				"id":                     u.ID,
+				"username":               u.Username,
+				"is_admin":               u.IsAdmin,
+				"can_start":              u.CanStart || (u.Team != nil && u.Team.CanStart),
+				"can_stop":               u.CanStop || (u.Team != nil && u.Team.CanStop),
+				"can_restart":            u.CanRestart || (u.Team != nil && u.Team.CanRestart),
+				"can_delete":             u.CanDelete || (u.Team != nil && u.Team.CanDelete),
+				"can_shell":              u.CanShell || (u.Team != nil && u.Team.CanShell),
 				"can_view_system_health": u.CanViewSystemHealth || (u.Team != nil && u.Team.CanViewSystemHealth),
 				"can_run_scans":          u.CanRunScans || (u.Team != nil && u.Team.CanRunScans),
 				"can_create_deployments": u.CanCreateDeployments || (u.Team != nil && u.Team.CanCreateDeployments),
 				"can_edit_deployments":   u.CanEditDeployments || (u.Team != nil && u.Team.CanEditDeployments),
 				"can_delete_deployments": u.CanDeleteDeployments || (u.Team != nil && u.Team.CanDeleteDeployments),
-				"is_restricted_access": u.IsRestrictedAccess || (u.Team != nil),
-				"allowed_containers":   u.AllowedContainers,
-				"is_active":            u.IsActive,
-				"team_id":              u.TeamID,
+				"is_restricted_access":   u.IsRestrictedAccess || (u.Team != nil),
+				"allowed_containers":     u.AllowedContainers,
+				"is_active":              u.IsActive,
+				"team_id":                u.TeamID,
 			})
 		}
 		return c.JSON(http.StatusOK, map[string]interface{}{
@@ -1968,15 +2060,27 @@ func main() {
 
 	admin.PUT("/users/:id/active", func(c echo.Context) error {
 		id := c.Param("id")
+		if !isValidContainerID(id) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		}
 		isActive := c.FormValue("is_active") == "true"
-		db.GormDB.Model(&db.User{}).Where("id = ? AND is_admin = 0", id).Update("is_active", isActive)
+		db.GormDB.Model(&db.User{}).Where("id = ? AND id != 1", id).Update("is_active", isActive)
+
+		token := c.Get("user").(*jwt.Token)
+		claims := token.Claims.(*UserClaims)
+		status := "Disabled"
+		if isActive {
+			status = "Enabled"
+		}
+		logAudit(claims.ID, claims.Username, "UPDATE_USER_STATUS", "User:"+id, "Success", "Administrator changed user status to: "+status)
+
 		return c.NoContent(http.StatusOK)
 	})
 
 	admin.POST("/users", func(c echo.Context) error {
 		authMethod := c.FormValue("authMethod")
 		roleTemplateID := c.FormValue("role_template_id")
-		
+
 		teamIDStr := c.FormValue("team_id")
 		var teamID *uint
 		if teamIDStr != "" {
@@ -1986,14 +2090,19 @@ func main() {
 			}
 		}
 
-		if teamID == nil && (roleTemplateID == "" || authMethod == "") {
+		isAdminValue := c.FormValue("is_admin") == "true"
+
+		if !isAdminValue && teamID == nil && (roleTemplateID == "" || authMethod == "") {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Role Template and Auth Method are required"})
 		}
-		
-		// Load role template if team is not assigned
+		if isAdminValue && authMethod == "" {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Auth Method is required"})
+		}
+
+		// Load role template if team is not assigned and not an admin
 		var rt db.RoleTemplate
 		var rtID *uint
-		if teamID == nil {
+		if teamID == nil && !isAdminValue {
 			if err := db.GormDB.First(&rt, roleTemplateID).Error; err != nil {
 				return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid Role Template"})
 			}
@@ -2016,7 +2125,7 @@ func main() {
 			if len(password) > maxPasswordLength {
 				return c.JSON(http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("Password must not exceed %d characters", maxPasswordLength)})
 			}
-			
+
 			h, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 			if err != nil {
 				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Could not hash password"})
@@ -2028,11 +2137,17 @@ func main() {
 				CanViewSystemHealth: rt.CanViewSystemHealth, CanRunScans: rt.CanRunScans,
 				CanCreateDeployments: rt.CanCreateDeployments, CanEditDeployments: rt.CanEditDeployments, CanDeleteDeployments: rt.CanDeleteDeployments,
 				IsRestrictedAccess: isRestricted, AllowedContainers: allowedContainers, TeamID: teamID,
-				PasswordChanged: false, IsActive: true,
+				PasswordChanged: false, IsActive: true, IsAdmin: c.FormValue("is_admin") == "true",
 			}
 			if err := db.GormDB.Create(&user).Error; err != nil {
-				return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+				log.Printf("Failed to create local user: %v", err)
+				return c.JSON(http.StatusBadRequest, map[string]string{"error": "Failed to create user. Username may already exist."})
 			}
+
+			token := c.Get("user").(*jwt.Token)
+			claims := token.Claims.(*UserClaims)
+			logAudit(claims.ID, claims.Username, "CREATE_USER", "User:"+user.Username, "Success", "Administrator created local user: "+user.Username)
+
 			return c.NoContent(http.StatusCreated)
 		case "invite":
 			email := c.FormValue("email")
@@ -2051,11 +2166,11 @@ func main() {
 			user := db.User{
 				Username: email, Email: email, InviteToken: inviteToken, InviteExpiresAt: &expiresAt,
 				RoleTemplateID: rtID,
-				CanStart: rt.CanStart, CanStop: rt.CanStop, CanRestart: rt.CanRestart, CanDelete: rt.CanDelete, CanShell: rt.CanShell,
+				CanStart:       rt.CanStart, CanStop: rt.CanStop, CanRestart: rt.CanRestart, CanDelete: rt.CanDelete, CanShell: rt.CanShell,
 				CanViewSystemHealth: rt.CanViewSystemHealth, CanRunScans: rt.CanRunScans,
 				CanCreateDeployments: rt.CanCreateDeployments, CanEditDeployments: rt.CanEditDeployments, CanDeleteDeployments: rt.CanDeleteDeployments,
 				IsRestrictedAccess: isRestricted, AllowedContainers: allowedContainers, TeamID: teamID,
-				PasswordChanged: false, IsActive: true,
+				PasswordChanged: false, IsActive: true, IsAdmin: c.FormValue("is_admin") == "true",
 			}
 			if err := db.GormDB.Create(&user).Error; err != nil {
 				return c.JSON(http.StatusBadRequest, map[string]string{"error": "User already exists"})
@@ -2067,11 +2182,11 @@ func main() {
 			var settings db.Setting
 			db.GormDB.First(&settings, 1).Scan(&settings)
 			smtpHost, smtpPort, smtpUser, smtpPass = settings.SmtpHost, settings.SmtpPort, settings.SmtpUser, settings.SmtpPass
-			
+
 			if smtpHost != "" {
 				auth := smtp.PlainAuth("", smtpUser, smtpPass, smtpHost)
 				inviteURL := fmt.Sprintf("%s://%s/auth/google?invite_token=%s", requestScheme(c.Request()), c.Request().Host, inviteToken)
-				
+
 				body := fmt.Sprintf(`<html>
 <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f8fafc; padding: 40px 20px; margin: 0;">
   <div style="max-width: 500px; margin: 0 auto; background: #ffffff; padding: 32px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); text-align: center;">
@@ -2091,13 +2206,17 @@ func main() {
   </div>
 </body>
 </html>`, inviteURL, inviteURL, inviteURL)
-				
+
 				msg := []byte(fmt.Sprintf("To: %s\r\nSubject: You've been invited to LightHouse\r\nMIME-version: 1.0;\r\nContent-Type: text/html; charset=\"UTF-8\";\r\n\r\n%s", email, body))
 				err = smtp.SendMail(fmt.Sprintf("%s:%d", smtpHost, smtpPort), auth, smtpUser, []string{email}, msg)
 				if err != nil {
 					log.Printf("Failed to send invite email: %v", err)
 				}
 			}
+
+			token := c.Get("user").(*jwt.Token)
+			claims := token.Claims.(*UserClaims)
+			logAudit(claims.ID, claims.Username, "CREATE_USER_INVITE", "User:"+email, "Success", "Administrator invited user: "+email)
 
 			return c.NoContent(http.StatusCreated)
 		default:
@@ -2107,6 +2226,9 @@ func main() {
 
 	admin.PUT("/users/:id/permissions", func(c echo.Context) error {
 		id := c.Param("id")
+		if !isValidContainerID(id) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		}
 		canStart, canStop, canRestart, canDelete, canShell := clampStaffActionPermissions(
 			c.FormValue("can_start") == "true",
 			c.FormValue("can_stop") == "true",
@@ -2126,24 +2248,32 @@ func main() {
 		}
 
 		db.GormDB.Model(&db.User{}).Where("id = ?", id).Updates(map[string]interface{}{
-			"can_start": canStart, "can_stop": canStop, "can_restart": canRestart, 
-			"can_delete": canDelete, "can_shell": canShell, "is_restricted_access": isRestricted, 
+			"can_start": canStart, "can_stop": canStop, "can_restart": canRestart,
+			"can_delete": canDelete, "can_shell": canShell, "is_restricted_access": isRestricted,
 			"can_view_system_health": c.FormValue("can_view_system_health") == "true",
-			"can_run_scans": c.FormValue("can_run_scans") == "true",
+			"can_run_scans":          c.FormValue("can_run_scans") == "true",
 			"can_create_deployments": c.FormValue("can_create_deployments") == "true",
-			"can_edit_deployments": c.FormValue("can_edit_deployments") == "true",
+			"can_edit_deployments":   c.FormValue("can_edit_deployments") == "true",
 			"can_delete_deployments": c.FormValue("can_delete_deployments") == "true",
-			"allowed_containers": allowedContainers, "team_id": teamID,
+			"allowed_containers":     allowedContainers, "team_id": teamID,
 		})
 		// If teamIDStr is explicitly "null", we should set team_id to null
 		if teamIDStr == "null" {
 			db.GormDB.Model(&db.User{}).Where("id = ?", id).Update("team_id", nil)
 		}
+
+		token := c.Get("user").(*jwt.Token)
+		claims := token.Claims.(*UserClaims)
+		logAudit(claims.ID, claims.Username, "UPDATE_USER_PERMISSIONS", "User:"+id, "Success", "Administrator updated user permissions")
+
 		return c.NoContent(http.StatusOK)
 	})
 
 	admin.PUT("/users/:id/password", func(c echo.Context) error {
 		id := c.Param("id")
+		if !isValidContainerID(id) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		}
 		newPassword := c.FormValue("password")
 		if !isPasswordStrongEnough(newPassword) {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("Password must be at least %d characters", minPasswordLength)})
@@ -2166,10 +2296,26 @@ func main() {
 
 		return c.NoContent(http.StatusOK)
 	})
+
 	admin.DELETE("/users/:id", func(c echo.Context) error {
 		id := c.Param("id")
-		db.GormDB.Where("id = ? AND is_admin = 0", id).Delete(&db.User{})
-		return c.NoContent(http.StatusOK)
+		if !isValidContainerID(id) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		}
+		res := db.GormDB.Where("id = ? AND id != 1", id).Delete(&db.User{})
+		if res.Error != nil {
+			log.Printf("Failed to delete user %s: %v", id, res.Error)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to delete user"})
+		}
+		if res.RowsAffected == 0 {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Cannot delete primary admin user or user not found"})
+		}
+
+		token := c.Get("user").(*jwt.Token)
+		claims := token.Claims.(*UserClaims)
+		logAudit(claims.ID, claims.Username, "DELETE_USER", "User:"+id, "Success", "Administrator deleted user")
+
+		return c.JSON(http.StatusOK, map[string]string{"message": "deleted"})
 	})
 
 	admin.GET("/audit", func(c echo.Context) error {
@@ -2183,7 +2329,7 @@ func main() {
 
 		var logs []db.AuditLog
 		query.Order("timestamp DESC").Limit(1000).Find(&logs)
-		
+
 		logsList := make([]map[string]interface{}, 0)
 		for _, l := range logs {
 			logsList = append(logsList, map[string]interface{}{
@@ -2210,15 +2356,15 @@ func main() {
 		var res []map[string]interface{}
 		for _, t := range templates {
 			res = append(res, map[string]interface{}{
-				"id": t.ID,
-				"name": t.Name,
-				"can_start": t.CanStart,
-				"can_stop": t.CanStop,
-				"can_restart": t.CanRestart,
-				"can_delete": t.CanDelete,
-				"can_shell": t.CanShell,
+				"id":                   t.ID,
+				"name":                 t.Name,
+				"can_start":            t.CanStart,
+				"can_stop":             t.CanStop,
+				"can_restart":          t.CanRestart,
+				"can_delete":           t.CanDelete,
+				"can_shell":            t.CanShell,
 				"is_restricted_access": t.IsRestrictedAccess,
-				"allowed_containers": t.AllowedContainers,
+				"allowed_containers":   t.AllowedContainers,
 			})
 		}
 		return c.JSON(http.StatusOK, res)
@@ -2240,6 +2386,9 @@ func main() {
 
 	admin.DELETE("/role_templates/:id", func(c echo.Context) error {
 		id := c.Param("id")
+		if !isValidContainerID(id) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		}
 		db.GormDB.Delete(&db.RoleTemplate{}, id)
 		return c.NoContent(http.StatusOK)
 	})
@@ -2254,7 +2403,7 @@ func main() {
 	admin.GET("/settings", func(c echo.Context) error {
 		var settings db.Setting
 		db.GormDB.FirstOrCreate(&settings, db.Setting{ID: 1})
-		
+
 		maskSecret := func(s string) string {
 			if s != "" {
 				return "********"
@@ -2269,8 +2418,10 @@ func main() {
 			"smtp_pass":              maskSecret(settings.SmtpPass),
 			"google_client_id":       settings.GoogleClientID,
 			"google_client_secret":   maskSecret(settings.GoogleClientSecret),
-			"webhook_type":           settings.WebhookType,
-			"webhook_url":            settings.WebhookUrl,
+			"slack_webhook_url":      settings.SlackWebhookUrl,
+			"msteams_webhook_url":    settings.MSTeamsWebhookUrl,
+			"gchat_webhook_url":      settings.GChatWebhookUrl,
+			"generic_webhook_url":    settings.GenericWebhookUrl,
 			"backup_enabled":         settings.BackupEnabled,
 			"backup_provider":        settings.BackupProvider,
 			"backup_cron":            settings.BackupCron,
@@ -2301,8 +2452,10 @@ func main() {
 			SmtpPass             string `json:"smtp_pass"`
 			GoogleClientID       string `json:"google_client_id"`
 			GoogleClientSecret   string `json:"google_client_secret"`
-			WebhookType          string `json:"webhook_type"`
-			WebhookUrl           string `json:"webhook_url"`
+			SlackWebhookUrl      string `json:"slack_webhook_url"`
+			MSTeamsWebhookUrl    string `json:"msteams_webhook_url"`
+			GChatWebhookUrl      string `json:"gchat_webhook_url"`
+			GenericWebhookUrl    string `json:"generic_webhook_url"`
 			BackupEnabled        bool   `json:"backup_enabled"`
 			BackupProvider       string `json:"backup_provider"`
 			BackupCron           string `json:"backup_cron"`
@@ -2325,15 +2478,23 @@ func main() {
 		if err := c.Bind(&payload); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid request"})
 		}
-		
+
 		var s db.Setting
 		db.GormDB.First(&s, 1)
 
-		if payload.SmtpPass == "********" { payload.SmtpPass = s.SmtpPass }
-		if payload.GoogleClientSecret == "********" { payload.GoogleClientSecret = s.GoogleClientSecret }
-		if payload.BackupAuth2 == "********" { payload.BackupAuth2 = s.BackupAuth2 }
-		if payload.ArchivalAuth2 == "********" { payload.ArchivalAuth2 = s.ArchivalAuth2 }
-		
+		if payload.SmtpPass == "********" {
+			payload.SmtpPass = s.SmtpPass
+		}
+		if payload.GoogleClientSecret == "********" {
+			payload.GoogleClientSecret = s.GoogleClientSecret
+		}
+		if payload.BackupAuth2 == "********" {
+			payload.BackupAuth2 = s.BackupAuth2
+		}
+		if payload.ArchivalAuth2 == "********" {
+			payload.ArchivalAuth2 = s.ArchivalAuth2
+		}
+
 		err := db.GormDB.Model(&db.Setting{}).Where("id = ?", 1).Updates(map[string]interface{}{
 			"metrics_retention_days": payload.MetricsRetentionDays,
 			"smtp_host":              payload.SmtpHost,
@@ -2342,8 +2503,10 @@ func main() {
 			"smtp_pass":              payload.SmtpPass,
 			"google_client_id":       payload.GoogleClientID,
 			"google_client_secret":   payload.GoogleClientSecret,
-			"webhook_type":           payload.WebhookType,
-			"webhook_url":            payload.WebhookUrl,
+			"slack_webhook_url":      payload.SlackWebhookUrl,
+			"msteams_webhook_url":    payload.MSTeamsWebhookUrl,
+			"gchat_webhook_url":      payload.GChatWebhookUrl,
+			"generic_webhook_url":    payload.GenericWebhookUrl,
 			"backup_enabled":         payload.BackupEnabled,
 			"backup_provider":        payload.BackupProvider,
 			"backup_cron":            payload.BackupCron,
@@ -2372,20 +2535,21 @@ func main() {
 		token := c.Get("user").(*jwt.Token)
 		userClaims := token.Claims.(*UserClaims)
 		logAudit(userClaims.ID, userClaims.Username, "UPDATE_SETTINGS", "GlobalSettings", "Success", "Updated global settings including SMTP, OAuth, and Backups")
-		
+
 		// Reload backup and archival cron schedulers
 		backup.ReloadSchedule()
 		archival.ReloadSchedule()
-		
+
 		return c.NoContent(http.StatusOK)
 	})
 
 	admin.POST("/settings/backup/test", func(c echo.Context) error {
 		var s db.Setting
 		db.GormDB.First(&s, 1)
-		
+
 		if err := backup.RunBackup(s); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			log.Printf("Test backup failed: %v", err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Backup failed. Check server logs for details."})
 		}
 		return c.JSON(http.StatusOK, map[string]string{"message": "Backup successful"})
 	})
@@ -2393,15 +2557,19 @@ func main() {
 	admin.POST("/settings/archival/test", func(c echo.Context) error {
 		var s db.Setting
 		db.GormDB.First(&s, 1)
-		
+
 		if err := archival.RunArchival(s); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			log.Printf("Test archival failed: %v", err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Archival failed. Check server logs for details."})
 		}
 		return c.JSON(http.StatusOK, map[string]string{"message": "Archival successful"})
 	})
 
 	admin.GET("/alerts/rules/:id", func(c echo.Context) error {
 		id := c.Param("id")
+		if !isValidContainerID(id) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		}
 		var r alerts.AlertRule
 		if err := db.GormDB.First(&r, id).Error; err != nil {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "Rule not found"})
@@ -2428,14 +2596,6 @@ func main() {
 				return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid log_pattern regex: " + err.Error()})
 			}
 		}
-		channelType := c.FormValue("channel_type")
-		if channelType != "slack" && channelType != "generic_webhook" {
-			return c.JSON(http.StatusBadRequest, map[string]string{"error": "channel_type must be 'slack' or 'generic_webhook'"})
-		}
-		channelConfig := c.FormValue("channel_config")
-		if channelConfig == "" {
-			channelConfig = "{}"
-		}
 		eventTypes := c.FormValue("event_types")
 		enabled := c.FormValue("enabled") != "false"
 		cooldown := 300
@@ -2443,7 +2603,10 @@ func main() {
 			cooldown = v
 		}
 
-		enableWebhook := c.FormValue("enable_webhook") != "false"
+		enableSlack := c.FormValue("enable_slack") == "true"
+		enableMSTeams := c.FormValue("enable_msteams") == "true"
+		enableGChat := c.FormValue("enable_gchat") == "true"
+		enableGenericWebhook := c.FormValue("enable_generic_webhook") == "true"
 		enableEmail := c.FormValue("enable_email") == "true"
 		emailAddress := strings.TrimSpace(c.FormValue("email_address"))
 		metricCPUThreshold, _ := strconv.ParseFloat(c.FormValue("metric_cpu_threshold"), 64)
@@ -2451,17 +2614,18 @@ func main() {
 
 		r := alerts.AlertRule{
 			Name: name, ContainerPattern: containerPattern, EventTypes: eventTypes, LogPattern: logPattern,
-			Enabled: enabled, CooldownSeconds: cooldown, ChannelType: channelType, ChannelConfig: channelConfig,
-			EnableWebhook: enableWebhook, EnableEmail: enableEmail, EmailAddress: emailAddress,
+			Enabled: enabled, CooldownSeconds: cooldown,
+			EnableSlack: enableSlack, EnableMSTeams: enableMSTeams, EnableGChat: enableGChat,
+			EnableGenericWebhook: enableGenericWebhook, EnableEmail: enableEmail, EmailAddress: emailAddress,
 			MetricCPUThreshold: metricCPUThreshold, MetricMemThreshold: int64(metricMemThreshold),
 		}
-		
+
 		db.GormDB.Create(&r)
-		
+
 		token := c.Get("user").(*jwt.Token)
 		userClaims := token.Claims.(*UserClaims)
 		logAudit(userClaims.ID, userClaims.Username, "CREATE_ALERT_RULE", "Rule:"+name, "Success", "Created alert rule: "+name)
-		
+
 		alertMgr.ReloadRules()
 		return c.JSON(http.StatusCreated, map[string]interface{}{"id": r.ID})
 	})
@@ -2470,12 +2634,13 @@ func main() {
 	r.GET("/gitops/projects", func(c echo.Context) error {
 		var projects []db.GitProject
 		if err := db.GormDB.Find(&projects).Error; err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			log.Printf("Failed to fetch GitOps projects: %v", err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch projects"})
 		}
-		
+
 		token := c.Get("user").(*jwt.Token)
 		userClaims := token.Claims.(*UserClaims)
-		
+
 		if !userClaims.IsAdmin {
 			patterns := getAuthorizedPatterns(userClaims.ID)
 			var filtered []db.GitProject
@@ -2493,7 +2658,7 @@ func main() {
 			}
 			projects = filtered
 		}
-		
+
 		return c.JSON(http.StatusOK, projects)
 	})
 
@@ -2503,7 +2668,7 @@ func main() {
 		if !userClaims.IsAdmin && !userClaims.CanCreateDeployments {
 			return c.JSON(http.StatusForbidden, map[string]string{"error": "Access Denied"})
 		}
-		
+
 		var project db.GitProject
 		if err := c.Bind(&project); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid payload"})
@@ -2518,7 +2683,8 @@ func main() {
 
 		project.Status = "pending"
 		if err := db.GormDB.Create(&project).Error; err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			log.Printf("Failed to create GitOps project: %v", err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to create project"})
 		}
 		return c.JSON(http.StatusOK, project)
 	})
@@ -2529,13 +2695,30 @@ func main() {
 		if !userClaims.IsAdmin && !userClaims.CanEditDeployments {
 			return c.JSON(http.StatusForbidden, map[string]string{"error": "Access Denied"})
 		}
-		
+
 		id := c.Param("id")
+		if !isValidContainerID(id) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		}
 		var project db.GitProject
 		if err := db.GormDB.First(&project, id).Error; err != nil {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "Project not found"})
 		}
-		
+
+		if !userClaims.IsAdmin {
+			patterns := getAuthorizedPatterns(userClaims.ID)
+			authorized := false
+			for _, p := range patterns {
+				if matched, _ := regexp.MatchString(p, project.Name); matched {
+					authorized = true
+					break
+				}
+			}
+			if !authorized {
+				return c.JSON(http.StatusForbidden, map[string]string{"error": "Security Restriction: You are not authorized to interact with this project resource."})
+			}
+		}
+
 		var updateData struct {
 			ComposeContent string `json:"compose_content"`
 			Branch         string `json:"branch"`
@@ -2563,7 +2746,8 @@ func main() {
 		}
 
 		if err := db.GormDB.Model(&project).Updates(updates).Error; err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			log.Printf("Failed to update GitOps project: %v", err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to update project"})
 		}
 		return c.JSON(http.StatusOK, project)
 	})
@@ -2574,15 +2758,33 @@ func main() {
 		if !userClaims.IsAdmin && !userClaims.CanEditDeployments {
 			return c.JSON(http.StatusForbidden, map[string]string{"error": "Access Denied"})
 		}
-		
+
 		id := c.Param("id")
+		if !isValidContainerID(id) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		}
 		var project db.GitProject
 		if err := db.GormDB.First(&project, id).Error; err != nil {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "Project not found"})
 		}
-		
+
+		if !userClaims.IsAdmin {
+			patterns := getAuthorizedPatterns(userClaims.ID)
+			authorized := false
+			for _, p := range patterns {
+				if matched, _ := regexp.MatchString(p, project.Name); matched {
+					authorized = true
+					break
+				}
+			}
+			if !authorized {
+				return c.JSON(http.StatusForbidden, map[string]string{"error": "Security Restriction: You are not authorized to interact with this project resource."})
+			}
+		}
+
 		if err := db.GormDB.Model(&project).Update("status", "pending").Error; err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			log.Printf("Failed to trigger sync: %v", err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to trigger sync"})
 		}
 		return c.JSON(http.StatusOK, map[string]string{"message": "Sync triggered"})
 	})
@@ -2593,19 +2795,69 @@ func main() {
 		if !userClaims.IsAdmin && !userClaims.CanDeleteDeployments {
 			return c.JSON(http.StatusForbidden, map[string]string{"error": "Access Denied"})
 		}
-		
+
 		id := c.Param("id")
+		if !isValidContainerID(id) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		}
+		var project db.GitProject
+		if err := db.GormDB.First(&project, id).Error; err != nil {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "Project not found"})
+		}
+
+		if !userClaims.IsAdmin {
+			patterns := getAuthorizedPatterns(userClaims.ID)
+			authorized := false
+			for _, p := range patterns {
+				if matched, _ := regexp.MatchString(p, project.Name); matched {
+					authorized = true
+					break
+				}
+			}
+			if !authorized {
+				return c.JSON(http.StatusForbidden, map[string]string{"error": "Security Restriction: You are not authorized to interact with this project resource."})
+			}
+		}
+
 		if err := db.GormDB.Delete(&db.GitProject{}, id).Error; err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			log.Printf("Failed to delete GitOps project: %v", err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to delete project"})
 		}
 		return c.JSON(http.StatusOK, map[string]string{"status": "deleted"})
 	})
 
 	r.GET("/gitops/projects/:id/deployments", func(c echo.Context) error {
+		token := c.Get("user").(*jwt.Token)
+		userClaims := token.Claims.(*UserClaims)
+
 		id := c.Param("id")
+		if !isValidContainerID(id) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		}
+
+		var project db.GitProject
+		if err := db.GormDB.First(&project, id).Error; err != nil {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "Project not found"})
+		}
+
+		if !userClaims.IsAdmin {
+			patterns := getAuthorizedPatterns(userClaims.ID)
+			authorized := false
+			for _, p := range patterns {
+				if matched, _ := regexp.MatchString(p, project.Name); matched {
+					authorized = true
+					break
+				}
+			}
+			if !authorized {
+				return c.JSON(http.StatusForbidden, map[string]string{"error": "Security Restriction: You are not authorized to interact with this project resource."})
+			}
+		}
+
 		var deployments []db.GitDeployment
 		if err := db.GormDB.Where("project_id = ?", id).Order("created_at desc").Find(&deployments).Error; err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			log.Printf("Failed to fetch deployments: %v", err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch deployments"})
 		}
 		return c.JSON(http.StatusOK, deployments)
 	})
@@ -2613,7 +2865,10 @@ func main() {
 	// UPDATE rule
 	admin.PUT("/alerts/rules/:id", func(c echo.Context) error {
 		id := c.Param("id")
-		
+		if !isValidContainerID(id) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		}
+
 		var r alerts.AlertRule
 		if err := db.GormDB.First(&r, id).Error; err != nil {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "Rule not found"})
@@ -2623,7 +2878,7 @@ func main() {
 		if name == "" {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "name is required"})
 		}
-		
+
 		containerPattern := c.FormValue("container_pattern")
 		if containerPattern == "" {
 			containerPattern = ".*"
@@ -2631,24 +2886,14 @@ func main() {
 		if _, err := regexp.Compile(containerPattern); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid container_pattern regex: " + err.Error()})
 		}
-		
+
 		logPattern := c.FormValue("log_pattern")
 		if logPattern != "" {
 			if _, err := regexp.Compile(logPattern); err != nil {
 				return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid log_pattern regex: " + err.Error()})
 			}
 		}
-		
-		channelType := c.FormValue("channel_type")
-		if channelType != "slack" && channelType != "generic_webhook" {
-			return c.JSON(http.StatusBadRequest, map[string]string{"error": "channel_type must be 'slack' or 'generic_webhook'"})
-		}
-		
-		channelConfig := c.FormValue("channel_config")
-		if channelConfig == "" {
-			channelConfig = "{}"
-		}
-		
+
 		eventTypes := c.FormValue("event_types")
 		enabled := c.FormValue("enabled") != "false"
 		cooldown := 300
@@ -2656,26 +2901,30 @@ func main() {
 			cooldown = v
 		}
 
-		enableWebhook := c.FormValue("enable_webhook") != "false"
+		enableSlack := c.FormValue("enable_slack") == "true"
+		enableMSTeams := c.FormValue("enable_msteams") == "true"
+		enableGChat := c.FormValue("enable_gchat") == "true"
+		enableGenericWebhook := c.FormValue("enable_generic_webhook") == "true"
 		enableEmail := c.FormValue("enable_email") == "true"
 		emailAddress := strings.TrimSpace(c.FormValue("email_address"))
 		metricCPUThreshold, _ := strconv.ParseFloat(c.FormValue("metric_cpu_threshold"), 64)
 		metricMemThreshold, _ := strconv.ParseFloat(c.FormValue("metric_mem_threshold"), 64)
 
 		db.GormDB.Model(&r).Updates(map[string]interface{}{
-			"name":                 name,
-			"container_pattern":    containerPattern,
-			"event_types":          eventTypes,
-			"log_pattern":          logPattern,
-			"enabled":              enabled,
-			"cooldown_seconds":     cooldown,
-			"channel_type":         channelType,
-			"channel_config":       channelConfig,
-			"enable_webhook":       enableWebhook,
-			"enable_email":         enableEmail,
-			"email_address":        emailAddress,
-			"metric_cpu_threshold": metricCPUThreshold,
-			"metric_mem_threshold": metricMemThreshold,
+			"name":                   name,
+			"container_pattern":      containerPattern,
+			"event_types":            eventTypes,
+			"log_pattern":            logPattern,
+			"enabled":                enabled,
+			"cooldown_seconds":       cooldown,
+			"enable_slack":           enableSlack,
+			"enable_msteams":         enableMSTeams,
+			"enable_gchat":           enableGChat,
+			"enable_generic_webhook": enableGenericWebhook,
+			"enable_email":           enableEmail,
+			"email_address":          emailAddress,
+			"metric_cpu_threshold":   metricCPUThreshold,
+			"metric_mem_threshold":   metricMemThreshold,
 		})
 
 		token := c.Get("user").(*jwt.Token)
@@ -2689,6 +2938,9 @@ func main() {
 	// DELETE rule
 	admin.DELETE("/alerts/rules/:id", func(c echo.Context) error {
 		id := c.Param("id")
+		if !isValidContainerID(id) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		}
 		db.GormDB.Delete(&alerts.AlertRule{}, id)
 
 		token := c.Get("user").(*jwt.Token)
@@ -2702,6 +2954,9 @@ func main() {
 	// TOGGLE enabled/disabled without full PUT
 	admin.PUT("/alerts/rules/:id/toggle", func(c echo.Context) error {
 		id := c.Param("id")
+		if !isValidContainerID(id) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		}
 		enabled := c.FormValue("enabled") != "false"
 		db.GormDB.Model(&alerts.AlertRule{}).Where("id = ?", id).Update("enabled", enabled)
 		alertMgr.ReloadRules()
@@ -2721,7 +2976,7 @@ func main() {
 		if ruleID != "" {
 			query = query.Where("rule_id = ?", ruleID)
 		}
-		
+
 		var history []db.AlertHistory
 		query.Order("timestamp DESC").Limit(limit).Find(&history)
 		return c.JSON(http.StatusOK, history)
@@ -2735,7 +2990,8 @@ func main() {
 
 		ws, err := upgradeAuthenticatedWS(c)
 		if err != nil {
-			return err
+			log.Printf("WebSocket upgrade failed: %v", err)
+			return nil
 		}
 		defer ws.Close()
 
@@ -2768,7 +3024,8 @@ func main() {
 
 		ws, err := upgradeAuthenticatedWS(c)
 		if err != nil {
-			return err
+			log.Printf("WebSocket upgrade failed: %v", err)
+			return nil
 		}
 		defer ws.Close()
 
@@ -2813,6 +3070,9 @@ func main() {
 
 	e.GET("/ws/logs/:id", func(c echo.Context) error {
 		id := c.Param("id")
+		if !isValidContainerID(id) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		}
 
 		userClaims, err := authenticateWS(c)
 		if err != nil {
@@ -2827,7 +3087,7 @@ func main() {
 		if container.Container.Config != nil {
 			wsLogsImage = container.Container.Config.Image
 		}
-		if inspectContainerExcluded(container.Container.Name, wsLogsImage) {
+		if inspectContainerExcluded(userClaims.IsAdmin, container.Container.Name, wsLogsImage) {
 			return c.NoContent(http.StatusNotFound)
 		}
 		containerName := strings.TrimPrefix(container.Container.Name, "/")
@@ -2848,7 +3108,8 @@ func main() {
 
 		ws, err := upgradeAuthenticatedWS(c)
 		if err != nil {
-			return err
+			log.Printf("WebSocket upgrade failed: %v", err)
+			return nil
 		}
 		defer ws.Close()
 
@@ -2863,7 +3124,9 @@ func main() {
 			Timestamps: true,
 		})
 		if err != nil {
-			return err
+			log.Printf("Failed to fetch container logs for WS: %v", err)
+			ws.WriteMessage(websocket.TextMessage, []byte("\r\n[LightHouse] Failed to fetch logs\r\n"))
+			return nil
 		}
 		defer out.Close()
 
@@ -2890,6 +3153,9 @@ func main() {
 
 	e.GET("/ws/shell/:id", func(c echo.Context) error {
 		id := c.Param("id")
+		if !isValidContainerID(id) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		}
 
 		userClaims, err := authenticateWS(c)
 		if err != nil {
@@ -2915,7 +3181,7 @@ func main() {
 		if container.Container.Config != nil {
 			shellImage = container.Container.Config.Image
 		}
-		if inspectContainerExcluded(container.Container.Name, shellImage) {
+		if inspectContainerExcluded(userClaims.IsAdmin, container.Container.Name, shellImage) {
 			return c.NoContent(http.StatusNotFound)
 		}
 		containerName := strings.TrimPrefix(container.Container.Name, "/")
@@ -2946,7 +3212,8 @@ func main() {
 
 		ws, err := upgradeAuthenticatedWS(c)
 		if err != nil {
-			return err
+			log.Printf("WebSocket upgrade failed: %v", err)
+			return nil
 		}
 		defer ws.Close()
 
@@ -2963,7 +3230,8 @@ func main() {
 
 		execResult, err := cli.ExecCreate(ctx, id, execConfig)
 		if err != nil {
-			ws.WriteMessage(websocket.TextMessage, []byte("\r\n[LightHouse] Failed to create terminal session: "+err.Error()+"\r\n"))
+			log.Printf("Failed to create exec session for container %s: %v", id, err)
+			ws.WriteMessage(websocket.TextMessage, []byte("\r\n[LightHouse] Failed to create terminal session. The container may not support this shell.\r\n"))
 			return nil
 		}
 
@@ -2972,7 +3240,8 @@ func main() {
 			TTY: true,
 		})
 		if err != nil {
-			ws.WriteMessage(websocket.TextMessage, []byte("\r\n[LightHouse] Failed to attach to terminal session: "+err.Error()+"\r\n"))
+			log.Printf("Failed to attach exec session for container %s: %v", id, err)
+			ws.WriteMessage(websocket.TextMessage, []byte("\r\n[LightHouse] Failed to attach to terminal session. Please try again.\r\n"))
 			return nil
 		}
 		defer attachResult.Close()
@@ -3182,10 +3451,18 @@ func collectStats(cli *client.Client) {
 	prevStatsMu.Lock()
 	prevHost, ok := prevStats["__HOST__"]
 	if ok {
-		if hostNetRx > prevHost.NetRx { sysRxDelta = hostNetRx - prevHost.NetRx }
-		if hostNetTx > prevHost.NetTx { sysTxDelta = hostNetTx - prevHost.NetTx }
-		if hostDiskRead > prevHost.DiskRead { sysReadDelta = hostDiskRead - prevHost.DiskRead }
-		if hostDiskWrite > prevHost.DiskWrite { sysWriteDelta = hostDiskWrite - prevHost.DiskWrite }
+		if hostNetRx > prevHost.NetRx {
+			sysRxDelta = hostNetRx - prevHost.NetRx
+		}
+		if hostNetTx > prevHost.NetTx {
+			sysTxDelta = hostNetTx - prevHost.NetTx
+		}
+		if hostDiskRead > prevHost.DiskRead {
+			sysReadDelta = hostDiskRead - prevHost.DiskRead
+		}
+		if hostDiskWrite > prevHost.DiskWrite {
+			sysWriteDelta = hostDiskWrite - prevHost.DiskWrite
+		}
 	}
 	prevStats["__HOST__"] = struct {
 		TotalUsage  uint64
@@ -3293,10 +3570,18 @@ func collectStats(cli *client.Client) {
 				cpuPercent = (cpuDelta / systemDelta) * onlineCPUs * 100.0
 			}
 
-			if curRx > prev.NetRx { rxDelta = curRx - prev.NetRx }
-			if curTx > prev.NetTx { txDelta = curTx - prev.NetTx }
-			if curRead > prev.DiskRead { readDelta = curRead - prev.DiskRead }
-			if curWrite > prev.DiskWrite { writeDelta = curWrite - prev.DiskWrite }
+			if curRx > prev.NetRx {
+				rxDelta = curRx - prev.NetRx
+			}
+			if curTx > prev.NetTx {
+				txDelta = curTx - prev.NetTx
+			}
+			if curRead > prev.DiskRead {
+				readDelta = curRead - prev.DiskRead
+			}
+			if curWrite > prev.DiskWrite {
+				writeDelta = curWrite - prev.DiskWrite
+			}
 		}
 		prevStats[id] = struct {
 			TotalUsage  uint64
@@ -3351,7 +3636,7 @@ func seedAdmin() {
 		if err != nil {
 			log.Fatalf("Failed to hash default admin password: %v", err)
 		}
-		
+
 		adminUser := db.User{
 			Username:        "admin",
 			Password:        string(h),
@@ -3427,3 +3712,7 @@ func seedDefaultAlerts() {
 	log.Println("Default system alerts have been successfully seeded.")
 }
 
+func isValidContainerID(id string) bool {
+	matched, _ := regexp.MatchString(`^[a-zA-Z0-9_-]+$`, id)
+	return matched
+}

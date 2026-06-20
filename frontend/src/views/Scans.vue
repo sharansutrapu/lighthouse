@@ -8,6 +8,17 @@
         </p>
       </div>
       <div class="header-actions">
+        <button 
+          v-if="sharedState.currentUser?.is_admin || sharedState.currentUser?.can_run_scans"
+          class="page-btn primary" 
+          @click="scanAll" 
+          :disabled="isScanningAll || containers.length === 0"
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" :class="{ spinning: isScanningAll }">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+          </svg>
+          {{ isScanningAll ? 'Scanning...' : 'Scan All' }}
+        </button>
         <button class="page-btn primary" @click="fetchContainers" :disabled="loading">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" :class="{ spinning: loading }">
             <polyline points="23 4 23 10 17 10"></polyline>
@@ -131,10 +142,28 @@ const { containers, loading, fetchContainers } = useContainers();
 
 const scanning = ref({});
 const scanResults = ref({});
+const isScanningAll = ref(false);
 
 const showModal = ref(false);
 const activeScan = ref(null);
 const activeContainerName = ref('');
+
+const scanAll = async () => {
+  isScanningAll.value = true;
+  showToast('Scan All Started', `Initiated vulnerability scans for ${containers.value.length} containers`, 'info');
+  
+  const promises = containers.value.map(c => {
+    // Only trigger if not already scanning
+    if (!scanning.value[c.id]) {
+      return triggerScan(c);
+    }
+    return Promise.resolve();
+  });
+  
+  await Promise.all(promises);
+  isScanningAll.value = false;
+  showToast('Scan All Complete', 'Finished launching vulnerability scans for all containers.', 'success');
+};
 
 const parseScanResults = (data) => {
   let counts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, UNKNOWN: 0 };
@@ -273,14 +302,24 @@ onMounted(() => {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 1rem;
+  gap: 1rem;
 }
-.card-header h3 { margin: 0; font-weight: 800; font-size: 1.1rem; }
+.card-header h3 { 
+  margin: 0; 
+  font-weight: 800; 
+  font-size: 1.1rem; 
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
 .status-badge {
   padding: 0.2rem 0.6rem;
   border-radius: 20px;
   font-size: 0.75rem;
   font-weight: 800;
   text-transform: uppercase;
+  flex-shrink: 0;
 }
 .status-badge.running { background: rgba(var(--success-rgb), 0.2); color: var(--success); }
 .status-badge.exited, .status-badge.stopped { background: rgba(var(--error-rgb), 0.2); color: var(--error); }

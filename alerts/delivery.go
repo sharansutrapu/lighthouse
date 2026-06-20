@@ -67,6 +67,10 @@ func DeliverNotification(channelType, configJSON string, payload NotificationPay
 	switch channelType {
 	case "slack":
 		return sendSlackWebhook(webhookURL, payload)
+	case "msteams":
+		return sendMSTeamsWebhook(webhookURL, payload)
+	case "gchat":
+		return sendGChatWebhook(webhookURL, payload)
 	case "generic_webhook":
 		return sendGenericWebhook(webhookURL, payload)
 	default:
@@ -91,6 +95,9 @@ func sendSlackWebhook(url string, p NotificationPayload) error {
 	case "event":
 		color = "#f23d4f" // red
 		title = fmt.Sprintf("🔴 LightHouse Alert: %s Triggered!", p.RuleName)
+	case "audit":
+		color = "#0891B2" // blue
+		title = fmt.Sprintf("🔵 LightHouse Audit: %s", p.RuleName)
 	default:
 		color = "#f0a30a" // amber
 		title = fmt.Sprintf("🟡 LightHouse Log Match: %s", p.RuleName)
@@ -117,6 +124,78 @@ func sendSlackWebhook(url string, p NotificationPayload) error {
 	body, err := json.Marshal(sp)
 	if err != nil {
 		return fmt.Errorf("alerts/delivery: failed to marshal Slack payload: %w", err)
+	}
+	return postJSON(url, body)
+}
+
+// sendMSTeamsWebhook builds a Microsoft Teams MessageCard and POSTs it.
+func sendMSTeamsWebhook(url string, p NotificationPayload) error {
+	var color, title string
+
+	switch p.Type {
+	case "recovery":
+		color = "36a64f"
+		title = fmt.Sprintf("Recovery: %s is back online", p.ContainerName)
+	case "event":
+		color = "f23d4f"
+		title = fmt.Sprintf("Alert: %s Triggered!", p.RuleName)
+	case "audit":
+		color = "0891B2"
+		title = fmt.Sprintf("Audit: %s", p.RuleName)
+	default:
+		color = "f0a30a"
+		title = fmt.Sprintf("Log Match: %s", p.RuleName)
+	}
+
+	payload := map[string]interface{}{
+		"@type":      "MessageCard",
+		"@context":   "https://schema.org/extensions",
+		"summary":    title,
+		"themeColor": color,
+		"title":      "LightHouse",
+		"sections": []map[string]interface{}{{
+			"activityTitle": title,
+			"facts": []map[string]string{
+				{"name": "Rule", "value": p.RuleName},
+				{"name": "Container", "value": p.ContainerName},
+				{"name": "Type", "value": p.Type},
+				{"name": "Details", "value": p.Details},
+			},
+		}},
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("alerts/delivery: failed to marshal MS Teams payload: %w", err)
+	}
+	return postJSON(url, body)
+}
+
+// sendGChatWebhook builds a Google Chat message payload and POSTs it.
+func sendGChatWebhook(url string, p NotificationPayload) error {
+	var title string
+
+	switch p.Type {
+	case "recovery":
+		title = fmt.Sprintf("🟢 Recovery: %s is back online", p.ContainerName)
+	case "event":
+		title = fmt.Sprintf("🔴 Alert: %s Triggered!", p.RuleName)
+	case "audit":
+		title = fmt.Sprintf("🔵 Audit: %s", p.RuleName)
+	default:
+		title = fmt.Sprintf("🟡 Log Match: %s", p.RuleName)
+	}
+
+	text := fmt.Sprintf("*%s*\n*Rule:* %s\n*Container:* %s\n*Type:* %s\n```\n%s\n```",
+		title, p.RuleName, p.ContainerName, p.Type, p.Details)
+
+	payload := map[string]interface{}{
+		"text": text,
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("alerts/delivery: failed to marshal GChat payload: %w", err)
 	}
 	return postJSON(url, body)
 }

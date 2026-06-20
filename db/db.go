@@ -5,51 +5,51 @@ import (
 	"os"
 	"time"
 
-	"gorm.io/driver/postgres"
+	"database/sql"
 	"github.com/glebarez/sqlite"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
-	"database/sql"
 )
 
 var GormDB *gorm.DB
 var DB *sql.DB
 
 type User struct {
-	ID                 uint      `gorm:"primaryKey" json:"id"`
-	Username           string    `gorm:"uniqueIndex" json:"username"`
-	Password           string    `json:"-"`
-	Email              string    `gorm:"uniqueIndex" json:"email"`
-	InviteToken        string    `json:"invite_token"`
-	InviteExpiresAt    *time.Time `json:"invite_expires_at"`
-	RoleTemplateID     *uint     `json:"role_template_id"`
-	IsAdmin            bool      `gorm:"default:false" json:"is_admin"`
-	PasswordChanged    bool      `gorm:"default:false" json:"password_changed"`
-	CanStart             bool      `gorm:"default:false" json:"can_start"`
-	CanStop              bool      `gorm:"default:false" json:"can_stop"`
-	CanRestart           bool      `gorm:"default:false" json:"can_restart"`
-	CanDelete            bool      `gorm:"default:false" json:"can_delete"`
-	CanShell             bool      `gorm:"default:false" json:"can_shell"`
-	CanViewSystemHealth  bool      `gorm:"default:false" json:"can_view_system_health"`
-	CanRunScans          bool      `gorm:"default:false" json:"can_run_scans"`
-	CanCreateDeployments bool      `gorm:"default:false" json:"can_create_deployments"`
-	CanEditDeployments   bool      `gorm:"default:false" json:"can_edit_deployments"`
-	CanDeleteDeployments bool      `gorm:"default:false" json:"can_delete_deployments"`
-	IsRestrictedAccess bool      `gorm:"default:true" json:"is_restricted_access"`
-	AllowedContainers  string    `gorm:"default:'.*'" json:"allowed_containers"`
-	IsActive           bool      `gorm:"default:true" json:"is_active"`
-	PasswordVersion    int       `gorm:"default:1" json:"password_version"`
-	GoogleID           string    `json:"google_id"`
-	TeamID             *uint     `json:"team_id"`
-	Team               *Team     `gorm:"foreignKey:TeamID;constraint:OnDelete:SET NULL;" json:"team"`
+	ID                   uint       `gorm:"primaryKey" json:"id"`
+	Username             string     `gorm:"uniqueIndex" json:"username"`
+	Password             string     `json:"-"`
+	Email                string     `gorm:"uniqueIndex" json:"email"`
+	InviteToken          string     `json:"invite_token"`
+	InviteExpiresAt      *time.Time `json:"invite_expires_at"`
+	RoleTemplateID       *uint      `json:"role_template_id"`
+	IsAdmin              bool       `gorm:"default:false" json:"is_admin"`
+	PasswordChanged      bool       `gorm:"default:false" json:"password_changed"`
+	CanStart             bool       `gorm:"default:false" json:"can_start"`
+	CanStop              bool       `gorm:"default:false" json:"can_stop"`
+	CanRestart           bool       `gorm:"default:false" json:"can_restart"`
+	CanDelete            bool       `gorm:"default:false" json:"can_delete"`
+	CanShell             bool       `gorm:"default:false" json:"can_shell"`
+	CanViewSystemHealth  bool       `gorm:"default:false" json:"can_view_system_health"`
+	CanRunScans          bool       `gorm:"default:false" json:"can_run_scans"`
+	CanCreateDeployments bool       `gorm:"default:false" json:"can_create_deployments"`
+	CanEditDeployments   bool       `gorm:"default:false" json:"can_edit_deployments"`
+	CanDeleteDeployments bool       `gorm:"default:false" json:"can_delete_deployments"`
+	IsRestrictedAccess   bool       `gorm:"default:true" json:"is_restricted_access"`
+	AllowedContainers    string     `gorm:"default:'.*'" json:"allowed_containers"`
+	IsActive             bool       `gorm:"default:true" json:"is_active"`
+	PasswordVersion      int        `gorm:"default:1" json:"password_version"`
+	GoogleID             string     `json:"google_id"`
+	TeamID               *uint      `json:"team_id"`
+	Team                 *Team      `gorm:"foreignKey:TeamID;constraint:OnDelete:SET NULL;" json:"team"`
 }
 
 type Team struct {
-	ID                uint      `gorm:"primaryKey" json:"id"`
-	Name              string    `gorm:"uniqueIndex;not null" json:"name"`
-	Description       string    `json:"description"`
-	AllowedContainers string    `gorm:"default:'.*'" json:"allowed_containers"`
-	RoleTemplateID    *uint     `json:"role_template_id"`
+	ID                   uint      `gorm:"primaryKey" json:"id"`
+	Name                 string    `gorm:"uniqueIndex;not null" json:"name"`
+	Description          string    `json:"description"`
+	AllowedContainers    string    `gorm:"default:'.*'" json:"allowed_containers"`
+	RoleTemplateID       *uint     `json:"role_template_id"`
 	CanStart             bool      `gorm:"default:false" json:"can_start"`
 	CanStop              bool      `gorm:"default:false" json:"can_stop"`
 	CanRestart           bool      `gorm:"default:false" json:"can_restart"`
@@ -60,8 +60,8 @@ type Team struct {
 	CanCreateDeployments bool      `gorm:"default:false" json:"can_create_deployments"`
 	CanEditDeployments   bool      `gorm:"default:false" json:"can_edit_deployments"`
 	CanDeleteDeployments bool      `gorm:"default:false" json:"can_delete_deployments"`
-	CreatedAt         time.Time `gorm:"autoCreateTime" json:"created_at"`
-	UpdatedAt         time.Time `gorm:"autoUpdateTime" json:"updated_at"`
+	CreatedAt            time.Time `gorm:"autoCreateTime" json:"created_at"`
+	UpdatedAt            time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 }
 
 type Stat struct {
@@ -98,12 +98,13 @@ type AuditLog struct {
 	Resource  string    `json:"resource"`
 	Status    string    `json:"status"`
 	Message   string    `json:"message"`
+	Details   string    `json:"details"`
 	Timestamp time.Time `gorm:"index;autoCreateTime" json:"timestamp"`
 }
 
 type RoleTemplate struct {
-	ID                 uint   `gorm:"primaryKey" json:"id"`
-	Name               string `gorm:"uniqueIndex;not null" json:"name"`
+	ID                   uint   `gorm:"primaryKey" json:"id"`
+	Name                 string `gorm:"uniqueIndex;not null" json:"name"`
 	CanStart             bool   `gorm:"default:false" json:"can_start"`
 	CanStop              bool   `gorm:"default:false" json:"can_stop"`
 	CanRestart           bool   `gorm:"default:false" json:"can_restart"`
@@ -114,8 +115,8 @@ type RoleTemplate struct {
 	CanCreateDeployments bool   `gorm:"default:false" json:"can_create_deployments"`
 	CanEditDeployments   bool   `gorm:"default:false" json:"can_edit_deployments"`
 	CanDeleteDeployments bool   `gorm:"default:false" json:"can_delete_deployments"`
-	IsRestrictedAccess bool   `gorm:"default:true" json:"is_restricted_access"`
-	AllowedContainers  string `gorm:"default:'.*'" json:"allowed_containers"`
+	IsRestrictedAccess   bool   `gorm:"default:true" json:"is_restricted_access"`
+	AllowedContainers    string `gorm:"default:'.*'" json:"allowed_containers"`
 }
 
 type Setting struct {
@@ -127,8 +128,10 @@ type Setting struct {
 	SmtpPass             string `gorm:"default:''" json:"smtp_pass"`
 	GoogleClientID       string `gorm:"default:''" json:"google_client_id"`
 	GoogleClientSecret   string `gorm:"default:''" json:"google_client_secret"`
-	WebhookType          string `json:"webhook_type"` // slack or generic
-	WebhookUrl           string `json:"webhook_url"`
+	SlackWebhookUrl      string `gorm:"default:''" json:"slack_webhook_url"`
+	MSTeamsWebhookUrl    string `gorm:"default:''" json:"msteams_webhook_url"`
+	GChatWebhookUrl      string `gorm:"default:''" json:"gchat_webhook_url"`
+	GenericWebhookUrl    string `gorm:"default:''" json:"generic_webhook_url"`
 	BackupEnabled        bool   `json:"backup_enabled"`
 	BackupProvider       string `json:"backup_provider"` // "s3", "gcs", "azure"
 	BackupCron           string `json:"backup_cron"`     // e.g. "0 0 * * *"
@@ -138,16 +141,16 @@ type Setting struct {
 	BackupAuth1          string `json:"backup_auth1"` // AccessKey, GCS JSON, Azure Account
 	BackupAuth2          string `json:"backup_auth2"` // SecretKey, Azure Key
 
-	ArchivalEnabled      bool   `json:"archival_enabled"`
-	ArchiveMetrics       bool   `json:"archive_metrics"`
-	ArchiveLogs          bool   `json:"archive_logs"`
-	ArchivalProvider     string `json:"archival_provider"` // "s3", "gcs", "azure"
-	ArchivalCron         string `json:"archival_cron"`     // e.g. "0 * * * *"
-	ArchivalBucket       string `json:"archival_bucket"`
-	ArchivalRegion       string `json:"archival_region"`
-	ArchivalEndpoint     string `json:"archival_endpoint"`
-	ArchivalAuth1        string `json:"archival_auth1"`
-	ArchivalAuth2        string `json:"archival_auth2"`
+	ArchivalEnabled  bool   `json:"archival_enabled"`
+	ArchiveMetrics   bool   `json:"archive_metrics"`
+	ArchiveLogs      bool   `json:"archive_logs"`
+	ArchivalProvider string `json:"archival_provider"` // "s3", "gcs", "azure"
+	ArchivalCron     string `json:"archival_cron"`     // e.g. "0 * * * *"
+	ArchivalBucket   string `json:"archival_bucket"`
+	ArchivalRegion   string `json:"archival_region"`
+	ArchivalEndpoint string `json:"archival_endpoint"`
+	ArchivalAuth1    string `json:"archival_auth1"`
+	ArchivalAuth2    string `json:"archival_auth2"`
 }
 
 type AlertRule struct {
@@ -158,9 +161,10 @@ type AlertRule struct {
 	LogPattern             string    `gorm:"not null;default:''" json:"log_pattern"`
 	Enabled                bool      `gorm:"index;not null;default:true" json:"enabled"`
 	CooldownSeconds        int       `gorm:"not null;default:300" json:"cooldown_seconds"`
-	ChannelType            string    `gorm:"not null;default:'generic_webhook'" json:"channel_type"`
-	ChannelConfig          string    `gorm:"not null;default:'{}'" json:"channel_config"`
-	EnableWebhook          bool      `gorm:"not null;default:true" json:"enable_webhook"`
+	EnableSlack            bool      `gorm:"not null;default:false" json:"enable_slack"`
+	EnableMSTeams          bool      `gorm:"not null;default:false" json:"enable_msteams"`
+	EnableGChat            bool      `gorm:"not null;default:false" json:"enable_gchat"`
+	EnableGenericWebhook   bool      `gorm:"not null;default:true" json:"enable_generic_webhook"`
 	EnableEmail            bool      `gorm:"not null;default:false" json:"enable_email"`
 	EmailAddress           string    `gorm:"not null;default:''" json:"email_address"`
 	MetricCpuThreshold     float64   `gorm:"default:0" json:"metric_cpu_threshold"`
@@ -205,13 +209,13 @@ type GitProject struct {
 	ComposeContent string    `json:"compose_content"` // inline YAML
 	RepoURL        string    `json:"repo_url"`
 	Branch         string    `json:"branch"`
-	ComposePath string    `json:"compose_path"` // Path to docker-compose.yml inside repo
-	AuthToken   string    `json:"auth_token"`   // For private repos
-	TargetNode  string    `json:"target_node"`  // Node ID to deploy to (empty for local)
-	LastCommit  string    `json:"last_commit"`
-	Status      string    `json:"status"`       // "synced", "failed", "pending"
-	CreatedAt   time.Time `gorm:"autoCreateTime" json:"created_at"`
-	UpdatedAt   time.Time `gorm:"autoUpdateTime" json:"updated_at"`
+	ComposePath    string    `json:"compose_path"` // Path to docker-compose.yml inside repo
+	AuthToken      string    `json:"auth_token"`   // For private repos
+	TargetNode     string    `json:"target_node"`  // Node ID to deploy to (empty for local)
+	LastCommit     string    `json:"last_commit"`
+	Status         string    `json:"status"` // "synced", "failed", "pending"
+	CreatedAt      time.Time `gorm:"autoCreateTime" json:"created_at"`
+	UpdatedAt      time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 }
 
 type GitDeployment struct {
@@ -222,6 +226,9 @@ type GitDeployment struct {
 	Logs      string    `json:"logs"`
 	CreatedAt time.Time `gorm:"autoCreateTime" json:"created_at"`
 }
+
+// OnAuditLogged can be set to be called whenever an audit log is created.
+var OnAuditLogged func(action, resource, status, details string)
 
 func InitDB(dataSourceName string) error {
 	var err error
@@ -250,11 +257,16 @@ func InitDB(dataSourceName string) error {
 	if err != nil {
 		return err
 	}
-	
+
 	DB, err = GormDB.DB()
 	if err != nil {
 		return err
 	}
+
+	// Optimize DB Connection Pooling
+	DB.SetMaxOpenConns(100)
+	DB.SetMaxIdleConns(20)
+	DB.SetConnMaxLifetime(time.Hour)
 
 	err = GormDB.AutoMigrate(
 		&User{},
@@ -302,17 +314,17 @@ func seedDefaults() {
 
 	// Default Alert Rules
 	defaultRules := []AlertRule{
-		{Name: "Container Crash", ContainerPattern: ".*", EventTypes: "die", MetricCpuThreshold: 0, MetricMemThreshold: 0, MetricStorageThreshold: 0, EnableWebhook: true, Enabled: true},
-		{Name: "Container High CPU", ContainerPattern: ".*", MetricCpuThreshold: 85, EnableWebhook: true, Enabled: true},
-		{Name: "Container High Memory", ContainerPattern: ".*", MetricMemThreshold: 85, EnableWebhook: true, Enabled: true},
-		{Name: "Container Restart Loop", ContainerPattern: ".*", EventTypes: "restart", EnableWebhook: true, Enabled: true},
-		{Name: "System High CPU", ContainerPattern: "system", MetricCpuThreshold: 90, EnableWebhook: true, Enabled: true},
-		{Name: "System High Memory", ContainerPattern: "system", MetricMemThreshold: 90, EnableWebhook: true, Enabled: true},
-		{Name: "System Low Storage", ContainerPattern: "system", MetricStorageThreshold: 90, EnableWebhook: true, Enabled: true},
-		{Name: "OOM Killed", ContainerPattern: ".*", EventTypes: "oom", EnableWebhook: true, Enabled: true},
-		{Name: "Deployment Failed", ContainerPattern: ".*", EventTypes: "deployment_failed", EnableWebhook: true, Enabled: true},
-		{Name: "High Vulnerability Detected", ContainerPattern: ".*", EventTypes: "vulnerability_high", EnableWebhook: true, Enabled: true},
-		{Name: "Image Pull BackOff", ContainerPattern: ".*", EventTypes: "image_pull_error", EnableWebhook: true, Enabled: true},
+		{Name: "Container Crash", ContainerPattern: ".*", EventTypes: "die", MetricCpuThreshold: 0, MetricMemThreshold: 0, MetricStorageThreshold: 0, EnableGenericWebhook: true, Enabled: true},
+		{Name: "Container High CPU", ContainerPattern: ".*", MetricCpuThreshold: 85, EnableGenericWebhook: true, Enabled: true},
+		{Name: "Container High Memory", ContainerPattern: ".*", MetricMemThreshold: 85, EnableGenericWebhook: true, Enabled: true},
+		{Name: "Container Restart Loop", ContainerPattern: ".*", EventTypes: "restart", EnableGenericWebhook: true, Enabled: true},
+		{Name: "System High CPU", ContainerPattern: "system", MetricCpuThreshold: 90, EnableGenericWebhook: true, Enabled: true},
+		{Name: "System High Memory", ContainerPattern: "system", MetricMemThreshold: 90, EnableGenericWebhook: true, Enabled: true},
+		{Name: "System Low Storage", ContainerPattern: "system", MetricStorageThreshold: 90, EnableGenericWebhook: true, Enabled: true},
+		{Name: "OOM Killed", ContainerPattern: ".*", EventTypes: "oom", EnableGenericWebhook: true, Enabled: true},
+		{Name: "Deployment Failed", ContainerPattern: ".*", EventTypes: "deployment_failed", EnableGenericWebhook: true, Enabled: true},
+		{Name: "High Vulnerability Detected", ContainerPattern: ".*", EventTypes: "vulnerability_high", EnableGenericWebhook: true, Enabled: true},
+		{Name: "Image Pull BackOff", ContainerPattern: ".*", EventTypes: "image_pull_error", EnableGenericWebhook: true, Enabled: true},
 	}
 	for _, r := range defaultRules {
 		var existing AlertRule

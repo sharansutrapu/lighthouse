@@ -193,6 +193,8 @@ const props = defineProps({
   token: String,
 });
 
+const emit = defineEmits(["update-count"]);
+
 const teams = ref([]);
 const showModal = ref(false);
 const showDeleteModal = ref(false);
@@ -224,6 +226,7 @@ const fetchTeams = async () => {
     });
     if (res.ok) {
       teams.value = await res.json() || [];
+      emit("update-count", teams.value.length);
     }
   } catch (err) {
     console.error(err);
