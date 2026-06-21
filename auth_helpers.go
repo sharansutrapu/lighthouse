@@ -70,7 +70,7 @@ func initClientAccess() {
 	TrustProxy = os.Getenv("TRUST_PROXY") == "true"
 
 	if ClientAccessEnabled {
-		log.Println("Client access: strict (Vue web UI origin validation; native mobile clients without browser Origin)")
+		log.Println("Client access: strict (Vue web UI origin validation)")
 		if TrustProxy {
 			log.Println("TRUST_PROXY enabled: honoring X-Forwarded-Host / X-Forwarded-Proto for origin checks")
 		}
@@ -301,36 +301,18 @@ func isWebHTTPClientAllowed(r *http.Request) bool {
 	return isWebOriginAllowed(r)
 }
 
-// isNativeAppRequest matches native mobile clients (e.g. Flutter on Android/iOS) that do not send Origin/Referer.
-func isNativeAppRequest(r *http.Request) bool {
-	if r.Header.Get("Origin") != "" || r.Header.Get("Referer") != "" {
-		return false
-	}
-	switch r.Header.Get("Sec-Fetch-Site") {
-	case "same-origin", "same-site", "cross-site":
-		return false
-	}
-	return true
-}
-
 func isClientAccessAllowed(r *http.Request) bool {
 	if !ClientAccessEnabled {
 		return true
 	}
-	if isWebHTTPClientAllowed(r) {
-		return true
-	}
-	return isNativeAppRequest(r)
+	return isWebHTTPClientAllowed(r)
 }
 
 func isWSAccessAllowed(r *http.Request) bool {
 	if !ClientAccessEnabled {
 		return true
 	}
-	if isWebOriginAllowed(r) {
-		return true
-	}
-	return isNativeAppRequest(r)
+	return isWebOriginAllowed(r)
 }
 
 func clientAccessConfig() map[string]interface{} {
@@ -340,7 +322,6 @@ func clientAccessConfig() map[string]interface{} {
 			"client_header": headerLightHouseClient + "=web",
 			"origin":        "Vue web UI — must match this server or ALLOWED_ORIGINS",
 		},
-		"native_mobile": "Flutter app (Android/iOS, com.lighthouse.app) — no Origin; JWT auth required",
 	}
 }
 
@@ -368,14 +349,14 @@ func clientAccessMiddleware() echo.MiddlewareFunc {
 			if strings.HasPrefix(path, "/ws") {
 				if !isWSAccessAllowed(c.Request()) {
 					return c.JSON(http.StatusForbidden, map[string]string{
-						"error": "Access denied: WebSocket must originate from the web app or a native client",
+						"error": "Access denied: WebSocket must originate from the web app",
 					})
 				}
 				return next(c)
 			}
 			if !isClientAccessAllowed(c.Request()) {
 				return c.JSON(http.StatusForbidden, map[string]string{
-					"error": "Access denied: request must originate from the web app or a native client",
+					"error": "Access denied: request must originate from the web app",
 				})
 			}
 			return next(c)

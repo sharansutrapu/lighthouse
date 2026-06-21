@@ -90,11 +90,7 @@ LightHouse rejects direct `/api` and `/ws` calls from arbitrary browser origins.
 | Client | Requirements |
 | --- | --- |
 | Vue web UI (browser) | `X-LightHouse-Client: web` + `Origin` or `Referer` matching the server or `ALLOWED_ORIGINS` |
-| Native mobile app (Flutter, Android/iOS) | No browser Origin; JWT authentication after login |
 | WebSocket (Vue UI in browser) | Valid Origin (browsers cannot set custom WS headers) |
-| WebSocket (native mobile app) | No Origin + JWT subprotocol |
-
-The Flutter app (`com.lighthouse.app`) is **native mobile only** — it is not a web client. Do not use Flutter Web; use the bundled Vue dashboard in the browser.
 
 Environment variables:
 
@@ -104,5 +100,3 @@ Environment variables:
 - `ENV=production` — disables localhost origin bypass
 
 LightHouse also sends standard security headers (CSP, `X-Frame-Options`, etc.) on all responses.
-
-Native mobile apps connect with JWT after login (no browser Origin). Mobile setup docs belong in your private Flutter repo.
