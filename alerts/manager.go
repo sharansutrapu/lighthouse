@@ -362,6 +362,10 @@ func (am *AlertManager) syncLogTailers() {
 	}
 	am.rulesMu.RUnlock()
 
+	if am.cli == nil {
+		return
+	}
+
 	// Fetch running containers.
 	listResult, err := am.cli.ContainerList(am.ctx, client.ContainerListOptions{})
 	if err != nil {

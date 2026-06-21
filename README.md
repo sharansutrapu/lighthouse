@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <strong>High-performance, distributed Docker management platform built for teams.</strong>
+  <strong>High-performance, real-time Docker log viewer built for teams.</strong>
 </p>
 
 <p align="center">
@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  LightHouse provides real-time log streaming, RBAC, audit logging, system monitoring, Docker container management, and continuous GitOps deployments in a clean modern interface.
+  LightHouse provides real-time log streaming, RBAC, audit logging, system monitoring, Docker container management, and optional Kubernetes visibility in a clean modern interface.
 </p>
 
 <p align="center">
