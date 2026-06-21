@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://lighthouses.digital">Official Website</a> | <a href="https://lighthouses.digital">Online Documentation</a>
+  <a href="https://lighthouses.digital">Official Website</a> | <a href="https://lighthouses.digital/guide">Online Documentation</a>
 </p>
 
 <p align="center">

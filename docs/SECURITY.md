@@ -61,11 +61,20 @@ LightHouse includes several protections against common attack vectors:
 ### 1. Brute Force Protection (Rate Limiting)
 The `/api/token` login endpoint implements IP-based rate limiting. Users are restricted to a maximum of 10 failed login attempts per 15-minute window. Exceeding this limit triggers a system alert and blocks further attempts from that IP.
 
-### 2. GitOps Workspace Isolation (Path Traversal)
+### 2. Broken Object Level Authorization (BOLA) Defenses
+LightHouse enforces strict ownership and visibility boundaries:
+- **Containers**: Users can only interact with or stream logs for containers that match their assigned `AllowedContainers` regex patterns.
+- **GitOps Projects**: Users are strictly limited to deploying and viewing GitOps projects associated with their assigned Teams. 
+- **Teams & Users**: Standard users cannot modify or view other users or teams.
+
+### 3. GitOps Workspace Isolation (Path Traversal)
 When syncing GitOps projects, the `ComposePath` variable is strictly sanitized using `filepath.Clean`. API validation ensures no traversal elements (`../`) or absolute paths (`/`) are passed, preventing users from executing `docker compose` operations outside of the secure `/tmp/lighthouse-gitops` temporary workspaces.
 
-### 3. Command Injection Prevention
+### 4. Command Injection Prevention
 All `exec.Command` calls involving user inputs (such as Git branch names or repository URLs) use `--` command terminators (`git clone -b <branch> -- <repo_url> .`) and strict API payload validation to prevent injection of malicious shell flags or commands.
+
+### 5. Alerting Engine Cooldowns
+To prevent malicious or runaway processes from flooding external webhooks (Slack/Discord/Email) and exhausting rate limits, the Alerting Engine implements a mandatory cooldown period (e.g., 5 minutes) per alert rule per container.
 
 ## 🛡️ Best Practices
 

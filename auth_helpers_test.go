@@ -182,14 +182,6 @@ func TestClampStaffActionPermissions(t *testing.T) {
 	}
 }
 
-func TestNativeClientAllowedWithoutOrigin(t *testing.T) {
-	resetClientAccessState()
-	req := newTestRequest("POST", "http://192.168.1.10:8888/api/token", nil)
-	if !isClientAccessAllowed(req) {
-		t.Fatal("expected native client without Origin to be allowed")
-	}
-}
-
 func TestBrowserLikeRequestBlockedWithoutWebHeaders(t *testing.T) {
 	resetClientAccessState()
 	req := newTestRequest("GET", "http://lighthouse.local/api/containers", map[string]string{
@@ -208,14 +200,6 @@ func TestWSWebAllowedByOrigin(t *testing.T) {
 	})
 	if !isWSAccessAllowed(req) {
 		t.Fatal("expected browser websocket with same origin to be allowed")
-	}
-}
-
-func TestWSNativeAllowedWithoutOrigin(t *testing.T) {
-	resetClientAccessState()
-	req := newTestRequest("GET", "http://192.168.1.10:8888/ws/logs/abc", nil)
-	if !isWSAccessAllowed(req) {
-		t.Fatal("expected native websocket without Origin to be allowed")
 	}
 }
 

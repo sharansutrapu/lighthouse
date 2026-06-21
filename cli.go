@@ -25,12 +25,6 @@ func dispatchCLI(args []string) (exit bool, exitCode int) {
 	case "server":
 		applyRunMode("server")
 		return false, 0
-	case "agent":
-		applyRunMode("agent")
-		return false, 0
-	case "agent-only":
-		applyRunMode("agent-only")
-		return false, 0
 	case "reset-password":
 		if err := runResetPasswordCLI(args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "lighthouse reset-password: %v\n", err)
@@ -59,18 +53,8 @@ func dispatchCLI(args []string) (exit bool, exitCode int) {
 
 func applyRunMode(mode string) {
 	runMode = mode
-	switch mode {
-	case "agent":
-		serveFrontend = true
-		setEnvIfEmpty("LIGHTHOUSE_MODE", "agent")
-	case "agent-only":
-		serveFrontend = false
-		setEnvIfEmpty("LIGHTHOUSE_MODE", "agent")
-		setEnvIfEmpty("LIGHTHOUSE_AGENT_ONLY", "true")
-	default:
-		serveFrontend = true
-		setEnvIfEmpty("LIGHTHOUSE_MODE", "server")
-	}
+	serveFrontend = true
+	setEnvIfEmpty("LIGHTHOUSE_MODE", "standalone")
 }
 
 func setEnvIfEmpty(key, value string) {
@@ -113,9 +97,6 @@ func printConfig() {
 	fmt.Printf("  allow_delete         %s\n", boolEnv("ALLOW_DELETE", false))
 	allowShell := boolEnv("ALLOW_SHELL", false) == "true" || boolEnv("ALLOW_BASH", false) == "true"
 	fmt.Printf("  allow_shell          %t\n", allowShell)
-	if url := strings.TrimSpace(os.Getenv("CONTROL_PLANE_URL")); url != "" {
-		fmt.Printf("  control_plane_url    %s\n", url)
-	}
 	if secret := strings.TrimSpace(os.Getenv("SECRET_KEY")); secret != "" {
 		fmt.Println("  secret_key           (set)")
 	} else {
@@ -124,9 +105,6 @@ func printConfig() {
 }
 
 func runModeLabel() string {
-	if strings.TrimSpace(os.Getenv("LIGHTHOUSE_AGENT_ONLY")) == "true" {
-		return "agent-only"
-	}
 	if v := strings.TrimSpace(os.Getenv("LIGHTHOUSE_MODE")); v != "" {
 		return v
 	}
@@ -148,16 +126,6 @@ func printCLIHelp(topic []string) {
 
 Environment variables configure auth, permissions, and ports. See README.md.`)
 			return
-		case "agent":
-			fmt.Println(`lighthouse agent — run LightHouse as a fleet agent with the local UI enabled.
-
-Sets LIGHTHOUSE_MODE=agent. Optional CONTROL_PLANE_URL registers this host with a remote LightHouse control plane (future).`)
-			return
-		case "agent-only":
-			fmt.Println(`lighthouse agent-only — headless agent (API + WebSockets only, no bundled web UI).
-
-Sets LIGHTHOUSE_MODE=agent and LIGHTHOUSE_AGENT_ONLY=true. Use when a remote UI or mobile app connects to this host.`)
-			return
 		case "reset-password":
 			fmt.Println(`lighthouse reset-password <username> <new-password>
 
@@ -174,8 +142,6 @@ Usage:
 
 Commands:
   server          Run full dashboard with embedded web UI (default)
-  agent           Run as fleet agent (local UI + API)
-  agent-only      Run headless agent (API/WebSockets only)
   reset-password  Reset a user password in SQLite
   config          Print effective non-secret configuration
   version         Print version
@@ -184,7 +150,6 @@ Commands:
 Examples:
   lighthouse
   lighthouse server
-  lighthouse agent-only
   lighthouse reset-password admin 'NewSecurePass1'
   lighthouse config
 
@@ -198,17 +163,9 @@ Docker:
 }
 
 func logRunMode() {
-	switch runMode {
-	case "agent":
-		log.Printf("Starting LightHouse in agent mode (local UI enabled)")
-		if url := strings.TrimSpace(os.Getenv("CONTROL_PLANE_URL")); url == "" {
-			log.Println("CONTROL_PLANE_URL is not set — running standalone agent until a control plane is configured")
-		} else {
-			log.Printf("Control plane: %s", url)
-		}
-	case "agent-only":
-		log.Println("Starting LightHouse in agent-only mode (API/WebSockets, no bundled UI)")
-	default:
-		log.Println("Starting LightHouse server")
+	if v := os.Getenv("LIGHTHOUSE_MODE"); v != "" {
+		log.Printf("Starting LightHouse in %s mode", v)
+	} else {
+		log.Println("Starting LightHouse in standalone mode")
 	}
 }

@@ -35,20 +35,6 @@ func TestDispatchCLIUnknownCommand(t *testing.T) {
 
 func TestApplyRunModes(t *testing.T) {
 	t.Setenv("LIGHTHOUSE_MODE", "")
-	t.Setenv("LIGHTHOUSE_AGENT_ONLY", "")
-
-	applyRunMode("agent-only")
-	if serveFrontend {
-		t.Fatal("agent-only should not serve frontend")
-	}
-	if os.Getenv("LIGHTHOUSE_AGENT_ONLY") != "true" {
-		t.Fatal("expected LIGHTHOUSE_AGENT_ONLY=true")
-	}
-
-	applyRunMode("agent")
-	if !serveFrontend {
-		t.Fatal("agent should serve frontend")
-	}
 
 	applyRunMode("server")
 	if !serveFrontend {
