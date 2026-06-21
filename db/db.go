@@ -132,6 +132,7 @@ type Setting struct {
 	MSTeamsWebhookUrl    string `gorm:"default:''" json:"msteams_webhook_url"`
 	GChatWebhookUrl      string `gorm:"default:''" json:"gchat_webhook_url"`
 	GenericWebhookUrl    string `gorm:"default:''" json:"generic_webhook_url"`
+	AlertsEmailAddress   string `gorm:"default:''" json:"alerts_email_address"`
 	BackupEnabled        bool   `json:"backup_enabled"`
 	BackupProvider       string `json:"backup_provider"` // "s3", "gcs", "azure"
 	BackupCron           string `json:"backup_cron"`     // e.g. "0 0 * * *"

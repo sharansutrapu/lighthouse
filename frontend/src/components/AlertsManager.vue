@@ -523,19 +523,6 @@
                     </label>
                   </div>
 
-                  <template v-if="form.enable_email">
-                    <div class="input-group" style="margin-top: 0.5rem;">
-                      <label class="label-caps">
-                        Email Address <span class="req">*</span>
-                      </label>
-                      <input
-                        v-model="form.email_address"
-                        type="email"
-                        class="premium-input"
-                        placeholder="alerts@example.com"
-                      />
-                    </div>
-                  </template>
                 </section>
 
                 <!-- Section 4: Throttling -->
@@ -755,7 +742,6 @@ const emptyForm = () => ({
   enable_gchat: false,
   enable_generic_webhook: false,
   enable_email: false,
-  email_address: '',
   metric_cpu_threshold: 0,
   metric_mem_threshold: 0,
   enabled: true,
@@ -853,7 +839,6 @@ const openEditModal = (rule) => {
     enable_gchat: !!rule.enable_gchat,
     enable_generic_webhook: !!rule.enable_generic_webhook,
     enable_email: !!rule.enable_email,
-    email_address: rule.email_address || '',
     metric_cpu_threshold: rule.metric_cpu_threshold || 0,
     metric_mem_threshold: rule.metric_mem_threshold || 0,
     enabled: rule.enabled !== false,
@@ -876,8 +861,7 @@ const validate = () => {
   if (!form.value.container_pattern.trim()) return 'Container pattern is required.';
 
   if (form.value.enable_email) {
-    if (!form.value.email_address.trim()) return 'Email address is required.';
-    if (!form.value.email_address.includes('@')) return 'Please enter a valid email address.';
+    // Rely on global alerts_email_address configured in Settings.
   }
   if (!form.value.enable_slack && !form.value.enable_msteams && !form.value.enable_gchat && !form.value.enable_generic_webhook && !form.value.enable_email) {
     return 'Select at least one delivery method.';
@@ -905,7 +889,6 @@ const saveRule = async () => {
     body.append('enable_gchat',      String(form.value.enable_gchat));
     body.append('enable_generic_webhook', String(form.value.enable_generic_webhook));
     body.append('enable_email',      String(form.value.enable_email));
-    body.append('email_address',     form.value.email_address.trim());
     body.append('metric_cpu_threshold', String(form.value.metric_cpu_threshold));
     body.append('metric_mem_threshold', String(form.value.metric_mem_threshold));
     body.append('enabled',           String(form.value.enabled));
@@ -1397,6 +1380,15 @@ select.premium-input { cursor: pointer; }
 }
 
 /* Buttons */
+.action-group {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+.action-group.justify-end {
+  justify-content: flex-end;
+}
+
 .btn-primary {
   display: inline-flex; align-items: center; gap: 0.45rem;
   background: var(--accent); color: white; border: none;

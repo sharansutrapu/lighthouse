@@ -2422,6 +2422,7 @@ func main() {
 			"msteams_webhook_url":    settings.MSTeamsWebhookUrl,
 			"gchat_webhook_url":      settings.GChatWebhookUrl,
 			"generic_webhook_url":    settings.GenericWebhookUrl,
+			"alerts_email_address":   settings.AlertsEmailAddress,
 			"backup_enabled":         settings.BackupEnabled,
 			"backup_provider":        settings.BackupProvider,
 			"backup_cron":            settings.BackupCron,
@@ -2456,6 +2457,7 @@ func main() {
 			MSTeamsWebhookUrl    string `json:"msteams_webhook_url"`
 			GChatWebhookUrl      string `json:"gchat_webhook_url"`
 			GenericWebhookUrl    string `json:"generic_webhook_url"`
+			AlertsEmailAddress   string `json:"alerts_email_address"`
 			BackupEnabled        bool   `json:"backup_enabled"`
 			BackupProvider       string `json:"backup_provider"`
 			BackupCron           string `json:"backup_cron"`
@@ -2507,6 +2509,7 @@ func main() {
 			"msteams_webhook_url":    payload.MSTeamsWebhookUrl,
 			"gchat_webhook_url":      payload.GChatWebhookUrl,
 			"generic_webhook_url":    payload.GenericWebhookUrl,
+			"alerts_email_address":   payload.AlertsEmailAddress,
 			"backup_enabled":         payload.BackupEnabled,
 			"backup_provider":        payload.BackupProvider,
 			"backup_cron":            payload.BackupCron,

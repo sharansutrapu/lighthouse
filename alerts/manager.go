@@ -581,7 +581,11 @@ func (am *AlertManager) deliverAlert(rule *AlertRule, containerName, alertType, 
 	}
 
 	enableEmail := rule.EnableEmail
-	emailAddress := rule.EmailAddress
+	emailAddress := setting.AlertsEmailAddress
+	if emailAddress == "" {
+		emailAddress = rule.EmailAddress
+	}
+
 	payload := NotificationPayload{
 		RuleName:      rule.Name,
 		ContainerName: containerName,

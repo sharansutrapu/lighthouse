@@ -312,8 +312,8 @@
                   </svg>
                 </div>
                 <div>
-                  <h3>Webhook Integrations</h3>
-                  <p class="card-desc">Configure destinations for alerts (Slack, MS Teams, etc).</p>
+                  <h3>Alert Destinations</h3>
+                  <p class="card-desc">Configure destinations for alerts (Email, Slack, MS Teams, etc).</p>
                 </div>
               </div>
             </div>
@@ -476,6 +476,7 @@
               <label>SMTP Password</label>
               <input v-model="settings.smtp_pass" type="password" class="premium-input" placeholder="••••••••" />
             </div>
+            
           </div>
           <div class="modal-footer" style="display: flex; gap: 0.5rem; justify-content: flex-end; padding: 1rem;">
             <button @click="closeModal" class="modal-btn cancel">Cancel</button>
@@ -488,10 +489,14 @@
         <!-- Webhook Settings -->
         <template v-else-if="activeSettingsModal === 'webhook'">
           <div class="modal-header">
-            <h3 class="modal-title">Webhook Integrations</h3>
+            <h3 class="modal-title">Alert Destinations</h3>
             <button class="modal-close" @click="closeModal"><AppIcon name="close" :size="20"/></button>
           </div>
           <div class="modal-body" style="padding-top: 1rem; display: flex; flex-direction: column; gap: 1rem;">
+            <div class="input-group">
+              <label>Default Alert Destination Email</label>
+              <input v-model="settings.alerts_email_address" type="email" class="premium-input" placeholder="alerts@yourteam.com" />
+            </div>
             <div class="input-group">
               <label>Slack / Discord Webhook URL</label>
               <input v-model="settings.slack_webhook_url" type="text" class="premium-input" placeholder="https://hooks.slack.com/services/..." />
@@ -524,10 +529,13 @@
             <button class="modal-close" @click="closeModal"><AppIcon name="close" :size="20"/></button>
           </div>
           <div class="modal-body" style="padding-top: 1rem; display: flex; flex-direction: column; gap: 1rem;">
-            <div class="input-group">
-              <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-                <input type="checkbox" v-model="settings.backup_enabled" class="premium-checkbox" />
-                <span style="font-size: 0.8rem; font-weight: 800; color: var(--text-main);">Enable Automated Backups</span>
+            <div style="background: var(--bg-subtle); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 1.25rem; display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+              <div style="display: flex; flex-direction: column; gap: 0.25rem;">
+                <span style="font-size: 0.95rem; font-weight: 800; color: var(--text-main);">Enable Automated Backups</span>
+                <span style="font-size: 0.8rem; color: var(--text-dim);">Automatically backup your Lighthouse configuration and data to cloud storage.</span>
+              </div>
+              <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; margin: 0;">
+                <input type="checkbox" v-model="settings.backup_enabled" style="transform: scale(1.3); accent-color: var(--accent); cursor: pointer;" />
               </label>
             </div>
             
@@ -614,10 +622,13 @@
             <button class="modal-close" @click="closeModal"><AppIcon name="close" :size="20"/></button>
           </div>
           <div class="modal-body" style="padding-top: 1rem; display: flex; flex-direction: column; gap: 1rem;">
-            <div class="input-group">
-              <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-                <input type="checkbox" v-model="settings.archival_enabled" class="premium-checkbox" />
-                <span style="font-size: 0.8rem; font-weight: 800; color: var(--text-main);">Enable Archival</span>
+            <div style="background: var(--bg-subtle); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 1.25rem; display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+              <div style="display: flex; flex-direction: column; gap: 0.25rem;">
+                <span style="font-size: 0.95rem; font-weight: 800; color: var(--text-main);">Enable Long-Term Archival</span>
+                <span style="font-size: 0.8rem; color: var(--text-dim);">Archive historical metrics and logs to cold storage to save space.</span>
+              </div>
+              <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; margin: 0;">
+                <input type="checkbox" v-model="settings.archival_enabled" style="transform: scale(1.3); accent-color: var(--accent); cursor: pointer;" />
               </label>
             </div>
 
@@ -849,7 +860,7 @@ const saveSettingsAndClose = async () => {
   closeModal();
 };
 
-const activeSection   = ref('users');
+const activeSection   = ref('audit');
 const staffUsersCount = ref(0);
 const auditLogsCount  = ref(0);
 const alertRulesCount = ref(null);
@@ -862,6 +873,7 @@ const settings = ref({
   smtp_port: 587,
   smtp_user: "",
   smtp_pass: "",
+  alerts_email_address: "",
   google_client_id: "",
   google_client_secret: "",
   webhook_type: "generic_webhook",
