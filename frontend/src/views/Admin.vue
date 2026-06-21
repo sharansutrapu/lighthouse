@@ -312,8 +312,8 @@
                   </svg>
                 </div>
                 <div>
-                  <h3>Global Webhook</h3>
-                  <p class="card-desc">Destination for alert webhooks.</p>
+                  <h3>Webhook Integrations</h3>
+                  <p class="card-desc">Configure destinations for alerts (Slack, MS Teams, etc).</p>
                 </div>
               </div>
             </div>
@@ -488,20 +488,25 @@
         <!-- Webhook Settings -->
         <template v-else-if="activeSettingsModal === 'webhook'">
           <div class="modal-header">
-            <h3 class="modal-title">Global Webhook</h3>
+            <h3 class="modal-title">Webhook Integrations</h3>
             <button class="modal-close" @click="closeModal"><AppIcon name="close" :size="20"/></button>
           </div>
           <div class="modal-body" style="padding-top: 1rem; display: flex; flex-direction: column; gap: 1rem;">
             <div class="input-group">
-              <label>Webhook Channel Type</label>
-              <select v-model="settings.webhook_type" class="premium-input">
-                <option value="generic_webhook">Generic Webhook (JSON POST)</option>
-                <option value="slack">Slack / Discord (Incoming Webhook)</option>
-              </select>
+              <label>Slack / Discord Webhook URL</label>
+              <input v-model="settings.slack_webhook_url" type="text" class="premium-input" placeholder="https://hooks.slack.com/services/..." />
             </div>
             <div class="input-group">
-              <label>Webhook URL</label>
-              <input v-model="settings.webhook_url" type="text" class="premium-input" placeholder="https://hooks.slack.com/services/..." />
+              <label>Microsoft Teams Webhook URL</label>
+              <input v-model="settings.msteams_webhook_url" type="text" class="premium-input" placeholder="https://<tenant>.webhook.office.com/..." />
+            </div>
+            <div class="input-group">
+              <label>Google Chat Webhook URL</label>
+              <input v-model="settings.gchat_webhook_url" type="text" class="premium-input" placeholder="https://chat.googleapis.com/v1/spaces/..." />
+            </div>
+            <div class="input-group">
+              <label>Generic Webhook URL (JSON POST)</label>
+              <input v-model="settings.generic_webhook_url" type="text" class="premium-input" placeholder="https://api.yourdomain.com/webhooks" />
             </div>
           </div>
           <div class="modal-footer" style="display: flex; gap: 0.5rem; justify-content: flex-end; padding: 1rem;">

@@ -69,96 +69,99 @@
         </div>
       </div>
 
-      <!-- Rules grid -->
-      <div v-else class="rules-grid">
-        <div
-          v-for="rule in rules"
-          :key="rule.id"
-          class="rule-card premium-card"
-          :class="{ disabled: !rule.enabled }"
-        >
-          <!-- Card top bar: name + toggle -->
-          <div class="rule-card-header">
-            <div class="rule-name-group">
-              <div class="rule-channel-icon">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5">
-                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
-                  <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
-                </svg>
-              </div>
-              <span class="rule-name">{{ rule.name }}</span>
-            </div>
-            <!-- Toggle switch -->
-            <button
-              class="toggle-switch"
-              :class="{ on: rule.enabled }"
-              @click="toggleRule(rule)"
-              :data-tooltip="rule.enabled ? 'Disable rule' : 'Enable rule'"
-              :aria-label="rule.enabled ? 'Disable rule' : 'Enable rule'"
-            >
-              <span class="toggle-thumb"/>
-            </button>
-          </div>
-
-          <!-- Criteria chips -->
-          <div class="rule-criteria">
-            <div v-if="rule.container_pattern" class="crit-chip accent">
-              <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="3">
-                <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
-              </svg>
-              <code>{{ rule.container_pattern }}</code>
-            </div>
-            <template v-if="rule.event_types">
-              <span v-for="ev in splitEvents(rule.event_types)" :key="ev" class="crit-chip event">
-                {{ formatEventName(ev) }}
-              </span>
-            </template>
-            <div v-if="rule.log_pattern" class="crit-chip log">
-              <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="3">
-                <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/>
-                <line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/>
-                <line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
-              </svg>
-              <code>{{ rule.log_pattern }}</code>
-            </div>
-            <div v-if="rule.metric_cpu_threshold > 0" class="crit-chip warning">
-              <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="3">
-                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
-              </svg>
-              <code>CPU &gt; {{ rule.metric_cpu_threshold }}%</code>
-            </div>
-            <div v-if="rule.metric_mem_threshold > 0" class="crit-chip warning">
-              <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="3">
-                <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
-              </svg>
-              <code>Mem &gt; {{ rule.metric_mem_threshold }}MB</code>
-            </div>
-          </div>
-
-          <!-- Footer: cooldown + actions -->
-          <div class="rule-card-footer">
-            <span class="cooldown-badge">
-              <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5">
-                <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
-              </svg>
-              {{ formatCooldown(rule.cooldown_seconds) }} cooldown
-            </span>
-            <div class="card-actions">
-              <button @click="openEditModal(rule)" class="icon-btn" data-tooltip="Edit rule">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5">
-                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                </svg>
-              </button>
-              <button @click="confirmDelete(rule)" class="icon-btn stop" data-tooltip="Delete rule">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5">
-                  <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
-                  <path d="M10 11v6"/><path d="M14 11v6"/>
-                </svg>
-              </button>
-            </div>
-          </div>
-        </div>
+      <!-- Rules Table -->
+      <div v-else class="premium-table-container">
+        <table class="premium-table admin-table">
+          <thead>
+            <tr>
+              <th>Rule Name</th>
+              <th>Criteria Tags</th>
+              <th>Cooldown</th>
+              <th>Status</th>
+              <th class="text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="rule in rules" :key="rule.id" :class="{ 'disabled-row': !rule.enabled }">
+              <td data-label="Rule Name">
+                <div class="user-cell">
+                  <span class="user-name" style="font-weight: 800; font-size: 0.95rem;">{{ rule.name }}</span>
+                </div>
+              </td>
+              <td data-label="Criteria Tags">
+                <div class="rule-criteria" style="margin-top: 0;">
+                  <div v-if="rule.container_pattern" class="crit-chip accent">
+                    <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="3">
+                      <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+                    </svg>
+                    <code>{{ rule.container_pattern }}</code>
+                  </div>
+                  <template v-if="rule.event_types">
+                    <span v-for="ev in splitEvents(rule.event_types)" :key="ev" class="crit-chip event">
+                      {{ formatEventName(ev) }}
+                    </span>
+                  </template>
+                  <div v-if="rule.log_pattern" class="crit-chip log">
+                    <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="3">
+                      <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/>
+                      <line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/>
+                      <line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+                    </svg>
+                    <code>{{ rule.log_pattern }}</code>
+                  </div>
+                  <div v-if="rule.metric_cpu_threshold > 0" class="crit-chip warning">
+                    <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="3">
+                      <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+                    </svg>
+                    <code>CPU &gt; {{ rule.metric_cpu_threshold }}%</code>
+                  </div>
+                  <div v-if="rule.metric_mem_threshold > 0" class="crit-chip warning">
+                    <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="3">
+                      <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+                    </svg>
+                    <code>Mem &gt; {{ rule.metric_mem_threshold }}MB</code>
+                  </div>
+                </div>
+              </td>
+              <td data-label="Cooldown">
+                <span class="cooldown-badge" style="background: transparent; border: none; padding: 0;">
+                  <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+                  </svg>
+                  {{ formatCooldown(rule.cooldown_seconds) }}
+                </span>
+              </td>
+              <td data-label="Status">
+                <button
+                  class="toggle-switch"
+                  style="margin: 0;"
+                  :class="{ on: rule.enabled }"
+                  @click="toggleRule(rule)"
+                  :data-tooltip="rule.enabled ? 'Disable rule' : 'Enable rule'"
+                  :aria-label="rule.enabled ? 'Disable rule' : 'Enable rule'"
+                >
+                  <span class="toggle-thumb"/>
+                </button>
+              </td>
+              <td class="text-right" data-label="Actions">
+                <div class="action-group justify-end">
+                  <button @click="openEditModal(rule)" class="icon-btn" data-tooltip="Edit rule">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                    </svg>
+                  </button>
+                  <button @click="confirmDelete(rule)" class="icon-btn stop" data-tooltip="Delete rule">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                      <path d="M10 11v6"/><path d="M14 11v6"/>
+                    </svg>
+                  </button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
 
@@ -1417,6 +1420,15 @@ select.premium-input { cursor: pointer; }
 }
 .btn-danger:hover:not(:disabled) { background: var(--error); color: #fff; }
 .btn-danger:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.disabled-row {
+  opacity: 0.5;
+}
+
+.disabled-row .user-name {
+  text-decoration: line-through;
+  color: var(--text-dim);
+}
 
 /* ── Empty state ── */
 .empty-state-wrapper { display: flex; align-items: center; justify-content: center; min-height: 320px; }
