@@ -13,6 +13,10 @@
 </p>
 
 <p align="center">
+  <strong>🌐 Visit the official website: <a href="https://lighthouses.digital">lighthouses.digital</a></strong>
+</p>
+
+<p align="center">
   <img src="https://img.shields.io/badge/Backend-Go-00add8" alt="Backend">
   <img src="https://img.shields.io/badge/Frontend-Vue--3-42b883" alt="Frontend">
 </p>
