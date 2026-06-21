@@ -9,16 +9,24 @@
 </p>
 
 <p align="center">
-  LightHouse provides centralized container management, GitOps deployments, real-time log streaming, vulnerability scanning, system monitoring, and RBAC in a clean, modern interface.
+  <a href="https://lighthouses.digital">Official Website</a> | <a href="https://lighthouses.digital">Online Documentation</a>
 </p>
 
 <p align="center">
-  <strong>🌐 Visit the official website: <a href="https://lighthouses.digital">lighthouses.digital</a></strong>
+  Lightweight. Secure. Modern. Built for real-world Docker environments.
 </p>
 
 <p align="center">
+  LightHouse provides real-time log streaming, RBAC, audit logging, system monitoring, Docker container management, and continuous GitOps deployments in a clean modern interface.
+</p>
+
+<p align="center">
+  <a href="https://hub.docker.com/r/sharankumar619/lighthouse"><img src="https://img.shields.io/docker/pulls/sharankumar619/lighthouse" alt="Docker Pulls"></a>
+  <a href="https://github.com/sharansutrapu/lighthouse/blob/main/LICENSE"><img src="https://img.shields.io/github/license/sharansutrapu/lighthouse" alt="License"></a>
+  <img src="https://img.shields.io/github/v/release/sharansutrapu/lighthouse" alt="Version">
   <img src="https://img.shields.io/badge/Backend-Go-00add8" alt="Backend">
   <img src="https://img.shields.io/badge/Frontend-Vue--3-42b883" alt="Frontend">
+  <a href="https://github.com/sharansutrapu/lighthouse"><img src="https://img.shields.io/github/stars/sharansutrapu/lighthouse?style=social" alt="GitHub stars"></a>
 </p>
 
 ---
