@@ -23,8 +23,8 @@
             <AppIcon name="containers" />
             All containers
           </router-link>
-          <button class="dash-action-btn primary" @click="refresh" :disabled="loading">
-            <AppIcon name="refresh" :class="{ spinning: loading }" />
+          <button class="dash-action-btn primary" @click="refresh" :disabled="isRefreshing">
+            <AppIcon name="refresh" :class="{ spinning: isRefreshing }" />
             Refresh
           </button>
         </div>
@@ -534,9 +534,21 @@ onMounted(() => {
   fetchEngineResources();
 });
 
-const refresh = () => {
-  fetchContainers();
-  fetchEngineResources();
+const isRefreshing = ref(false);
+
+const refresh = async () => {
+  if (isRefreshing.value) return;
+  isRefreshing.value = true;
+  
+  await Promise.all([
+    fetchContainers(),
+    fetchEngineResources()
+  ]);
+  
+  // Give a minimum 500ms spin time so the user actually sees the feedback
+  setTimeout(() => {
+    isRefreshing.value = false;
+  }, 500);
 };
 </script>
 
