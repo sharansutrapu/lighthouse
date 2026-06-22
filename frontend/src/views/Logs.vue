@@ -361,7 +361,7 @@ const filteredContainers = computed(() => {
   return [...list].sort((a, b) => {
     if (a.is_platform && !b.is_platform) return -1;
     if (!a.is_platform && b.is_platform) return 1;
-    return 0;
+    return a.name.localeCompare(b.name);
   });
 });
 const selectedIds = ref([]);
