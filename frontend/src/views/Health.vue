@@ -10,34 +10,18 @@
             <span v-if="isPartialData" class="coverage-hint">
               · Showing {{ formatDuration(availableHours) }} of data
             </span>
+            <span v-if="systemInfo" class="system-info-hint">
+              · Docker v{{ systemInfo.docker_version }} · Compose v{{ systemInfo.compose_version }}
+            </span>
           </p>
         </div>
         <div class="page-hero-actions">
-          <div class="page-filter-pills">
-            <button
-              v-for="f in filters"
-              :key="f.label"
-              @click="activeFilter = f.value"
-              :class="[
-                'page-filter-pill',
-                {
-                  active: activeFilter === f.value,
-                  'is-partial': availableHours < f.value,
-                },
-              ]"
-              :data-tooltip="availableHours < f.value ? `${f.note} (partial data)` : f.note"
-            >
-              {{ f.short }}
-            </button>
-            <button
-              class="page-filter-pill"
-              @click="showCustomModal = true"
-              :class="{ active: activeFilter === 'custom' }"
-              data-tooltip="Select specific dates"
-            >
-              Custom
-            </button>
-          </div>
+          <select v-model="activeFilter" @change="handleFilterChange" class="premium-input" style="width: auto;">
+            <option v-for="f in filters" :key="f.value" :value="f.value">
+              {{ f.label }}
+            </option>
+            <option value="custom">Custom Range...</option>
+          </select>
         </div>
       </div>
       <div class="page-hero-mesh" aria-hidden="true"></div>
@@ -283,6 +267,7 @@ ChartJS.register(
 const isDark = computed(() => sharedState.theme === 'dark');
 const sysStorageUsed = ref(0);
 const sysStorageTotal = ref(0);
+const systemInfo = ref(null);
 
 const { containers, runningCount } = useContainers();
 
@@ -290,10 +275,14 @@ const route = useRoute();
 const router = useRouter();
 
 const filters = [
-  { label: "1H", short: "1H", note: "Last hour", value: 1 },
-  { label: "6H", short: "6H", note: "Last 6 hours", value: 6 },
-  { label: "12H", short: "12H", note: "Last 12 hours", value: 12 },
-  { label: "24H", short: "24H", note: "Last 24 hours", value: 24 },
+  { label: "Last 1 hour", value: 1 },
+  { label: "Last 6 hours", value: 6 },
+  { label: "Last 12 hours", value: 12 },
+  { label: "Last 24 hours", value: 24 },
+  { label: "Last 2 days", value: 48 },
+  { label: "Last 7 days", value: 168 },
+  { label: "Last 14 days", value: 336 },
+  { label: "Last 30 days", value: 720 },
 ];
 
 const activeFilter = ref(24);
@@ -306,6 +295,14 @@ const modalError = ref("");
 const today = new Date().toISOString().split("T")[0];
 
 const history = ref([]);
+
+const handleFilterChange = () => {
+  if (activeFilter.value === 'custom') {
+    showCustomModal.value = true;
+  } else {
+    fetchData();
+  }
+};
 
 const availableHours = computed(() => {
   if (history.value.length === 0) return 0;
@@ -393,6 +390,7 @@ const applyCustomRange = () => {
   customEnd.value = tempEnd.value;
   activeFilter.value = "custom";
   showCustomModal.value = false;
+  fetchData();
   updateUrl();
 };
 
@@ -478,12 +476,22 @@ watch(
 
 const fetchData = async () => {
   try {
+    let endpoint = "/api/system/history";
+    if (activeFilter.value === "custom") {
+      endpoint += `?from=${customStart.value}T00:00:00Z&to=${customEnd.value}T23:59:59Z`;
+    } else {
+      endpoint += `?duration=${activeFilter.value}h`;
+    }
+
     const token = secureStorage.getItem("token");
-    const [resHist, resStore] = await Promise.all([
-      apiFetch("/api/system/history", {
+    const [resHist, resStore, resInfo] = await Promise.all([
+      apiFetch(endpoint, {
         headers: { Authorization: `Bearer ${token}` },
       }),
       apiFetch("/api/system/storage", {
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+      apiFetch("/api/system/info", {
         headers: { Authorization: `Bearer ${token}` },
       })
     ]);
@@ -499,6 +507,10 @@ const fetchData = async () => {
       const storeData = await resStore.json();
       sysStorageUsed.value = storeData.used_bytes;
       sysStorageTotal.value = storeData.total_bytes;
+    }
+
+    if (resInfo.ok) {
+      systemInfo.value = await resInfo.json();
     }
   } catch (err) {
     console.error(err);
@@ -660,6 +672,11 @@ onMounted(() => {
 .coverage-hint {
   color: var(--warning);
   font-weight: 700;
+}
+
+.system-info-hint {
+  color: var(--text-mute);
+  font-weight: 500;
 }
 
 .page-filter-pill.is-partial {

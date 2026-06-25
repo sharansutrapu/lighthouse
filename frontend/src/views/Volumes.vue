@@ -72,6 +72,13 @@
         <div class="modal-text-center">
           <h3>{{ confirmModal.title }}</h3>
           <p>{{ confirmModal.message }}</p>
+          <div v-if="confirmModal.showRemoveContainers" class="modal-checkbox-wrapper" style="margin-top: 1rem; text-align: left;">
+            <label class="checkbox-label" style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+              <input type="checkbox" v-model="confirmModal.removeContainers" />
+              Remove stopped containers first
+            </label>
+            <p class="text-mute" style="font-size: 0.8rem; margin-top: 0.2rem; margin-left: 1.5rem;">Prunes stopped containers to release held volumes before pruning.</p>
+          </div>
         </div>
         <div class="modal-actions">
           <button class="modal-btn cancel" @click="closeConfirm">Cancel</button>
@@ -110,11 +117,21 @@ const confirmModal = ref({
   title: '',
   message: '',
   type: 'warning',
-  action: null
+  action: null,
+  showRemoveContainers: false,
+  removeContainers: false
 });
 
-const openConfirm = (title, message, type, action) => {
-  confirmModal.value = { show: true, title, message, type, action };
+const openConfirm = (title, message, type, action, showRemoveContainers = false) => {
+  confirmModal.value = { 
+    show: true, 
+    title, 
+    message, 
+    type, 
+    action,
+    showRemoveContainers,
+    removeContainers: false
+  };
 };
 
 const closeConfirm = () => {
@@ -124,7 +141,9 @@ const closeConfirm = () => {
 
 const executeConfirm = async () => {
   if (confirmModal.value.action) {
-    await confirmModal.value.action();
+    await confirmModal.value.action({
+      removeContainers: confirmModal.value.removeContainers
+    });
   }
   closeConfirm();
 };
@@ -147,12 +166,20 @@ const requestRemoveVolume = (name) => {
 };
 
 const pruneVolumes = () => {
-  openConfirm('Prune Unused Volumes', 'Are you sure you want to prune all unused volumes? This action cannot be undone.', 'warning', async () => {
+  openConfirm('Prune Unused Volumes', 'Are you sure you want to prune all unused volumes? This action cannot be undone.', 'warning', async (options) => {
     try {
-      const res = await apiFetch('/api/volumes/prune', { method: 'POST' });
+      const res = await apiFetch('/api/volumes/prune', { 
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ remove_containers: options.removeContainers })
+      });
       if (res.ok) {
         const data = await res.json();
-        showToast('Success', `Pruned volumes. Freed ${formatBytes(data.SpaceReclaimed || 0)}`, 'success');
+        const report = data.Report || data;
+        showToast('Success', `Pruned volumes. Freed ${formatBytes(report.SpaceReclaimed || 0)}`, 'success');
+        if (data.Warning) {
+          showToast('Warning', data.Warning, 'warning');
+        }
         fetchVolumes();
       } else {
         showToast('Error', 'Failed to prune volumes', 'error');
@@ -160,7 +187,7 @@ const pruneVolumes = () => {
     } catch (err) {
       showToast('Error', 'Connection error', 'error');
     }
-  });
+  }, true);
 };
 
 onMounted(() => {

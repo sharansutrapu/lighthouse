@@ -43,6 +43,28 @@ func RegisterVolumeRoutes(r *echo.Group, cli *client.Client) {
 			return c.JSON(http.StatusForbidden, map[string]string{"error": "You do not have permission to delete or prune resources."})
 		}
 
+		var req struct {
+			RemoveContainers bool `json:"remove_containers"`
+		}
+		_ = c.Bind(&req)
+
+		warning := ""
+		if req.RemoveContainers {
+			// First, prune containers to release any held resources
+			cli.ContainerPrune(context.Background(), client.ContainerPruneOptions{})
+		} else {
+			// Check if there are stopped containers that might be holding onto resources
+			stoppedFilters := make(client.Filters)
+			stoppedFilters.Add("status", "exited", "created")
+			stopped, _ := cli.ContainerList(context.Background(), client.ContainerListOptions{
+				All:     true,
+				Filters: stoppedFilters,
+			})
+			if len(stopped.Items) > 0 {
+				warning = "Stopped containers detected. Some resources may not have been pruned."
+			}
+		}
+
 		res, err := cli.VolumePrune(context.Background(), client.VolumePruneOptions{})
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -50,6 +72,9 @@ func RegisterVolumeRoutes(r *echo.Group, cli *client.Client) {
 		
 		logAudit(userClaims.ID, userClaims.Username, "PRUNE", "Volumes", "Success", "Pruned unused volumes")
 
-		return c.JSON(http.StatusOK, res)
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"Report":  res,
+			"Warning": warning,
+		})
 	})
 }

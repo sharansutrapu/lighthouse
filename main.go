@@ -15,6 +15,7 @@ import (
 	"net/smtp"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -1782,15 +1783,30 @@ func main() {
 	})
 
 	r.GET("/system/history", func(c echo.Context) error {
+		duration := c.QueryParam("duration")
+		from := c.QueryParam("from")
+		to := c.QueryParam("to")
 		daysStr := c.QueryParam("days")
-		days := 30
-		if d, err := strconv.Atoi(daysStr); err == nil {
-			days = d
-		}
 
 		var systemStats []db.SystemStat
-		err := db.GormDB.Where("timestamp > ?", time.Now().AddDate(0, 0, -days)).
-			Order("timestamp DESC").Find(&systemStats).Error
+		query := db.GormDB
+
+		if from != "" && to != "" {
+			query = query.Where("timestamp BETWEEN ? AND ?", from, to)
+		} else if duration != "" && strings.HasSuffix(duration, "h") {
+			hours, err := strconv.Atoi(strings.TrimSuffix(duration, "h"))
+			if err == nil && hours > 0 {
+				query = query.Where("timestamp >= datetime('now', '-" + strconv.Itoa(hours) + " hours')")
+			}
+		} else {
+			days := 30
+			if d, err := strconv.Atoi(daysStr); err == nil {
+				days = d
+			}
+			query = query.Where("timestamp > ?", time.Now().AddDate(0, 0, -days))
+		}
+
+		err := query.Order("timestamp DESC").Find(&systemStats).Error
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to query DB"})
 		}
@@ -1817,6 +1833,29 @@ func main() {
 			return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "Stats not ready"})
 		}
 		return c.JSON(http.StatusOK, latestSystemStats)
+	})
+
+	r.GET("/system/info", func(c echo.Context) error {
+		dockerVer := "Unknown"
+		if v, err := cli.ServerVersion(context.Background(), client.ServerVersionOptions{}); err == nil {
+			dockerVer = v.Version
+		}
+
+		composeVer := "Unknown"
+		out, err := exec.Command("docker", "compose", "version", "--short").Output()
+		if err == nil {
+			composeVer = strings.TrimSpace(string(out))
+		} else {
+			out, err = exec.Command("docker-compose", "version", "--short").Output()
+			if err == nil {
+				composeVer = strings.TrimSpace(string(out))
+			}
+		}
+
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"docker_version":  dockerVer,
+			"compose_version": composeVer,
+		})
 	})
 
 	r.POST("/user/change-password", func(c echo.Context) error {
