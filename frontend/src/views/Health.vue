@@ -10,9 +10,10 @@
             <span v-if="isPartialData" class="coverage-hint">
               · Showing {{ formatDuration(availableHours) }} of data
             </span>
-            <span v-if="systemInfo" class="system-info-hint">
-              · Docker v{{ systemInfo.docker_version }} · Compose v{{ systemInfo.compose_version }}
-            </span>
+          </p>
+          <p v-if="systemInfo" class="system-info-hint" style="margin-top: 6px; font-size: 0.9em; opacity: 0.8;">
+            <AppIcon name="server" style="width: 14px; height: 14px; display: inline-block; vertical-align: middle; margin-right: 4px; margin-top: -2px;" />
+            System Environment: Docker v{{ systemInfo.docker_version }} · Compose v{{ systemInfo.compose_version }}
           </p>
         </div>
         <div class="page-hero-actions">
