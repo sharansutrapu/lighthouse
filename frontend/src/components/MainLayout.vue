@@ -238,8 +238,16 @@
             }}</span>
           </div>
         </div>
-        <div class="logout-button">
-          <button class="logout-link" @click="logout">
+        <div class="logout-button" style="display: flex; gap: 0.5rem; flex-direction: column;">
+          <button class="logout-link" @click="copyApiToken" style="color: var(--accent); justify-content: center; background: rgba(59, 130, 246, 0.1);">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="3">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+            <span v-if="!isSidebarCollapsed">Copy API Token</span>
+          </button>
+          
+          <button class="logout-link" @click="logout" style="justify-content: center;">
             <svg
               viewBox="0 0 24 24"
               width="16"
@@ -569,6 +577,17 @@ const logout = () => {
   sharedState.showPasswordModal = false;
   sharedState.forcePasswordChange = false;
   router.push("/login");
+};
+
+const copyApiToken = async () => {
+  try {
+    const token = secureStorage.getItem("token");
+    if (!token) throw new Error("No token found");
+    await navigator.clipboard.writeText(token);
+    showToast("Success", "API Token copied to clipboard!", "success");
+  } catch (err) {
+    showToast("Error", "Failed to copy API token", "error");
+  }
 };
 
 const openPasswordModal = () => {
