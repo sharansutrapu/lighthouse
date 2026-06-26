@@ -145,6 +145,9 @@ const generateToken = async () => {
   try {
     const res = await apiFetch('/api/tokens', {
       method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
       body: JSON.stringify({ name: newTokenName.value })
     });
     
