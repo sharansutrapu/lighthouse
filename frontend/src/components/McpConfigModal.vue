@@ -45,6 +45,20 @@
                 </svg>
               </button>
             </div>
+            
+            <div class="mcp-config-snippet">
+              <p class="snippet-title"><strong>Client Configuration</strong></p>
+              <p class="snippet-desc">Add this to your Claude Desktop or Cursor config:</p>
+              <div class="code-block-wrapper">
+                <pre><code>{{ getMcpConfig(newlyGeneratedToken) }}</code></pre>
+                <button class="copy-btn snippet-copy" @click="copyToken(getMcpConfig(newlyGeneratedToken))" title="Copy Config">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  </svg>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -180,6 +194,22 @@ const formatDate = (dateStr) => {
   if (!dateStr || dateStr.startsWith('0001-01-01')) return 'Never';
   const d = new Date(dateStr);
   return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+};
+
+const getMcpConfig = (token) => {
+  return JSON.stringify({
+    mcpServers: {
+      "lighthouse-mcp": {
+        command: "npx",
+        args: ["-y", "@modelcontextprotocol/inspector"],
+        env: {
+          MCP_TRANSPORT: "sse",
+          MCP_URL: "https://lighthouse.sirgiving.org/api/mcp/sse",
+          MCP_HEADERS: `{"Authorization": "Bearer ${token}"}`
+        }
+      }
+    }
+  }, null, 2);
 };
 
 watch(() => props.modelValue, (newVal) => {
@@ -370,6 +400,58 @@ h3 {
 
 .copy-btn:hover {
   opacity: 0.7;
+}
+
+.mcp-config-snippet {
+  margin-top: 1.5rem;
+}
+
+.mcp-config-snippet .snippet-title {
+  margin: 0 0 0.25rem 0;
+  color: var(--text-main);
+}
+
+.mcp-config-snippet .snippet-desc {
+  margin: 0 0 0.75rem 0;
+  font-size: 0.9rem;
+  color: var(--text-mute);
+}
+
+.code-block-wrapper {
+  position: relative;
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.code-block-wrapper pre {
+  margin: 0;
+  padding: 1rem;
+  overflow-x: auto;
+}
+
+.code-block-wrapper code {
+  font-family: monospace;
+  font-size: 0.85rem;
+  color: var(--text-main);
+  white-space: pre;
+}
+
+.snippet-copy {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.4rem;
+  color: var(--text-main);
+}
+
+.snippet-copy:hover {
+  background: var(--bg-subtle);
+  color: #10b981;
 }
 
 .tokens-table-container {
