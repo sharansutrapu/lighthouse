@@ -57,6 +57,13 @@ Keep your infrastructure secure with native image scanning:
 - **Instant Scans:** Scan any running container's image directly from the Container Details dashboard with a single click, or **Scan All** containers at once.
 - **Detailed Reporting:** View comprehensive CVE reports, severity badges (Critical, High, Medium, Low), and identify exactly which packages are vulnerable without leaving the UI.
 
+### 🤖 MCP Support (Model Context Protocol)
+Supercharge your AI agents with direct access to your Docker infrastructure:
+- **Seamless Integration:** Native support for the Model Context Protocol (MCP).
+- **Secure Access:** Generate, manage, and revoke dedicated API tokens for your AI assistants directly from the UI.
+- **Easy Configuration:** Get instant, copy-paste ready `npx` connection commands from the dedicated MCP Configuration panel.
+- **AI-Driven DevOps:** Allow your LLMs and agents to query container health, read logs, and trigger deployments safely.
+
 ### 🚨 Alerting & Webhooks
 Never miss a critical event with the highly customizable Alerting Engine:
 - **Extensive Rules:** Comes with 17 default alert rules covering CPU/Memory spikes, container crashes, OOM kills, and more.
@@ -64,6 +71,8 @@ Never miss a critical event with the highly customizable Alerting Engine:
 - **Log Pattern Matching:** Trigger alerts when specific Regex patterns or error strings appear in a container's log stream.
 - **System & Feature Events:** Trigger notifications on critical platform events like container crashes, OOM kills, Vulnerability Scan results, GitOps deployment status, and database Backup results.
 - **Targeted Monitoring:** Apply rules globally, or restrict them to specific containers using Regex names (e.g., `^prod-.*$`).
+- **Team-Based Routing:** Configure unique Webhooks and Email addresses per Team. Alerts are intelligently grouped and routed only to the Teams that have visibility of the affected container, drastically reducing noise.
+- **SMTP Optimized:** Intelligently groups email recipients into a single CC batch to preserve your SMTP provider limits.
 - **Flexible Dispatch:** Instantly route notifications to Slack, Discord, MS Teams, Email, or any custom Webhook endpoint.
 - **Spam Prevention:** Built-in cooldown mechanisms ensure your channels aren't flooded during persistent issues.
 
