@@ -240,8 +240,11 @@
         </div>
         <div class="logout-button" style="display: flex; gap: 0.5rem; flex-direction: column;">
           <button class="logout-link mcp-btn" @click="showMcpConfigModal = true" style="justify-content: center; color: var(--accent);">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 22v-5"></path>
+              <path d="M9 8V2"></path>
+              <path d="M15 8V2"></path>
+              <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"></path>
             </svg>
             <span v-if="!isSidebarCollapsed">MCP Config</span>
           </button>

@@ -3,8 +3,11 @@
     <div class="modal-content large" :class="sharedState.theme">
       <div class="modal-header">
         <div class="modal-title-group">
-          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22v-5"></path>
+            <path d="M9 8V2"></path>
+            <path d="M15 8V2"></path>
+            <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"></path>
           </svg>
           <h2>MCP & API Tokens</h2>
         </div>
