@@ -228,6 +228,15 @@ type GitDeployment struct {
 	CreatedAt time.Time `gorm:"autoCreateTime" json:"created_at"`
 }
 
+type ApiToken struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	UserID    uint      `gorm:"index" json:"user_id"`
+	Name      string    `json:"name"`
+	Token     string    `gorm:"uniqueIndex" json:"token"`
+	CreatedAt time.Time `gorm:"autoCreateTime" json:"created_at"`
+	LastUsed  time.Time `json:"last_used"`
+}
+
 // OnAuditLogged can be set to be called whenever an audit log is created.
 var OnAuditLogged func(action, resource, status, details string)
 
@@ -283,6 +292,7 @@ func InitDB(dataSourceName string) error {
 		&ImageScanResult{},
 		&GitProject{},
 		&GitDeployment{},
+		&ApiToken{},
 	)
 	if err != nil {
 		log.Printf("AutoMigrate failed: %v", err)

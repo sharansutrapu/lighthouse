@@ -239,12 +239,12 @@
           </div>
         </div>
         <div class="logout-button" style="display: flex; gap: 0.5rem; flex-direction: column;">
-          <button class="logout-link" @click="copyApiToken" style="color: var(--accent); justify-content: center; background: rgba(59, 130, 246, 0.1);">
+          <button class="logout-link" @click="showMcpConfigModal = true" style="color: var(--accent); justify-content: center; background: rgba(59, 130, 246, 0.1);">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="3">
               <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
               <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
             </svg>
-            <span v-if="!isSidebarCollapsed">Copy API Token</span>
+            <span v-if="!isSidebarCollapsed">MCP Config</span>
           </button>
           
           <button class="logout-link" @click="logout" style="justify-content: center;">
@@ -514,6 +514,7 @@
         </div>
       </Transition>
     </Teleport>
+    <McpConfigModal v-model="showMcpConfigModal" />
   </div>
 </template>
 
@@ -531,6 +532,7 @@ import {
 import { secureStorage } from "../utils/storage";
 import { createAuthenticatedWebSocket } from "../utils/wsAuth";
 import { apiFetch } from "../utils/apiFetch";
+import McpConfigModal from "./McpConfigModal.vue";
 
 const route = useRoute();
 const router = useRouter();
@@ -539,6 +541,7 @@ const isMobileMenuOpen = ref(false);
 const isMobileSearchOpen = ref(false);
 const isSidebarCollapsed = ref(false);
 const isFullBleedPage = computed(() => route.name === "Logs" || route.name === "Shell");
+const showMcpConfigModal = ref(false);
 let statsWs = null;
 let userInterval = null;
 let statsReconnectTimer = null;
@@ -577,17 +580,6 @@ const logout = () => {
   sharedState.showPasswordModal = false;
   sharedState.forcePasswordChange = false;
   router.push("/login");
-};
-
-const copyApiToken = async () => {
-  try {
-    const token = secureStorage.getItem("token");
-    if (!token) throw new Error("No token found");
-    await navigator.clipboard.writeText(token);
-    showToast("Success", "API Token copied to clipboard!", "success");
-  } catch (err) {
-    showToast("Error", "Failed to copy API token", "error");
-  }
 };
 
 const openPasswordModal = () => {

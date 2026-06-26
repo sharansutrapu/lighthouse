@@ -723,6 +723,39 @@ func main() {
 			return new(UserClaims)
 		},
 		SigningKey: SECRET_KEY,
+		Skipper: func(c echo.Context) bool {
+			auth := c.Request().Header.Get("Authorization")
+			if strings.HasPrefix(auth, "Bearer lh_pat_") {
+				tokenStr := strings.TrimPrefix(auth, "Bearer ")
+				var apiToken db.ApiToken
+				if err := db.GormDB.Where("token = ?", tokenStr).First(&apiToken).Error; err == nil {
+					db.GormDB.Model(&apiToken).Update("last_used", time.Now())
+					var u db.User
+					if err := db.GormDB.First(&u, apiToken.UserID).Error; err == nil {
+						claims := &UserClaims{
+							ID:                 int(u.ID),
+							Username:           u.Username,
+							IsAdmin:            u.IsAdmin,
+							CanStart:           u.CanStart,
+							CanStop:            u.CanStop,
+							CanRestart:         u.CanRestart,
+							CanDelete:          u.CanDelete,
+							CanShell:           u.CanShell,
+							IsRestrictedAccess: u.IsRestrictedAccess,
+							AllowedContainers:  u.AllowedContainers,
+							IsActive:           u.IsActive,
+							PasswordChanged:    u.PasswordChanged,
+							PasswordVersion:    u.PasswordVersion,
+							TokenType:          "access",
+						}
+						mockToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+						c.Set("user", mockToken)
+						return true // Skip standard JWT validation
+					}
+				}
+			}
+			return false
+		},
 	}))
 
 	// Password change enforcement & session validation middleware
@@ -771,6 +804,7 @@ func main() {
 	RegisterImageRoutes(r, cli)
 	RegisterVolumeRoutes(r, cli)
 	RegisterNetworkRoutes(r, cli)
+	registerApiTokenRoutes(r)
 
 	r.GET("/containers", func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
