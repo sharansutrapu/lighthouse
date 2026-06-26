@@ -84,7 +84,7 @@
                   <td>{{ formatDate(token.created_at) }}</td>
                   <td>{{ formatDate(token.last_used) }}</td>
                   <td>
-                    <button class="btn-icon btn-danger" @click="revokeToken(token.id)" title="Revoke Token">
+                    <button class="btn-icon btn-danger" @click="promptRevoke(token)" title="Revoke Token">
                       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
                       </svg>
@@ -97,11 +97,35 @@
         </div>
       </div>
     </div>
+    
+    <!-- Revoke Confirmation Modal -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div v-if="tokenToRevoke" class="modal-overlay" style="z-index: 10001">
+          <div class="modal-content shadow-2xl" style="max-width: 400px; padding: 2rem; text-align: center;">
+            <div class="modal-icon text-danger" style="margin-bottom: 1rem; color: #ef4444;">
+              <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="3 6 5 6 21 6"></polyline>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+              </svg>
+            </div>
+            <h3>Revoke Token</h3>
+            <p style="margin: 1rem 0; color: var(--text-mute);">
+              Are you sure you want to revoke the token <strong>{{ tokenToRevoke.name }}</strong>? Any applications using it will immediately lose access.
+            </p>
+            <div style="display: flex; gap: 1rem; justify-content: center; margin-top: 1.5rem;">
+              <button @click="tokenToRevoke = null" class="btn btn-secondary">Cancel</button>
+              <button @click="executeRevoke" class="btn btn-danger" style="background: #ef4444; color: white;">Revoke</button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
 <script setup>
-import { ref, watch } from 'vue';
+import { ref, onMounted, watch } from 'vue';
 import { apiFetch } from '../utils/apiFetch';
 import { sharedState, showToast } from '../utils/sharedState';
 import { secureStorage } from '../utils/storage';
@@ -117,6 +141,7 @@ const isLoading = ref(false);
 const newTokenName = ref('');
 const isGenerating = ref(false);
 const newlyGeneratedToken = ref('');
+const tokenToRevoke = ref(null);
 
 const close = () => {
   newlyGeneratedToken.value = '';
@@ -167,8 +192,13 @@ const generateToken = async () => {
   }
 };
 
-const revokeToken = async (id) => {
-  if (!confirm("Are you sure you want to revoke this token? Any applications using it will immediately lose access.")) return;
+const promptRevoke = (token) => {
+  tokenToRevoke.value = token;
+};
+
+const executeRevoke = async () => {
+  if (!tokenToRevoke.value) return;
+  const id = tokenToRevoke.value.id;
   
   try {
     const res = await apiFetch(`/api/tokens/${id}`, {
@@ -178,9 +208,13 @@ const revokeToken = async (id) => {
     if (res.ok) {
       showToast("Success", "Token revoked", "success");
       await fetchTokens();
+    } else {
+      showToast("Error", "Failed to revoke token", "error");
     }
   } catch (err) {
-    showToast("Error", "Failed to revoke token", "error");
+    showToast("Error", "Connection error", "error");
+  } finally {
+    tokenToRevoke.value = null;
   }
 };
 
