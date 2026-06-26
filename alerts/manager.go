@@ -669,25 +669,38 @@ func (am *AlertManager) deliverAlert(rule *AlertRule, containerName, alertType, 
 			go func(u string) { defer wg.Done(); deliverCh("generic_webhook", u, rule.EnableGenericWebhook) }(url)
 		}
 
-		if rule.EnableEmail {
-			for emailAddr := range emails {
-				if setting.SmtpHost == "" {
-					log.Printf("[Alerts] Cannot send email: SMTP Host not configured")
-					channelsMu.Lock()
-					channels = append(channels, "email")
-					statusMsgs = append(statusMsgs, "Email Failed: SMTP Host not configured")
-					channelsMu.Unlock()
-					continue
+		if rule.EnableEmail && len(emails) > 0 {
+			if setting.SmtpHost == "" {
+				log.Printf("[Alerts] Cannot send email: SMTP Host not configured")
+				channelsMu.Lock()
+				channels = append(channels, "email")
+				statusMsgs = append(statusMsgs, "Email Failed: SMTP Host not configured")
+				channelsMu.Unlock()
+			} else {
+				var toAddr string
+				var ccAddrs []string
+
+				if setting.AlertsEmailAddress != "" {
+					toAddr = setting.AlertsEmailAddress
 				}
+
+				for e := range emails {
+					if toAddr == "" {
+						toAddr = e
+					} else if e != toAddr {
+						ccAddrs = append(ccAddrs, e)
+					}
+				}
+
 				wg.Add(1)
-				go func(addr string) {
+				go func() {
 					defer wg.Done()
 					channelsMu.Lock()
 					channels = append(channels, "email")
 					channelsMu.Unlock()
 
-					log.Printf("[Alerts] Sending email to %s for rule %q", addr, payload.RuleName)
-					err := DeliverEmail(setting.SmtpHost, setting.SmtpPort, setting.SmtpUser, setting.SmtpPass, addr, payload)
+					log.Printf("[Alerts] Sending email to %s (CC: %v) for rule %q", toAddr, ccAddrs, payload.RuleName)
+					err := DeliverEmail(setting.SmtpHost, setting.SmtpPort, setting.SmtpUser, setting.SmtpPass, toAddr, ccAddrs, payload)
 					
 					channelsMu.Lock()
 					if err != nil {
@@ -697,7 +710,7 @@ func (am *AlertManager) deliverAlert(rule *AlertRule, containerName, alertType, 
 						statusMsgs = append(statusMsgs, "Email Success")
 					}
 					channelsMu.Unlock()
-				}(emailAddr)
+				}()
 			}
 		}
 

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/smtp"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -270,8 +271,8 @@ func postJSON(url string, body []byte) error {
 	return nil
 }
 
-// DeliverEmail sends an email via the provided SMTP configuration.
-func DeliverEmail(host string, port int, user, pass, to string, p NotificationPayload) error {
+// DeliverEmail sends an email via the provided SMTP configuration, supporting CC addresses.
+func DeliverEmail(host string, port int, user, pass, to string, cc []string, p NotificationPayload) error {
 	addr := fmt.Sprintf("%s:%d", host, port)
 	var auth smtp.Auth
 	if user != "" && pass != "" {
@@ -314,13 +315,28 @@ func DeliverEmail(host string, port int, user, pass, to string, p NotificationPa
 	</html>
 	`, p.RuleName, p.ContainerName, p.Type, p.Details)
 
-	headers := "From: " + from + "\r\n" +
-		"To: " + to + "\r\n" +
-		subject +
+	headers := "From: " + from + "\r\n"
+	if to != "" {
+		headers += "To: " + to + "\r\n"
+	}
+	if len(cc) > 0 {
+		headers += "Cc: " + strings.Join(cc, ", ") + "\r\n"
+	}
+	headers += subject +
 		"MIME-version: 1.0;\r\n" +
 		"Content-Type: text/html; charset=\"UTF-8\";\r\n\r\n"
 
 	msg := []byte(headers + htmlBody)
+	
+	var allRecipients []string
+	if to != "" {
+		allRecipients = append(allRecipients, to)
+	}
+	allRecipients = append(allRecipients, cc...)
+	
+	if len(allRecipients) == 0 {
+		return fmt.Errorf("alerts/delivery: no recipients for email")
+	}
 
 	// Port 465 requires Implicit TLS
 	if port == 465 {
@@ -344,8 +360,10 @@ func DeliverEmail(host string, port int, user, pass, to string, p NotificationPa
 		if err = client.Mail(from); err != nil {
 			return err
 		}
-		if err = client.Rcpt(to); err != nil {
-			return err
+		for _, rcpt := range allRecipients {
+			if err = client.Rcpt(rcpt); err != nil {
+				return err
+			}
 		}
 		w, err := client.Data()
 		if err != nil {
@@ -363,5 +381,5 @@ func DeliverEmail(host string, port int, user, pass, to string, p NotificationPa
 	}
 
 	// Standard SMTP / STARTTLS for port 587, 25, etc.
-	return smtp.SendMail(addr, auth, from, []string{to}, msg)
+	return smtp.SendMail(addr, auth, from, allRecipients, msg)
 }
