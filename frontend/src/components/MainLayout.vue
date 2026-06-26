@@ -239,10 +239,9 @@
           </div>
         </div>
         <div class="logout-button" style="display: flex; gap: 0.5rem; flex-direction: column;">
-          <button class="logout-link" @click="showMcpConfigModal = true" style="color: var(--accent); justify-content: center; background: rgba(59, 130, 246, 0.1);">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="3">
-              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          <button class="logout-link mcp-btn" @click="showMcpConfigModal = true" style="justify-content: center; color: var(--accent);">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
             </svg>
             <span v-if="!isSidebarCollapsed">MCP Config</span>
           </button>
