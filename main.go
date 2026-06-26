@@ -2018,6 +2018,11 @@ func main() {
 			CanCreateDeployments: c.FormValue("can_create_deployments") == "true",
 			CanEditDeployments:   c.FormValue("can_edit_deployments") == "true",
 			CanDeleteDeployments: c.FormValue("can_delete_deployments") == "true",
+			AlertsEmailAddress:   c.FormValue("alerts_email_address"),
+			SlackWebhookUrl:      c.FormValue("slack_webhook_url"),
+			MSTeamsWebhookUrl:    c.FormValue("msteams_webhook_url"),
+			GChatWebhookUrl:      c.FormValue("gchat_webhook_url"),
+			GenericWebhookUrl:    c.FormValue("generic_webhook_url"),
 		}
 
 		roleTmpl := c.FormValue("role_template_id")
@@ -2059,6 +2064,11 @@ func main() {
 			"can_create_deployments": c.FormValue("can_create_deployments") == "true",
 			"can_edit_deployments":   c.FormValue("can_edit_deployments") == "true",
 			"can_delete_deployments": c.FormValue("can_delete_deployments") == "true",
+			"alerts_email_address":   c.FormValue("alerts_email_address"),
+			"slack_webhook_url":      c.FormValue("slack_webhook_url"),
+			"ms_teams_webhook_url":   c.FormValue("msteams_webhook_url"),
+			"g_chat_webhook_url":     c.FormValue("gchat_webhook_url"),
+			"generic_webhook_url":    c.FormValue("generic_webhook_url"),
 			"role_template_id":       nil,
 		}
 

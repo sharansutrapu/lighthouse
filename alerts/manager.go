@@ -584,10 +584,36 @@ func (am *AlertManager) deliverAlert(rule *AlertRule, containerName, alertType, 
 		log.Printf("[Alerts] Failed to fetch setting: %v", err)
 	}
 
-	enableEmail := rule.EnableEmail
-	emailAddress := setting.AlertsEmailAddress
-	if emailAddress == "" {
-		emailAddress = rule.EmailAddress
+	var teams []db.Team
+	db.GormDB.Find(&teams)
+
+	slackURLs := make(map[string]bool)
+	msteamsURLs := make(map[string]bool)
+	gchatURLs := make(map[string]bool)
+	genericURLs := make(map[string]bool)
+	emails := make(map[string]bool)
+
+	if setting.SlackWebhookUrl != "" { slackURLs[setting.SlackWebhookUrl] = true }
+	if setting.MSTeamsWebhookUrl != "" { msteamsURLs[setting.MSTeamsWebhookUrl] = true }
+	if setting.GChatWebhookUrl != "" { gchatURLs[setting.GChatWebhookUrl] = true }
+	if setting.GenericWebhookUrl != "" { genericURLs[setting.GenericWebhookUrl] = true }
+	if setting.AlertsEmailAddress != "" { emails[setting.AlertsEmailAddress] = true }
+
+	if setting.AlertsEmailAddress == "" && rule.EmailAddress != "" {
+		emails[rule.EmailAddress] = true
+	}
+
+	for _, team := range teams {
+		if team.AllowedContainers != "" {
+			matched, err := regexp.MatchString(team.AllowedContainers, containerName)
+			if err == nil && matched {
+				if team.SlackWebhookUrl != "" { slackURLs[team.SlackWebhookUrl] = true }
+				if team.MSTeamsWebhookUrl != "" { msteamsURLs[team.MSTeamsWebhookUrl] = true }
+				if team.GChatWebhookUrl != "" { gchatURLs[team.GChatWebhookUrl] = true }
+				if team.GenericWebhookUrl != "" { genericURLs[team.GenericWebhookUrl] = true }
+				if team.AlertsEmailAddress != "" { emails[team.AlertsEmailAddress] = true }
+			}
+		}
 	}
 
 	payload := NotificationPayload{
@@ -601,46 +627,81 @@ func (am *AlertManager) deliverAlert(rule *AlertRule, containerName, alertType, 
 	go func() {
 		var statusMsgs []string
 		var channels []string
+		var channelsMu sync.Mutex
 
 		deliverCh := func(channelType, url string, enabled bool) {
 			if !enabled {
 				return
 			}
+			channelsMu.Lock()
 			channels = append(channels, channelType)
-			if url == "" {
-				statusMsgs = append(statusMsgs, fmt.Sprintf("%s Failed: URL not configured", channelType))
-				return
-			}
+			channelsMu.Unlock()
+
 			cfgMap := map[string]string{"url": url}
 			cfgBytes, _ := json.Marshal(cfgMap)
 			if err := DeliverNotification(channelType, string(cfgBytes), payload); err != nil {
 				log.Printf("[Alerts] Delivery failed for rule %q (%s): %v", payload.RuleName, channelType, err)
+				channelsMu.Lock()
 				statusMsgs = append(statusMsgs, fmt.Sprintf("%s Failed: %v", channelType, err))
+				channelsMu.Unlock()
 			} else {
+				channelsMu.Lock()
 				statusMsgs = append(statusMsgs, fmt.Sprintf("%s Success", channelType))
+				channelsMu.Unlock()
 			}
 		}
 
-		deliverCh("slack", setting.SlackWebhookUrl, rule.EnableSlack)
-		deliverCh("msteams", setting.MSTeamsWebhookUrl, rule.EnableMSTeams)
-		deliverCh("gchat", setting.GChatWebhookUrl, rule.EnableGChat)
-		deliverCh("generic_webhook", setting.GenericWebhookUrl, rule.EnableGenericWebhook)
-		if enableEmail && emailAddress != "" {
-			channels = append(channels, "email")
-			if setting.SmtpHost == "" {
-				log.Printf("[Alerts] Cannot send email: SMTP Host not configured")
-				statusMsgs = append(statusMsgs, "Email Failed: SMTP Host not configured")
-			} else {
-				log.Printf("[Alerts] Sending email to %s for rule %q", emailAddress, payload.RuleName)
-				err := DeliverEmail(setting.SmtpHost, setting.SmtpPort, setting.SmtpUser, setting.SmtpPass, emailAddress, payload)
-				if err != nil {
-					log.Printf("[Alerts] Email delivery failed for rule %q: %v", payload.RuleName, err)
-					statusMsgs = append(statusMsgs, fmt.Sprintf("Email Failed: %v", err))
-				} else {
-					statusMsgs = append(statusMsgs, "Email Success")
+		var wg sync.WaitGroup
+		for url := range slackURLs {
+			wg.Add(1)
+			go func(u string) { defer wg.Done(); deliverCh("slack", u, rule.EnableSlack) }(url)
+		}
+		for url := range msteamsURLs {
+			wg.Add(1)
+			go func(u string) { defer wg.Done(); deliverCh("msteams", u, rule.EnableMSTeams) }(url)
+		}
+		for url := range gchatURLs {
+			wg.Add(1)
+			go func(u string) { defer wg.Done(); deliverCh("gchat", u, rule.EnableGChat) }(url)
+		}
+		for url := range genericURLs {
+			wg.Add(1)
+			go func(u string) { defer wg.Done(); deliverCh("generic_webhook", u, rule.EnableGenericWebhook) }(url)
+		}
+
+		if rule.EnableEmail {
+			for emailAddr := range emails {
+				if setting.SmtpHost == "" {
+					log.Printf("[Alerts] Cannot send email: SMTP Host not configured")
+					channelsMu.Lock()
+					channels = append(channels, "email")
+					statusMsgs = append(statusMsgs, "Email Failed: SMTP Host not configured")
+					channelsMu.Unlock()
+					continue
 				}
+				wg.Add(1)
+				go func(addr string) {
+					defer wg.Done()
+					channelsMu.Lock()
+					channels = append(channels, "email")
+					channelsMu.Unlock()
+
+					log.Printf("[Alerts] Sending email to %s for rule %q", addr, payload.RuleName)
+					err := DeliverEmail(setting.SmtpHost, setting.SmtpPort, setting.SmtpUser, setting.SmtpPass, addr, payload)
+					
+					channelsMu.Lock()
+					if err != nil {
+						log.Printf("[Alerts] Email delivery failed for rule %q: %v", payload.RuleName, err)
+						statusMsgs = append(statusMsgs, fmt.Sprintf("Email Failed: %v", err))
+					} else {
+						statusMsgs = append(statusMsgs, "Email Success")
+					}
+					channelsMu.Unlock()
+				}(emailAddr)
 			}
 		}
+
+		wg.Wait()
 
 		if len(statusMsgs) > 0 {
 			db.GormDB.Model(&history).Updates(map[string]interface{}{

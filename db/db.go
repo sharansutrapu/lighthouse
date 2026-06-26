@@ -60,6 +60,11 @@ type Team struct {
 	CanCreateDeployments bool      `gorm:"default:false" json:"can_create_deployments"`
 	CanEditDeployments   bool      `gorm:"default:false" json:"can_edit_deployments"`
 	CanDeleteDeployments bool      `gorm:"default:false" json:"can_delete_deployments"`
+	AlertsEmailAddress   string    `gorm:"default:''" json:"alerts_email_address"`
+	SlackWebhookUrl      string    `gorm:"default:''" json:"slack_webhook_url"`
+	MSTeamsWebhookUrl    string    `gorm:"default:''" json:"msteams_webhook_url"`
+	GChatWebhookUrl      string    `gorm:"default:''" json:"gchat_webhook_url"`
+	GenericWebhookUrl    string    `gorm:"default:''" json:"generic_webhook_url"`
 	CreatedAt            time.Time `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt            time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 }

@@ -151,6 +151,33 @@
                     </div>
                   </div>
                 </div>
+
+                <div class="perm-section mt-4">
+                  <label class="label-caps">Alert Destinations (Team specific)</label>
+                  <p class="hint-text mb-3">Alerts for containers matching the above visibility will be sent to these destinations in addition to the global admin alerts.</p>
+                  <div class="form-grid">
+                    <div class="input-group">
+                      <label class="label-caps">Email Address</label>
+                      <input type="email" v-model="activeTeam.alerts_email_address" class="premium-input" placeholder="team@example.com" />
+                    </div>
+                    <div class="input-group">
+                      <label class="label-caps">Slack Webhook URL</label>
+                      <input type="url" v-model="activeTeam.slack_webhook_url" class="premium-input" placeholder="https://hooks.slack.com/services/..." />
+                    </div>
+                    <div class="input-group">
+                      <label class="label-caps">MS Teams Webhook URL</label>
+                      <input type="url" v-model="activeTeam.msteams_webhook_url" class="premium-input" placeholder="https://outlook.office.com/webhook/..." />
+                    </div>
+                    <div class="input-group">
+                      <label class="label-caps">Google Chat Webhook URL</label>
+                      <input type="url" v-model="activeTeam.gchat_webhook_url" class="premium-input" placeholder="https://chat.googleapis.com/v1/spaces/..." />
+                    </div>
+                    <div class="input-group">
+                      <label class="label-caps">Generic Webhook URL</label>
+                      <input type="url" v-model="activeTeam.generic_webhook_url" class="premium-input" placeholder="https://api.example.com/webhook" />
+                    </div>
+                  </div>
+                </div>
             </div>
 
             <div class="modal-card-footer">
@@ -214,7 +241,12 @@ const defaultTeam = {
   can_run_scans: false,
   can_create_deployments: false,
   can_edit_deployments: false,
-  can_delete_deployments: false
+  can_delete_deployments: false,
+  alerts_email_address: "",
+  slack_webhook_url: "",
+  msteams_webhook_url: "",
+  gchat_webhook_url: "",
+  generic_webhook_url: ""
 };
 const activeTeam = ref({ ...defaultTeam });
 const teamToDelete = ref(null);
@@ -346,6 +378,12 @@ const saveTeam = async () => {
   } else {
     form.append("role_template_id", "null");
   }
+  
+  form.append("alerts_email_address", activeTeam.value.alerts_email_address || "");
+  form.append("slack_webhook_url", activeTeam.value.slack_webhook_url || "");
+  form.append("msteams_webhook_url", activeTeam.value.msteams_webhook_url || "");
+  form.append("gchat_webhook_url", activeTeam.value.gchat_webhook_url || "");
+  form.append("generic_webhook_url", activeTeam.value.generic_webhook_url || "");
   
   // Append all permission fields
   permissionModules.forEach(mod => {
