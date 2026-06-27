@@ -194,15 +194,18 @@
     <!-- DELETE CONFIRMATION -->
     <Teleport to="body">
       <Transition name="fade">
-        <div v-if="showDeleteModal" class="modal-overlay">
+        <div v-if="showDeleteModal" class="modal-overlay" @click.self="closeModal">
           <div class="modal-content shadow-2xl">
-            <div class="modal-text-center">
-              <h3>Delete Team?</h3>
-              <p>Permanently remove <strong>{{ teamToDelete?.name }}</strong>? Users in this team will lose the team's inherited permissions.</p>
+            <div class="modal-icon error">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="24" height="24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
             </div>
-            <div class="modal-actions mt-4">
-              <button @click="closeModal" class="modal-btn cancel flex-1">Keep</button>
-              <button @click="confirmDelete" class="modal-btn confirm error flex-1">Delete</button>
+            <h3>Delete Team?</h3>
+            <p>Permanently remove <strong>{{ teamToDelete?.name }}</strong>? Users in this team will lose the team's inherited permissions.</p>
+            <div class="modal-actions" style="margin-top: 1.5rem">
+              <button @click="closeModal" class="modal-btn cancel">Cancel</button>
+              <button @click="confirmDelete" class="modal-btn confirm error">Delete Team</button>
             </div>
           </div>
         </div>

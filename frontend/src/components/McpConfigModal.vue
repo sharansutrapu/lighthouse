@@ -101,21 +101,20 @@
     <!-- Revoke Confirmation Modal -->
     <Teleport to="body">
       <Transition name="fade">
-        <div v-if="tokenToRevoke" class="modal-overlay" style="z-index: 10001">
-          <div class="modal-content shadow-2xl" style="max-width: 400px; padding: 2rem; text-align: center;">
-            <div class="modal-icon text-danger" style="margin-bottom: 1rem; color: #ef4444;">
-              <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="3 6 5 6 21 6"></polyline>
-                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+        <div v-if="tokenToRevoke" class="modal-overlay" style="z-index: 10001" @click.self="tokenToRevoke = null">
+          <div class="modal-content shadow-2xl">
+            <div class="modal-icon error">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="24" height="24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
               </svg>
             </div>
             <h3>Revoke Token</h3>
-            <p style="margin: 1rem 0; color: var(--text-mute);">
+            <p>
               Are you sure you want to revoke the token <strong>{{ tokenToRevoke.name }}</strong>? Any applications using it will immediately lose access.
             </p>
-            <div style="display: flex; gap: 1rem; justify-content: center; margin-top: 1.5rem;">
-              <button @click="tokenToRevoke = null" class="btn btn-secondary">Cancel</button>
-              <button @click="executeRevoke" class="btn btn-danger" style="background: #ef4444; color: white;">Revoke</button>
+            <div class="modal-actions" style="margin-top: 1.5rem">
+              <button @click="tokenToRevoke = null" class="modal-btn cancel">Cancel</button>
+              <button @click="executeRevoke" class="modal-btn confirm error">Confirm revoke</button>
             </div>
           </div>
         </div>

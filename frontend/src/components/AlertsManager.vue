@@ -567,34 +567,23 @@
 
     <!-- ── Delete Confirmation Modal ────────────────────────────────────────── -->
     <Teleport to="body">
-      <Transition name="modal-bounce">
+      <Transition name="fade">
         <div v-if="showDeleteModal" class="modal-overlay" @mousedown.self="showDeleteModal = false">
-          <div class="modal-card glass shadow-2xl" style="max-width:420px">
-            <div class="modal-card-header">
-              <div class="header-content">
-                <div class="header-icon error">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
-                    <path d="M10 11v6"/><path d="M14 11v6"/>
-                  </svg>
-                </div>
-                <div>
-                  <h3 class="modal-title">Delete Rule</h3>
-                  <p class="modal-subtitle">This action is permanent</p>
-                </div>
-              </div>
-              <button class="close-btn" @click="showDeleteModal = false">×</button>
+          <div class="modal-content shadow-2xl">
+            <div class="modal-icon error">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="24" height="24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
             </div>
-            <div class="modal-card-body">
-              <p style="color:var(--text-dim); font-size:0.9rem; line-height:1.6;">
-                Are you sure you want to delete <strong style="color:var(--text-main)">{{ deletingRule?.name }}</strong>?
-                All alert history for this rule will be preserved but the rule will no longer fire.
-              </p>
-            </div>
-            <div class="modal-card-footer">
-              <button @click="showDeleteModal = false" class="btn-secondary">Cancel</button>
-              <button @click="deleteRule" class="btn-danger" :disabled="saving">
-                {{ saving ? 'Deleting…' : 'Delete Rule' }}
+            <h3>Delete Rule</h3>
+            <p>
+              Are you sure you want to delete <strong>{{ deletingRule?.name }}</strong>?<br>
+              All alert history for this rule will be preserved but the rule will no longer fire.
+            </p>
+            <div class="modal-actions" style="margin-top: 1.5rem">
+              <button class="modal-btn cancel" @click="showDeleteModal = false">Cancel</button>
+              <button @click="deleteRule" class="modal-btn confirm error" :disabled="saving">
+                {{ saving ? 'Deleting…' : 'Confirm delete' }}
               </button>
             </div>
           </div>

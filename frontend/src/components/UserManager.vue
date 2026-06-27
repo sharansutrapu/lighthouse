@@ -486,35 +486,18 @@
     <!-- DELETE CONFIRMATION MODAL -->
     <Teleport to="body">
       <Transition name="fade">
-        <div v-if="showDeleteModal" class="modal-overlay">
+        <div v-if="showDeleteModal" class="modal-overlay" @click.self="closeAllModals">
           <div class="modal-content shadow-2xl">
             <div class="modal-icon error">
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2.5"
-              >
-                <path
-                  d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
-                ></path>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="24" height="24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
               </svg>
             </div>
-            <div class="modal-text-center">
-              <h3>Delete Account?</h3>
-              <p>Permanently remove <strong>{{ userToDelete?.username }}</strong>?</p>
-            </div>
-            <div class="modal-divider"></div>
-            <div class="modal-actions">
-              <button
-                @click="closeAllModals"
-                class="modal-btn cancel flex-1"
-              >
-                Keep User
-              </button>
-              <button @click="confirmDelete" class="modal-btn confirm error flex-1">
-                Yes, Delete
-              </button>
+            <h3>Delete Account?</h3>
+            <p>Permanently remove <strong>{{ userToDelete?.username }}</strong>?</p>
+            <div class="modal-actions" style="margin-top: 1.5rem">
+              <button @click="closeAllModals" class="modal-btn cancel">Keep User</button>
+              <button @click="confirmDelete" class="modal-btn confirm error">Yes, Delete</button>
             </div>
           </div>
         </div>
@@ -524,49 +507,34 @@
     <!-- RESET PASSWORD MODAL -->
     <Teleport to="body">
       <Transition name="fade">
-        <div v-if="showResetModal" class="modal-overlay">
+        <div v-if="showResetModal" class="modal-overlay" @click.self="closeAllModals">
           <div class="modal-content shadow-2xl">
             <div class="modal-icon warning">
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2.5"
-              >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="24" height="24">
                 <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
                 <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
               </svg>
             </div>
-            <div class="modal-text-center">
-              <h3>Reset Password</h3>
-              <p>Update credentials for <strong>{{ resetTargetUser?.username }}</strong></p>
-            </div>
+            <h3>Reset Password</h3>
+            <p>Update credentials for <strong>{{ resetTargetUser?.username }}</strong></p>
             
-            <div class="modal-body">
-              <div class="input-group">
-                <label class="label-caps">New Secure Password</label>
-                <input
-                  type="password"
-                  v-model="resetPassword"
-                  class="premium-input"
-                  placeholder="••••••••"
-                  @keyup.enter="confirmResetPassword"
-                />
-                <p class="hint-text mt-2 text-center">
-                  User will be forced to change this upon login.
-                </p>
-              </div>
+            <div style="margin: 1.5rem 0;">
+              <input
+                type="password"
+                v-model="resetPassword"
+                class="premium-input"
+                placeholder="New Secure Password"
+                @keyup.enter="confirmResetPassword"
+                style="width: 100%;"
+              />
+              <p class="hint-text mt-2 text-center" style="font-size: 0.85rem;">
+                User will be forced to change this upon login.
+              </p>
             </div>
 
-            <div class="modal-divider"></div>
-
-            <div class="modal-actions">
-              <button @click="closeAllModals" class="modal-btn cancel">
-                Cancel
-              </button>
-              <button @click="confirmResetPassword" class="modal-btn confirm warning">
-                Update Password
-              </button>
+            <div class="modal-actions" style="margin-top: 1.5rem">
+              <button @click="closeAllModals" class="modal-btn cancel">Cancel</button>
+              <button @click="confirmResetPassword" class="modal-btn confirm warning">Update Password</button>
             </div>
           </div>
         </div>
