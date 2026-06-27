@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"net/http"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -75,6 +76,7 @@ func RegisterImageRoutes(r *echo.Group, cli *client.Client) {
 
 		res, err := cli.ImagePrune(context.Background(), client.ImagePruneOptions{Filters: pruneFilters})
 		if err != nil {
+			log.Printf("ERROR: Docker ImagePrune failed: %v", err)
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		}
 		

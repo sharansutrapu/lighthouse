@@ -805,6 +805,7 @@ func main() {
 	RegisterVolumeRoutes(r, cli)
 	RegisterNetworkRoutes(r, cli)
 	registerApiTokenRoutes(r)
+	registerMCPRoutes(r, cli)
 
 	r.GET("/containers", func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)

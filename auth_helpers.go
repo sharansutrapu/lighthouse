@@ -339,6 +339,9 @@ func clientAccessMiddleware() echo.MiddlewareFunc {
 			if !ClientAccessEnabled {
 				return next(c)
 			}
+			if strings.HasPrefix(c.Request().Header.Get("Authorization"), "Bearer lh_pat_") {
+				return next(c)
+			}
 			path := c.Request().URL.Path
 			if !strings.HasPrefix(path, "/api") && !strings.HasPrefix(path, "/ws") {
 				return next(c)
