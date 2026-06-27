@@ -238,12 +238,14 @@ const getMcpConfig = (token) => {
     mcpServers: {
       "lighthouse-mcp": {
         command: "npx",
-        args: ["-y", "@modelcontextprotocol/inspector"],
-        env: {
-          MCP_TRANSPORT: "sse",
-          MCP_URL: "https://lighthouse.sirgiving.org/api/mcp/sse",
-          MCP_HEADERS: `{"Authorization": "Bearer ${token}"}`
-        }
+        args: [
+          "-y",
+          "@cloudmcp/connect",
+          "--url",
+          "https://lighthouse.sirgiving.org/api/mcp/sse",
+          "--header",
+          `Authorization: Bearer ${token}`
+        ]
       }
     }
   }, null, 2);
