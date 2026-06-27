@@ -5,20 +5,33 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"log"
+	"os/exec"
+	"time"
 
 	"github.com/moby/moby/client"
 )
 
+var scanSem = make(chan struct{}, 2) // Limit to 2 concurrent trivy scans
+
 // ScanImage runs aquasec/trivy against the given docker image name using the local docker binary.
 // This requires the host to have docker installed and accessible.
 func ScanImage(ctx context.Context, cli *client.Client, imageName string) (map[string]interface{}, error) {
+	log.Printf("Queuing trivy scan for image: %s", imageName)
+
+	// Acquire semaphore to limit concurrency
+	scanSem <- struct{}{}
+	defer func() { <-scanSem }()
+
 	log.Printf("Starting trivy scan for image: %s", imageName)
 
-	cmd := exec.CommandContext(ctx, "docker", "run", "--rm", 
+	// Apply a 5-minute timeout specifically for the active execution phase, independent of queue wait time
+	execCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	cmd := exec.CommandContext(execCtx, "docker", "run", "--rm", 
 		"-v", "/var/run/docker.sock:/var/run/docker.sock", 
-		"aquasec/trivy:latest", "image", "-f", "json", "--quiet", imageName)
+		"aquasec/trivy:latest", "image", "-f", "json", "--quiet", "--timeout", "5m", imageName)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
