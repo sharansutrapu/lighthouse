@@ -29,8 +29,6 @@
         </button>
       </div>
 
-      </div>
-
       <div class="toolbar-right">
         <button v-if="activeTab === 'rules' && selectedRules.length > 0" @click="showBulkModal = true" class="page-btn" style="color: var(--accent); border-color: rgba(var(--accent-rgb), 0.2);" data-tooltip="Bulk Update Channels">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3">
