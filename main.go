@@ -266,6 +266,11 @@ func main() {
 		log.Fatalf("Failed to init DB: %v", err)
 	}
 
+	// Migrate any existing bad memory thresholds (from bytes to MB)
+	// If a threshold is > 1,000,000, it's virtually impossible to be Megabytes (>1 Terabyte),
+	// so it was likely saved in bytes by the old default seeding script.
+	db.GormDB.Exec("UPDATE alert_rules SET metric_mem_threshold = metric_mem_threshold / (1024*1024) WHERE metric_mem_threshold > 1000000")
+
 	// Seed Admin
 	seedAdmin()
 	seedDefaultAlerts()
@@ -3786,7 +3791,7 @@ func seedDefaultAlerts() {
 			Name:               "Docker: High Resource Spikes",
 			ContainerPattern:   ".*",
 			MetricCpuThreshold: 85.0,
-			MetricMemThreshold: 1073741824, // 1GB
+			MetricMemThreshold: 1024, // 1GB in Megabytes
 			Enabled:            true,
 			CooldownSeconds:    300,
 		},

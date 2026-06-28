@@ -797,25 +797,6 @@ func (am *AlertManager) evaluateMetrics() {
 		}
 	}
 
-	// Get 1-hour baseline average
-	var baselineStats []db.Stat
-	err = db.GormDB.Where("timestamp >= ?", time.Now().Add(-65*time.Minute)).
-		Where("timestamp <= ?", time.Now().Add(-55*time.Minute)).
-		Order("timestamp DESC").Find(&baselineStats).Error
-	if err != nil {
-		log.Printf("[Alerts] evaluateMetrics: failed to query baseline stats: %v", err)
-		return
-	}
-
-	baseline := make(map[string]db.Stat)
-	bSeen := make(map[string]bool)
-	for _, stat := range baselineStats {
-		if !bSeen[stat.ContainerID] {
-			baseline[stat.ContainerID] = stat
-			bSeen[stat.ContainerID] = true
-		}
-	}
-
 	// For each container in recentStats, check against applicable rules
 	// For resolving container_id to name: we can get names from am.cli if needed,
 	// but container_id in DB is usually the ID.
@@ -838,10 +819,7 @@ func (am *AlertManager) evaluateMetrics() {
 			cName = cid
 		}
 
-		baselineStat, hasBaseline := baseline[cid]
-		if !hasBaseline {
-			continue // Need historical data to establish baseline
-		}
+
 
 		for _, rule := range activeRules {
 			matched, err := regexp.MatchString(rule.ContainerPattern, cName)
@@ -849,26 +827,21 @@ func (am *AlertManager) evaluateMetrics() {
 				continue
 			}
 
-			// CPU Check: Current > user threshold AND Current > 1.5x Baseline
+			// CPU Check: Current > user threshold
 			if rule.MetricCPUThreshold > 0 && current.CPU > rule.MetricCPUThreshold {
-				if current.CPU > (baselineStat.CPU * 1.5) {
-					details := fmt.Sprintf("High CPU Detected: %.2f%% (Threshold: %.2f%%, 1h Baseline: %.2f%%)", current.CPU, rule.MetricCPUThreshold, baselineStat.CPU)
-					am.triggerAlert(rule, cName, "metric_cpu", details)
-				}
+				details := fmt.Sprintf("High CPU Detected: %.2f%% (Threshold: %.2f%%)", current.CPU, rule.MetricCPUThreshold)
+				am.triggerAlert(rule, cName, "metric_cpu", details)
 			}
 
-			// Mem Check: Current > user threshold (MB) AND Current > 1.5x Baseline
+			// Mem Check: Current > user threshold (MB)
 			// Mem in DB is usually bytes or MB depending on how collectStats saves it.
 			// Let's assume stats in DB is bytes, rule is MB.
 			currentMemMB := float64(current.Memory) / 1024 / 1024
-			baselineMemMB := float64(baselineStat.Memory) / 1024 / 1024
 			ruleMemMB := float64(rule.MetricMemThreshold)
 
 			if rule.MetricMemThreshold > 0 && currentMemMB > ruleMemMB {
-				if currentMemMB > (baselineMemMB * 1.5) {
-					details := fmt.Sprintf("High Memory Detected: %.2f MB (Threshold: %.2f MB, 1h Baseline: %.2f MB)", currentMemMB, ruleMemMB, baselineMemMB)
-					am.triggerAlert(rule, cName, "metric_mem", details)
-				}
+				details := fmt.Sprintf("High Memory Detected: %.2f MB (Threshold: %.2f MB)", currentMemMB, ruleMemMB)
+				am.triggerAlert(rule, cName, "metric_mem", details)
 			}
 		}
 	}
