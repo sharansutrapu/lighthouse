@@ -269,6 +269,7 @@ func main() {
 	// Seed Admin
 	seedAdmin()
 	seedDefaultAlerts()
+	cleanupStaleAlerts()
 
 	e := echo.New()
 	if TrustProxy {
@@ -3802,4 +3803,15 @@ func seedDefaultAlerts() {
 func isValidContainerID(id string) bool {
 	matched, _ := regexp.MatchString(`^[a-zA-Z0-9_-]+$`, id)
 	return matched
+}
+
+func cleanupStaleAlerts() {
+	res := db.GormDB.Model(&db.AlertHistory{}).
+		Where("delivery_status = ?", "Pending").
+		Update("delivery_status", "Failed (Stale)")
+	if res.Error != nil {
+		log.Printf("Failed to cleanup stale alerts: %v", res.Error)
+	} else if res.RowsAffected > 0 {
+		log.Printf("Cleaned up %d stale pending alerts.", res.RowsAffected)
+	}
 }
