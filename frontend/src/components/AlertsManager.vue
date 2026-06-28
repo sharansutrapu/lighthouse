@@ -816,9 +816,9 @@ const loadRules = async () => {
 const clearAllHistory = async () => {
   historyLoading.value = true;
   try {
-    const res = await fetch('/api/admin/alerts/history', {
+    const res = await apiFetch('/api/admin/alerts/history', {
       method: 'DELETE',
-      headers: { 'Authorization': `Bearer ${token}` }
+      headers: authHeaders()
     });
     if (res.ok) {
       history.value = [];

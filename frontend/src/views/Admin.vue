@@ -918,7 +918,7 @@ onMounted(async () => {
     try {
       const currentToken = secureStorage.getItem('token');
       if (!currentToken) return;
-      const res = await apiFetch('/api/admin/alerts/history?limit=1000', {
+      const res = await apiFetch('/api/admin/alerts/history?limit=200', {
         headers: { Authorization: `Bearer ${currentToken}` }
       });
       if (res.ok) {
