@@ -30,9 +30,17 @@
       </div>
 
       <div class="toolbar-right">
-        <button @click="loadRules" class="page-btn" :disabled="loading" data-tooltip="Refresh">
+        <button v-if="activeTab === 'rules'" @click="loadRules" class="page-btn" :disabled="loading" data-tooltip="Refresh">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3"
             :class="{ rotating: loading }">
+            <polyline points="23 4 23 10 17 10"/>
+            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+          </svg>
+          Refresh
+        </button>
+        <button v-if="activeTab === 'history'" @click="fetchHistory" class="page-btn" :disabled="historyLoading" data-tooltip="Refresh">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3"
+            :class="{ rotating: historyLoading }">
             <polyline points="23 4 23 10 17 10"/>
             <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
           </svg>
@@ -174,13 +182,6 @@
           </svg>
           <input v-model="historySearch" type="text" placeholder="Filter by container or details…"/>
         </div>
-        <button @click="fetchHistory" class="page-btn" :disabled="historyLoading">
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3"
-            :class="{ rotating: historyLoading }">
-            <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-          </svg>
-          Refresh
-        </button>
       </div>
 
       <div class="premium-table-container">
