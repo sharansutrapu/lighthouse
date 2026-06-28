@@ -3057,6 +3057,14 @@ func main() {
 	})
 
 	// LIST alert history
+	// DELETE all alert history
+	admin.DELETE("/alerts/history", func(c echo.Context) error {
+		if err := db.GormDB.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&db.AlertHistory{}).Error; err != nil {
+			log.Printf("[API] Failed to clear alert history: %v", err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to clear history"})
+		}
+		return c.NoContent(http.StatusOK)
+	})
 	admin.GET("/alerts/history", func(c echo.Context) error {
 		limitStr := c.QueryParam("limit")
 		limit := 100
@@ -3763,28 +3771,28 @@ func seedDefaultAlerts() {
 			Name:             "Security: Critical Vulnerability Found",
 			ContainerPattern: ".*",
 			EventTypes:       "system:critical_vulnerability",
-			Enabled:          true,
+			Enabled:          false,
 			CooldownSeconds:  300,
 		},
 		{
 			Name:             "GitOps: Deployment Sync Failed",
 			ContainerPattern: ".*",
 			EventTypes:       "system:gitops_sync_failed",
-			Enabled:          true,
+			Enabled:          false,
 			CooldownSeconds:  300,
 		},
 		{
 			Name:             "Security: Unauthorized Access Attempts",
 			ContainerPattern: ".*",
 			EventTypes:       "system:auth_failed",
-			Enabled:          true,
+			Enabled:          false,
 			CooldownSeconds:  300,
 		},
 		{
 			Name:             "Docker: Container Crashed (OOM/Die)",
 			ContainerPattern: ".*",
 			EventTypes:       "die,oom,health_status:unhealthy",
-			Enabled:          true,
+			Enabled:          false,
 			CooldownSeconds:  300,
 		},
 		{
@@ -3792,7 +3800,7 @@ func seedDefaultAlerts() {
 			ContainerPattern:   ".*",
 			MetricCpuThreshold: 85.0,
 			MetricMemThreshold: 1024, // 1GB in Megabytes
-			Enabled:            true,
+			Enabled:            false,
 			CooldownSeconds:    300,
 		},
 	}
