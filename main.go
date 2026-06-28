@@ -273,7 +273,6 @@ func main() {
 
 	// Seed Admin
 	seedAdmin()
-	seedDefaultAlerts()
 	cleanupStaleAlerts()
 
 	e := echo.New()
@@ -3759,59 +3758,6 @@ func seedAdmin() {
 	})
 }
 
-func seedDefaultAlerts() {
-	var count int64
-	db.GormDB.Model(&db.AlertRule{}).Count(&count)
-	if count > 0 {
-		return // Do not overwrite if user has already modified alerts
-	}
-
-	defaultAlerts := []db.AlertRule{
-		{
-			Name:             "Security: Critical Vulnerability Found",
-			ContainerPattern: ".*",
-			EventTypes:       "system:critical_vulnerability",
-			Enabled:          false,
-			CooldownSeconds:  300,
-		},
-		{
-			Name:             "GitOps: Deployment Sync Failed",
-			ContainerPattern: ".*",
-			EventTypes:       "system:gitops_sync_failed",
-			Enabled:          false,
-			CooldownSeconds:  300,
-		},
-		{
-			Name:             "Security: Unauthorized Access Attempts",
-			ContainerPattern: ".*",
-			EventTypes:       "system:auth_failed",
-			Enabled:          false,
-			CooldownSeconds:  300,
-		},
-		{
-			Name:             "Docker: Container Crashed (OOM/Die)",
-			ContainerPattern: ".*",
-			EventTypes:       "die,oom,health_status:unhealthy",
-			Enabled:          false,
-			CooldownSeconds:  300,
-		},
-		{
-			Name:               "Docker: High Resource Spikes",
-			ContainerPattern:   ".*",
-			MetricCpuThreshold: 85.0,
-			MetricMemThreshold: 1024, // 1GB in Megabytes
-			Enabled:            false,
-			CooldownSeconds:    300,
-		},
-	}
-
-	for _, alert := range defaultAlerts {
-		if err := db.GormDB.Create(&alert).Error; err != nil {
-			log.Printf("Failed to create default alert %s: %v", alert.Name, err)
-		}
-	}
-	log.Println("Default system alerts have been successfully seeded.")
-}
 
 func isValidContainerID(id string) bool {
 	matched, _ := regexp.MatchString(`^[a-zA-Z0-9_-]+$`, id)
