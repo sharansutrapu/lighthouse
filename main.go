@@ -3076,8 +3076,8 @@ func main() {
 			Where("id IN ?", payload.RuleIDs).
 			Updates(map[string]interface{}{
 				"enable_slack":           payload.EnableSlack,
-				"enable_msteams":         payload.EnableMSTeams,
-				"enable_gchat":           payload.EnableGChat,
+				"enable_ms_teams":        payload.EnableMSTeams,
+				"enable_g_chat":          payload.EnableGChat,
 				"enable_generic_webhook": payload.EnableGenericWebhook,
 				"enable_email":           payload.EnableEmail,
 			}).Error
