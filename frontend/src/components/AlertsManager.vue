@@ -46,7 +46,7 @@
           </svg>
           Refresh
         </button>
-        <button v-if="activeTab === 'history'" @click="clearAllHistory" class="page-btn" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.2);" :disabled="historyLoading" data-tooltip="Clear All History">
+        <button v-if="activeTab === 'history'" @click="showClearHistoryModal = true" class="page-btn" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.2);" :disabled="historyLoading" data-tooltip="Clear All History">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3">
             <polyline points="3 6 5 6 21 6"></polyline>
             <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -599,6 +599,32 @@
       </Transition>
     </Teleport>
 
+    <!-- ── Clear History Confirmation Modal ─────────────────────────────────── -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div v-if="showClearHistoryModal" class="modal-overlay" @mousedown.self="showClearHistoryModal = false">
+          <div class="modal-content shadow-2xl">
+            <div class="modal-icon error">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="24" height="24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+            </div>
+            <h3>Clear All History</h3>
+            <p>
+              Are you sure you want to delete all alert history?<br>
+              This action cannot be undone.
+            </p>
+            <div class="modal-actions" style="margin-top: 1.5rem">
+              <button class="modal-btn cancel" @click="showClearHistoryModal = false">Cancel</button>
+              <button @click="clearAllHistory" class="modal-btn confirm error" :disabled="historyLoading">
+                {{ historyLoading ? 'Clearing…' : 'Confirm clear' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
     <!-- ── View Details Modal ────────────────────────────────────────────────── -->
     <Teleport to="body">
       <Transition name="modal-bounce">
@@ -713,6 +739,7 @@ function syncActiveSection() {
 
 const showModal       = ref(false);
 const showDeleteModal = ref(false);
+const showClearHistoryModal = ref(false);
 const showDetailsModal = ref(false);
 const viewDetailsEntry = ref(null);
 const editingRule     = ref(null);
@@ -787,7 +814,6 @@ const loadRules = async () => {
 };
 
 const clearAllHistory = async () => {
-  if (!confirm('Are you sure you want to delete all alert history? This cannot be undone.')) return;
   historyLoading.value = true;
   try {
     const res = await fetch('/api/admin/alerts/history', {
@@ -803,6 +829,7 @@ const clearAllHistory = async () => {
     console.error('Error clearing history:', e);
   } finally {
     historyLoading.value = false;
+    showClearHistoryModal.value = false;
   }
 };
 
