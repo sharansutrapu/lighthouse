@@ -29,7 +29,16 @@
         </button>
       </div>
 
+      </div>
+
       <div class="toolbar-right">
+        <button v-if="activeTab === 'rules' && selectedRules.length > 0" @click="showBulkModal = true" class="page-btn" style="color: var(--accent); border-color: rgba(var(--accent-rgb), 0.2);" data-tooltip="Bulk Update Channels">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3">
+            <path d="M12 20h9"></path>
+            <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+          </svg>
+          Bulk Channels ({{ selectedRules.length }})
+        </button>
         <button v-if="activeTab === 'rules'" @click="loadRules" class="page-btn" :disabled="loading" data-tooltip="Refresh">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3"
             :class="{ rotating: loading }">
@@ -89,6 +98,9 @@
         <table class="premium-table admin-table">
           <thead>
             <tr>
+              <th style="width: 40px;">
+                <input type="checkbox" v-model="selectAllRules" @change="toggleSelectAllRules" class="premium-checkbox" />
+              </th>
               <th>Rule Name</th>
               <th>Criteria Tags</th>
               <th>Cooldown</th>
@@ -98,6 +110,9 @@
           </thead>
           <tbody>
             <tr v-for="rule in rules" :key="rule.id" :class="{ 'disabled-row': !rule.enabled }">
+              <td>
+                <input type="checkbox" :value="rule.id" v-model="selectedRules" class="premium-checkbox" />
+              </td>
               <td data-label="Rule Name">
                 <div class="user-cell">
                   <span class="user-name" style="font-weight: 800; font-size: 0.95rem;">{{ rule.name }}</span>
@@ -625,6 +640,58 @@
       </Transition>
     </Teleport>
 
+    <!-- ── Bulk Update Modal ────────────────────────────────────────────────── -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div v-if="showBulkModal" class="modal-overlay" @mousedown.self="showBulkModal = false">
+          <div class="modal-content shadow-2xl">
+            <div class="modal-icon accent">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="24" height="24">
+                <path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+              </svg>
+            </div>
+            <h3>Bulk Update Channels</h3>
+            <p>Set the delivery channels for the {{ selectedRules.length }} selected alerts.</p>
+            
+            <div class="events-group" style="margin-top: 1.5rem; justify-content: center;">
+              <label class="check-pill" :class="{ active: bulkForm.enable_slack }">
+                <input type="checkbox" v-model="bulkForm.enable_slack" style="display:none"/>
+                <span class="check-dot" :class="{ on: bulkForm.enable_slack }"/>
+                Slack
+              </label>
+              <label class="check-pill" :class="{ active: bulkForm.enable_msteams }">
+                <input type="checkbox" v-model="bulkForm.enable_msteams" style="display:none"/>
+                <span class="check-dot" :class="{ on: bulkForm.enable_msteams }"/>
+                MS Teams
+              </label>
+              <label class="check-pill" :class="{ active: bulkForm.enable_gchat }">
+                <input type="checkbox" v-model="bulkForm.enable_gchat" style="display:none"/>
+                <span class="check-dot" :class="{ on: bulkForm.enable_gchat }"/>
+                GChat
+              </label>
+              <label class="check-pill" :class="{ active: bulkForm.enable_generic_webhook }">
+                <input type="checkbox" v-model="bulkForm.enable_generic_webhook" style="display:none"/>
+                <span class="check-dot" :class="{ on: bulkForm.enable_generic_webhook }"/>
+                Generic
+              </label>
+              <label class="check-pill" :class="{ active: bulkForm.enable_email }">
+                <input type="checkbox" v-model="bulkForm.enable_email" style="display:none"/>
+                <span class="check-dot" :class="{ on: bulkForm.enable_email }"/>
+                Email
+              </label>
+            </div>
+
+            <div class="modal-actions" style="margin-top: 2rem">
+              <button class="modal-btn cancel" @click="showBulkModal = false">Cancel</button>
+              <button @click="bulkUpdateChannels" class="btn-primary" :disabled="saving">
+                {{ saving ? 'Saving…' : 'Update All' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
     <!-- ── View Details Modal ────────────────────────────────────────────────── -->
     <Teleport to="body">
       <Transition name="modal-bounce">
@@ -740,9 +807,29 @@ function syncActiveSection() {
 const showModal       = ref(false);
 const showDeleteModal = ref(false);
 const showClearHistoryModal = ref(false);
+const showBulkModal = ref(false);
 const showDetailsModal = ref(false);
 const viewDetailsEntry = ref(null);
 const editingRule     = ref(null);
+
+const selectedRules = ref([]);
+const selectAllRules = ref(false);
+
+const bulkForm = ref({
+  enable_slack: false,
+  enable_msteams: false,
+  enable_gchat: false,
+  enable_generic_webhook: false,
+  enable_email: false,
+});
+
+const toggleSelectAllRules = () => {
+  if (selectAllRules.value) {
+    selectedRules.value = rules.value.map(r => r.id);
+  } else {
+    selectedRules.value = [];
+  }
+};
 const deletingRule    = ref(null);
 const formError       = ref('');
 
@@ -986,18 +1073,58 @@ const toggleRule = async (rule) => {
 const confirmDelete = (rule) => { deletingRule.value = rule; showDeleteModal.value = true; };
 
 const deleteRule = async () => {
+  if (!deletingRule.value) return;
   saving.value = true;
   try {
     const res = await apiFetch(`${apiBase}/rules/${deletingRule.value.id}`, {
-      method: 'DELETE', headers: authHeaders(),
+      method: 'DELETE',
+      headers: authHeaders()
     });
     if (res.ok) {
-      showToast('Deleted', `Rule "${deletingRule.value.name}" removed`, 'success');
+      showToast('Success', 'Alert rule deleted', 'success');
       showDeleteModal.value = false;
-      await loadRules();
+      deletingRule.value = null;
+      loadRules();
+    } else {
+      showToast('Error', 'Failed to delete rule', 'error');
     }
-  } catch { showToast('Error', 'Failed to delete rule', 'error'); }
-  finally { saving.value = false; }
+  } catch (e) {
+    showToast('Error', 'Network error', 'error');
+  } finally {
+    saving.value = false;
+  }
+};
+
+const bulkUpdateChannels = async () => {
+  if (selectedRules.value.length === 0) return;
+  saving.value = true;
+  try {
+    const res = await apiFetch(`${apiBase}/rules/bulk-channels`, {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        rule_ids: selectedRules.value,
+        enable_slack: bulkForm.value.enable_slack,
+        enable_msteams: bulkForm.value.enable_msteams,
+        enable_gchat: bulkForm.value.enable_gchat,
+        enable_generic_webhook: bulkForm.value.enable_generic_webhook,
+        enable_email: bulkForm.value.enable_email,
+      })
+    });
+    if (res.ok) {
+      showToast('Success', `Updated channels for ${selectedRules.value.length} rules`, 'success');
+      showBulkModal.value = false;
+      selectedRules.value = [];
+      selectAllRules.value = false;
+      loadRules();
+    } else {
+      showToast('Error', 'Failed to bulk update channels', 'error');
+    }
+  } catch (e) {
+    showToast('Error', 'Network error', 'error');
+  } finally {
+    saving.value = false;
+  }
 };
 
 // ── Formatting helpers ────────────────────────────────────────────────────────

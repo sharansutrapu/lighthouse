@@ -3055,6 +3055,45 @@ func main() {
 		return c.NoContent(http.StatusOK)
 	})
 
+	// BULK update channels
+	admin.POST("/alerts/rules/bulk-channels", func(c echo.Context) error {
+		var payload struct {
+			RuleIDs              []int `json:"rule_ids"`
+			EnableSlack          bool  `json:"enable_slack"`
+			EnableMSTeams        bool  `json:"enable_msteams"`
+			EnableGChat          bool  `json:"enable_gchat"`
+			EnableGenericWebhook bool  `json:"enable_generic_webhook"`
+			EnableEmail          bool  `json:"enable_email"`
+		}
+		if err := c.Bind(&payload); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid JSON payload"})
+		}
+		if len(payload.RuleIDs) == 0 {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "No rules selected"})
+		}
+
+		err := db.GormDB.Model(&alerts.AlertRule{}).
+			Where("id IN ?", payload.RuleIDs).
+			Updates(map[string]interface{}{
+				"enable_slack":           payload.EnableSlack,
+				"enable_msteams":         payload.EnableMSTeams,
+				"enable_gchat":           payload.EnableGChat,
+				"enable_generic_webhook": payload.EnableGenericWebhook,
+				"enable_email":           payload.EnableEmail,
+			}).Error
+			
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Database update failed"})
+		}
+
+		token := c.Get("user").(*jwt.Token)
+		userClaims := token.Claims.(*UserClaims)
+		logAudit(userClaims.ID, userClaims.Username, "BULK_UPDATE_CHANNELS", "Rules Updated: "+strconv.Itoa(len(payload.RuleIDs)), "Success", "Bulk updated channels for alerts")
+
+		alertMgr.ReloadRules()
+		return c.NoContent(http.StatusOK)
+	})
+
 	// LIST alert history
 	// DELETE all alert history
 	admin.DELETE("/alerts/history", func(c echo.Context) error {
