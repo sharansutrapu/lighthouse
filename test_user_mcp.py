@@ -1,39 +1,53 @@
-import subprocess
+import requests
 import json
 import time
 import sys
-import threading
 
-def read_output(proc):
-    for line in iter(proc.stdout.readline, b''):
-        print(f"[MCP RESPONSE] {line.decode('utf-8').strip()}")
-        
-def read_err(proc):
-    for line in iter(proc.stderr.readline, b''):
-        print(f"[MCP STDERR] {line.decode('utf-8').strip()}")
+URL = "https://lighthouse.sirgiving.org/api/mcp/sse"
+TOKEN = "lh_pat_61aa283259f62286f1987997ed859d5abbf1061bd5769dc74f67c04e5fa77e97"
 
-cmd = [
-    "npx", "-y", "@cloudmcp/connect",
-    "--url", "https://lighthouse.sirgiving.org/api/mcp/sse",
-    "--header", "Authorization: Bearer lh_pat_439833bfe6c7059ea311341944509896023c807f5255c8f0e7c6026d50cbb621"
-]
+headers = {
+    "Authorization": f"Bearer {TOKEN}",
+    "Accept": "text/event-stream"
+}
 
-print("Starting MCP transport bridge...")
-proc = subprocess.Popen(
-    cmd,
-    stdin=subprocess.PIPE,
-    stdout=subprocess.PIPE,
-    stderr=subprocess.PIPE
-)
+print(f"[*] Connecting to {URL}...")
+res = requests.get(URL, headers=headers, stream=True)
 
-threading.Thread(target=read_output, args=(proc,), daemon=True).start()
-threading.Thread(target=read_err, args=(proc,), daemon=True).start()
+if res.status_code != 200:
+    print(f"[-] FAILED to connect: {res.status_code} {res.text}")
+    sys.exit(1)
 
-print("Waiting for bridge to connect...")
-time.sleep(3)
+print("[+] Connected! Waiting for endpoint event...")
+post_url = None
 
-print("Sending initialize request...")
-init_req = {
+for line in res.iter_lines(decode_unicode=True):
+    if line:
+        print(f"RAW: {line}")
+        if line.startswith("event: endpoint"):
+            pass
+        elif line.startswith("data: "):
+            data = line[6:]
+            if data.startswith("http"):
+                post_url = data
+            elif data.startswith("/"):
+                # Handle relative path
+                from urllib.parse import urlparse
+                parsed = urlparse(URL)
+                post_url = f"{parsed.scheme}://{parsed.netloc}{data}"
+            else:
+                post_url = f"{URL}/{data}"
+                
+            if post_url:
+                print(f"[+] Received POST endpoint: {post_url}")
+                break
+
+if not post_url:
+    print("[-] Did not receive endpoint URL")
+    sys.exit(1)
+
+print("[*] Sending initialize request...")
+init_payload = {
     "jsonrpc": "2.0",
     "id": 1,
     "method": "initialize",
@@ -43,22 +57,44 @@ init_req = {
         "clientInfo": {"name": "test-client", "version": "1.0.0"}
     }
 }
-proc.stdin.write((json.dumps(init_req) + "\n").encode('utf-8'))
-proc.stdin.flush()
+post_res = requests.post(post_url, headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}, json=init_payload)
+print(f"POST initialize status: {post_res.status_code}")
+if post_res.status_code != 200:
+    print(f"Error response: {post_res.text}")
 
-time.sleep(2)
+print("[*] Waiting for initialize response...")
+for line in res.iter_lines(decode_unicode=True):
+    if line and line.startswith("data: "):
+        try:
+            data = json.loads(line[6:])
+            if data.get("id") == 1:
+                print("[+] Initialized successfully.")
+                break
+        except Exception:
+            pass
 
-print("Sending tools/list request...")
-tools_req = {
+print("[*] Sending notifications/initialized...")
+requests.post(post_url, headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}, json={"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+
+print("[*] Sending tools/list request...")
+tools_payload = {
     "jsonrpc": "2.0",
     "id": 2,
     "method": "tools/list",
     "params": {}
 }
-proc.stdin.write((json.dumps(tools_req) + "\n").encode('utf-8'))
-proc.stdin.flush()
+requests.post(post_url, headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}, json=tools_payload)
 
-time.sleep(3)
+print("[*] Waiting for tools list...")
+for line in res.iter_lines(decode_unicode=True):
+    if line and line.startswith("data: "):
+        try:
+            data = json.loads(line[6:])
+            if data.get("id") == 2:
+                print("\n[+] Received tools list:")
+                print(json.dumps(data, indent=2))
+                break
+        except Exception:
+            pass
 
-print("Terminating...")
-proc.terminate()
+print("[+] Validation Complete!")

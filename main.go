@@ -1926,7 +1926,7 @@ func main() {
 		h, _ := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
 		db.GormDB.Model(&user).Updates(map[string]interface{}{
 			"password":         string(h),
-			"password_changed": 1,
+			"password_changed": true,
 			"password_version": gorm.Expr("COALESCE(password_version, 1) + 1"),
 		})
 
@@ -2371,7 +2371,7 @@ func main() {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Password is too long or invalid. Please use a shorter password."})
 		}
 		db.GormDB.Model(&db.User{}).Where("id = ?", id).Updates(map[string]interface{}{
-			"password": string(h), "password_changed": 1, "password_version": gorm.Expr("COALESCE(password_version, 1) + 1"),
+			"password": string(h), "password_changed": true, "password_version": gorm.Expr("COALESCE(password_version, 1) + 1"),
 		})
 
 		token := c.Get("user").(*jwt.Token)
