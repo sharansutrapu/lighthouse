@@ -629,6 +629,13 @@
                 <label class="label-caps">Details</label>
                 <textarea class="premium-input" style="height: 100px; resize: none;" readonly>{{ viewDetailsEntry.details }}</textarea>
               </div>
+              <div class="input-group" style="margin-top: 1rem;">
+                <label class="label-caps">Delivery Status</label>
+                <div class="premium-input" style="display: flex; flex-direction: column; gap: 0.25rem;">
+                  <span style="font-weight: 500;">Status: <span :class="{'text-error': viewDetailsEntry.delivery_status?.includes('Failed') || viewDetailsEntry.delivery_status?.includes('No Channels'), 'text-success': viewDetailsEntry.delivery_status?.includes('Success')}">{{ viewDetailsEntry.delivery_status || 'Pending' }}</span></span>
+                  <span style="font-size: 0.85rem; color: #a1a1aa;">Channel: {{ viewDetailsEntry.delivery_channel || 'None' }}</span>
+                </div>
+              </div>
             </div>
             <div class="modal-card-footer">
               <button @click="showDetailsModal = false" class="btn-primary" style="margin-left: auto;">Close</button>
