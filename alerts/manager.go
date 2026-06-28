@@ -721,6 +721,11 @@ func (am *AlertManager) deliverAlert(rule *AlertRule, containerName, alertType, 
 				"delivery_status":  strings.Join(statusMsgs, " | "),
 				"delivery_channel": strings.Join(channels, " | "),
 			})
+		} else {
+			db.GormDB.Model(&history).Updates(map[string]interface{}{
+				"delivery_status":  "Not Delivered (No Channels Enabled)",
+				"delivery_channel": "None",
+			})
 		}
 	}()
 }
