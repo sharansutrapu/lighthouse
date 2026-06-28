@@ -270,6 +270,12 @@ func (am *AlertManager) TriggerContainerEvent(eventType string, containerName st
 // event action in EventTypes.
 func (am *AlertManager) processContainerEvent(msg events.Message) { //nolint:gocritic
 	containerName := strings.TrimPrefix(msg.Actor.Attributes["name"], "/")
+	if containerName == "" && msg.Actor.ID != "" {
+		containerName = msg.Actor.ID
+		if len(containerName) > 12 {
+			containerName = containerName[:12]
+		}
+	}
 	action := string(msg.Action)
 
 	// When a container starts, re-sync log tailers so we begin scanning the
@@ -808,15 +814,23 @@ func (am *AlertManager) evaluateMetrics() {
 
 	idToName := make(map[string]string)
 	for _, c := range listResult.Items {
-		name := strings.TrimPrefix(c.Names[0], "/")
-		idToName[c.ID[:12]] = name // the stats usually store short ID or full ID
-		idToName[c.ID] = name
+		if len(c.Names) > 0 {
+			name := strings.TrimPrefix(c.Names[0], "/")
+			idToName[c.ID[:12]] = name // short ID
+			idToName[c.ID] = name      // full ID
+		}
 	}
 
 	for cid, current := range recentStats {
 		cName, ok := idToName[cid]
 		if !ok {
-			cName = cid
+			// Fallback: try to look up the container name by querying Docker API directly
+			if inspect, err := am.cli.ContainerInspect(am.ctx, cid, client.ContainerInspectOptions{}); err == nil {
+				cName = strings.TrimPrefix(inspect.Container.Name, "/")
+				idToName[cid] = cName
+			} else {
+				cName = cid
+			}
 		}
 
 

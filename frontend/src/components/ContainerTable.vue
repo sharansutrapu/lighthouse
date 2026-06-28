@@ -51,14 +51,14 @@
                   </span>
                   <span class="container-id">{{ c.id.substring(0, 12) }}</span>
                   <div
-                    v-if="showInlineStats && c.state === 'running' && activeLiveId === c.id"
+                    v-if="showInlineStats && c.state === 'running'"
                     class="inline-stats"
                   >
-                    <span class="stat-chip live">
-                      CPU {{ liveStats.cpu?.toFixed(1) ?? c.cpu?.toFixed(1) ?? "0.0" }}%
+                    <span class="stat-chip" :class="{ live: activeLiveId === c.id }">
+                      CPU {{ (activeLiveId === c.id ? liveStats.cpu : c.cpu)?.toFixed(1) ?? "0.0" }}%
                     </span>
-                    <span class="stat-chip live">
-                      {{ formatBytes(liveStats.memory ?? c.memory) }}
+                    <span class="stat-chip" :class="{ live: activeLiveId === c.id }">
+                      {{ formatBytes(activeLiveId === c.id ? liveStats.memory : c.memory) }}
                     </span>
                   </div>
                 </div>
