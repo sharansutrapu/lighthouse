@@ -15,7 +15,7 @@ def read_err(proc):
 cmd = [
     "npx", "-y", "@cloudmcp/connect",
     "--url", "https://lighthouse.sirgiving.org/api/mcp/sse",
-    "--header", "Authorization: Bearer lh_pat_59bb69221709f8c8aa34276355561b4a2875f7f25df62e65c05c244eddec8b56"
+    "--header", "Authorization: Bearer lh_pat_439833bfe6c7059ea311341944509896023c807f5255c8f0e7c6026d50cbb621"
 ]
 
 print("Starting MCP transport bridge...")

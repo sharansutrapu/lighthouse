@@ -43,13 +43,16 @@ func registerMCPRoutes(r *echo.Group, cli *client.Client) {
 	), mcpInspectContainerHandler(cli))
 
 	// Create SSE server
-	sseServer := server.NewSSEServer(mcpServer, server.WithSSEContextFunc(func(ctx context.Context, req *http.Request) context.Context {
-		// Extract claims from the request context if injected
-		if claims, ok := req.Context().Value("userClaims").(*UserClaims); ok {
-			return context.WithValue(ctx, "userClaims", claims)
-		}
-		return ctx
-	}))
+	sseServer := server.NewSSEServer(mcpServer, 
+		server.WithStaticBasePath("/api/mcp"),
+		server.WithSSEContextFunc(func(ctx context.Context, req *http.Request) context.Context {
+			// Extract claims from the request context if injected
+			if claims, ok := req.Context().Value("userClaims").(*UserClaims); ok {
+				return context.WithValue(ctx, "userClaims", claims)
+			}
+			return ctx
+		}),
+	)
 
 	// Middleware to extract JWT claims and put into http.Request context
 	injectClaims := func(next http.Handler) echo.HandlerFunc {
