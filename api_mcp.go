@@ -54,6 +54,9 @@ func registerMCPRoutes(r *echo.Group, cli *client.Client) {
 	// Middleware to extract JWT claims and put into http.Request context
 	injectClaims := func(next http.Handler) echo.HandlerFunc {
 		return func(c echo.Context) error {
+			// Ensure Nginx and other proxies don't buffer the SSE stream
+			c.Response().Header().Set("X-Accel-Buffering", "no")
+			
 			if token, ok := c.Get("user").(*jwt.Token); ok {
 				if claims, ok := token.Claims.(*UserClaims); ok {
 					ctx := context.WithValue(c.Request().Context(), "userClaims", claims)
