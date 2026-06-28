@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net"
 	"net/http"
 	"net/smtp"
@@ -233,13 +234,35 @@ func isAllowedWebhookURL(rawURL string) bool {
 		return false
 	}
 	host := parsed.Hostname()
-	ip := net.ParseIP(host)
-	if ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()) {
-		return false
-	}
+
+	// Block known cloud metadata endpoints by hostname
 	blockedHosts := []string{"169.254.169.254", "metadata.google.internal"}
 	for _, b := range blockedHosts {
-		if host == b {
+		if strings.EqualFold(host, b) {
+			return false
+		}
+	}
+
+	// If it's a raw IP, check directly
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsMulticast() {
+			return false
+		}
+		return true
+	}
+
+	// Resolve hostname and check all resulting IPs (prevents DNS rebinding)
+	addrs, err := net.LookupHost(host)
+	if err != nil {
+		// If we can't resolve, block it to be safe
+		return false
+	}
+	for _, addr := range addrs {
+		ip := net.ParseIP(addr)
+		if ip == nil {
+			return false
+		}
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsMulticast() {
 			return false
 		}
 	}
@@ -313,7 +336,7 @@ func DeliverEmail(host string, port int, user, pass, to string, cc []string, p N
 		</div>
 	</body>
 	</html>
-	`, p.RuleName, p.ContainerName, p.Type, p.Details)
+	`, html.EscapeString(p.RuleName), html.EscapeString(p.ContainerName), html.EscapeString(p.Type), html.EscapeString(p.Details))
 
 	headers := "From: " + from + "\r\n"
 	if to != "" {

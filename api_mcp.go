@@ -195,7 +195,7 @@ func mcpGetContainerLogsHandler(cli *client.Client) server.ToolHandlerFunc {
 		out, err := cli.ContainerLogs(ctx, container.Container.ID, client.ContainerLogsOptions{
 			ShowStdout: true,
 			ShowStderr: true,
-			Tail:       "500", // Default to last 500 lines for MCP
+			Tail:       "100", // Limit to last 100 lines to prevent OOM
 		})
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("Failed to get logs: %v", err)), nil
@@ -209,7 +209,16 @@ func mcpGetContainerLogsHandler(cli *client.Client) server.ToolHandlerFunc {
 			log.Printf("Error copying logs: %v", err)
 		}
 
-		result := fmt.Sprintf("=== STDOUT ===\n%s\n=== STDERR ===\n%s", stdout.String(), stderr.String())
+		// Cap output at 50KB to prevent large responses from overwhelming MCP clients
+		const maxBytes = 50 * 1024
+		stdoutStr := stdout.String()
+		stderrStr := stderr.String()
+		if len(stdoutStr)+len(stderrStr) > maxBytes {
+			stdoutStr = stdoutStr[:min(len(stdoutStr), maxBytes/2)] + "\n... [truncated]"
+			stderrStr = stderrStr[:min(len(stderrStr), maxBytes/2)] + "\n... [truncated]"
+		}
+
+		result := fmt.Sprintf("=== STDOUT ===\n%s\n=== STDERR ===\n%s", stdoutStr, stderrStr)
 		return mcp.NewToolResultText(result), nil
 	}
 }

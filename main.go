@@ -70,7 +70,9 @@ var (
 
 func generateSecureCode() string {
 	b := make([]byte, 32)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
 	return hex.EncodeToString(b)
 }
 
@@ -357,7 +359,9 @@ func main() {
 		}
 		inviteToken := c.QueryParam("invite_token")
 		stateBytes := make([]byte, 16)
-		rand.Read(stateBytes)
+		if _, err := rand.Read(stateBytes); err != nil {
+			return c.String(http.StatusInternalServerError, "Failed to generate OAuth state")
+		}
 		state := hex.EncodeToString(stateBytes)
 		if inviteToken != "" {
 			state = state + ":" + inviteToken
@@ -590,7 +594,7 @@ func main() {
 
 	e.POST("/api/token", func(c echo.Context) error {
 		ip := c.RealIP()
-		if loginRateLimit.isLimited(ip, 10, 15*time.Minute) {
+		if loginRateLimit.isLimited(ip, 5, 15*time.Minute) {
 			alerts.Global.TriggerSystemAlert("system:auth_failed", fmt.Sprintf("Multiple failed login attempts detected from IP: %s", ip))
 			return c.JSON(http.StatusTooManyRequests, map[string]string{"error": "Too many login attempts. Try again later."})
 		}
@@ -844,7 +848,7 @@ func main() {
 		if !dbIsAdmin {
 			patterns = getAuthorizedPatterns(user.ID)
 		}
-		log.Printf("User %d (DB Admin: %v) authorized patterns: %v", user.ID, dbIsAdmin, patterns)
+		// Patterns are intentionally not logged to avoid leaking org structure
 
 		var visibleContainers []map[string]interface{}
 		for _, ctr := range containers {
@@ -2689,7 +2693,7 @@ func main() {
 			}
 		}
 		eventTypes := c.FormValue("event_types")
-		enabled := c.FormValue("enabled") != "false"
+		enabled := c.FormValue("enabled") == "true"
 		cooldown := 300
 		if v, err := strconv.Atoi(c.FormValue("cooldown_seconds")); err == nil && v > 0 {
 			cooldown = v
@@ -2987,7 +2991,7 @@ func main() {
 		}
 
 		eventTypes := c.FormValue("event_types")
-		enabled := c.FormValue("enabled") != "false"
+		enabled := c.FormValue("enabled") == "true"
 		cooldown := 300
 		if v, err := strconv.Atoi(c.FormValue("cooldown_seconds")); err == nil && v > 0 {
 			cooldown = v
@@ -3002,7 +3006,7 @@ func main() {
 		metricCPUThreshold, _ := strconv.ParseFloat(c.FormValue("metric_cpu_threshold"), 64)
 		metricMemThreshold, _ := strconv.ParseFloat(c.FormValue("metric_mem_threshold"), 64)
 
-		db.GormDB.Model(&r).Updates(map[string]interface{}{
+		if err := db.GormDB.Model(&r).Updates(map[string]interface{}{
 			"name":                   name,
 			"container_pattern":      containerPattern,
 			"event_types":            eventTypes,
@@ -3010,14 +3014,17 @@ func main() {
 			"enabled":                enabled,
 			"cooldown_seconds":       cooldown,
 			"enable_slack":           enableSlack,
-			"enable_msteams":         enableMSTeams,
-			"enable_gchat":           enableGChat,
+			"enable_ms_teams":        enableMSTeams,
+			"enable_g_chat":          enableGChat,
 			"enable_generic_webhook": enableGenericWebhook,
 			"enable_email":           enableEmail,
 			"email_address":          emailAddress,
 			"metric_cpu_threshold":   metricCPUThreshold,
 			"metric_mem_threshold":   metricMemThreshold,
-		})
+		}).Error; err != nil {
+			log.Printf("[API] Failed to update alert rule %s: %v", id, err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to update rule"})
+		}
 
 		token := c.Get("user").(*jwt.Token)
 		userClaims := token.Claims.(*UserClaims)
