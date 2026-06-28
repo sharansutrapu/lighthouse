@@ -45,6 +45,7 @@ The backend is the core of the application. It handles:
 - **Alerting Engine**: Monitors container health and logs, dispatching alerts to webhooks and email based on customizable rules.
 - **Cloud Backups**: Natively pushes scheduled `lighthouse.db` backups to AWS S3, Google Cloud Storage, or Azure Blob Storage.
 - **Log Archival**: Compresses and archives container log streams to cold cloud storage.
+- **MCP Server (AI Integration)**: Serves a Model Context Protocol server over HTTP Server-Sent Events (SSE) to allow AI agents secure, RBAC-filtered access to Docker operations.
 
 ### 2. The Frontend (Vue 3)
 A modern Single Page Application (SPA) that provides:
@@ -59,6 +60,7 @@ Depending on your deployment mode, LightHouse uses either a local `lighthouse.db
 - **Container Stats**: Historical performance data (CPU/Memory).
 - **GitOps Projects**: Repository configuration and sync history.
 - **Alerting Rules**: Definitions for when to trigger notifications.
+- **API Keys (MCP)**: Dedicated credentials used by AI agents to establish secure MCP sessions.
 
 ## 🔐 Security Model
 

@@ -76,11 +76,17 @@ All `exec.Command` calls involving user inputs (such as Git branch names or repo
 ### 5. Alerting Engine Cooldowns
 To prevent malicious or runaway processes from flooding external webhooks (Slack/Discord/Email) and exhausting rate limits, the Alerting Engine implements a mandatory cooldown period (e.g., 5 minutes) per alert rule per container.
 
+### 6. MCP Server Security
+The Model Context Protocol (MCP) server integration requires explicit API tokens that map to a specific user. The backend strictly binds the AI agent to the **exact same RBAC policies** and container visibility filters (`AllowedContainers`) as the user who generated the token. This guarantees that an AI assistant cannot access, view, or inspect containers that its human operator is unauthorized to see.
+
+### 7. Automated Security Validation
+The backend security constraints are continuously verified by a comprehensive End-to-End validation suite (`e2e_validator.py`). This script executes a battery of assertions against the REST API to guarantee that BOLA defenses, password requirements, and API key restrictions cannot silently regress during future development.
+
 ## 🛡️ Best Practices
 
 1.  **Reverse Proxy**: Always run LightHouse behind a reverse proxy (Nginx, Traefik, Caddy) to handle SSL/TLS termination.
 2.  **Docker Socket**: Be careful with mounting the Docker socket. Only expose LightHouse to trusted networks or use a VPN.
-3.  **Password Policy**: Minimum 8 characters. First login requires a password change. Default credentials are `admin` / `admin123` — change immediately after first login.
+3.  **Password Policy**: Minimum 8 characters. First login requires a mandatory password change. For maximum security, the backend strictly requires the user to provide their temporary `current_password` when executing this forced password change, preventing unauthenticated session hijacking. Default credentials are `admin` / `admin123` — change immediately after first login.
 
 ### Emergency password reset (CLI)
 

@@ -59,8 +59,9 @@ Keep your infrastructure secure with native image scanning:
 
 ### 🤖 MCP Support (Model Context Protocol)
 Supercharge your AI agents with direct access to your Docker infrastructure:
-- **Seamless Integration:** Native support for the Model Context Protocol (MCP).
+- **Seamless Integration:** Native support for the Model Context Protocol (MCP) using SSE (Server-Sent Events) and stateless message exchanges.
 - **Secure Access:** Generate, manage, and revoke dedicated API tokens for your AI assistants directly from the UI.
+- **RBAC Enforced:** AI Agents are bound by the exact same Role-Based Access Control (RBAC) and visibility filters as the user who generated their token. An AI cannot see or interact with a container its owner doesn't have access to.
 - **Easy Configuration:** Get instant, copy-paste ready `npx` connection commands from the dedicated MCP Configuration panel.
 - **AI-Driven DevOps:** Allow your LLMs and agents to query container health, read logs, and trigger deployments safely.
 
@@ -104,6 +105,7 @@ Enterprise-grade security controls to keep your team and infrastructure safe:
 - **BOLA Protection:** Robust Broken Object Level Authorization (BOLA) defenses ensure that users can only access endpoints and actions authorized for their assigned containers and GitOps projects.
 - **Complete Audit Trails:** Every administrative action, shell session, and container operation is permanently recorded in the Audit Logs, tracking exactly *who* did *what* and *when*.
 - **Single Sign-On (SSO):** Authenticate using Google OAuth securely.
+- **Automated Validation:** The platform is rigorously tested with an automated End-to-End validation suite (`e2e_validator.py`) to prevent regressions in security policies and critical path APIs.
 
 ---
 
