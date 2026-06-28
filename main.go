@@ -3807,7 +3807,7 @@ func isValidContainerID(id string) bool {
 
 func cleanupStaleAlerts() {
 	res := db.GormDB.Model(&db.AlertHistory{}).
-		Where("delivery_status = ?", "Pending").
+		Where("delivery_status = ?", "").
 		Update("delivery_status", "Failed (Stale)")
 	if res.Error != nil {
 		log.Printf("Failed to cleanup stale alerts: %v", res.Error)
