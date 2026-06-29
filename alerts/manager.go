@@ -49,18 +49,26 @@ type AlertManager struct {
 	tailsMu    sync.Mutex
 	activeTails map[string]context.CancelFunc // containerID → cancel
 
-	// debounceMu guards debounceState
-	debounceMu    sync.Mutex
-	debounceState map[int64]map[string]*DebounceEntry
+	// debounceMu guards groupedDebounce
+	debounceMu      sync.Mutex
+	groupedDebounce map[string]*ContainerDebounceGroup
 
 	ctx    context.Context
 	cancel context.CancelFunc
 }
 
-// DebounceEntry tracks occurrence counts within a 5-minute window.
-type DebounceEntry struct {
-	Count int
-	Timer *time.Timer
+// TriggeredRule stores details about an alert that fired during a debounce window.
+type TriggeredRule struct {
+	Rule      *AlertRule
+	AlertType string
+	Details   string
+	Count     int
+}
+
+// ContainerDebounceGroup tracks all alerts triggered for a specific container in a short window.
+type ContainerDebounceGroup struct {
+	Triggers map[int64]*TriggeredRule
+	Timer    *time.Timer
 }
 
 // Global is the singleton alert manager for the platform.
@@ -76,7 +84,7 @@ func NewAlertManager(cli *client.Client) *AlertManager {
 		lastTriggered: make(map[int64]time.Time),
 		downState:     make(map[string]bool),
 		activeTails:   make(map[string]context.CancelFunc),
-		debounceState: make(map[int64]map[string]*DebounceEntry),
+		groupedDebounce: make(map[string]*ContainerDebounceGroup),
 		ctx:           ctx,
 		cancel:        cancel,
 	}
@@ -528,66 +536,118 @@ func (am *AlertManager) evaluateLogLine(containerName, line string) {
 // ─── Trigger & Cooldown ───────────────────────────────────────────────────────
 
 func (am *AlertManager) triggerAlert(rule *AlertRule, containerName, alertType, details string) {
+	am.ltMu.Lock()
+	last, seen := am.lastTriggered[rule.ID]
+	canTrigger := !seen || time.Since(last) >= time.Duration(rule.CooldownSeconds)*time.Second
+	if canTrigger {
+		am.lastTriggered[rule.ID] = time.Now()
+	}
+	am.ltMu.Unlock()
+
+	if !canTrigger {
+		return
+	}
+
 	am.debounceMu.Lock()
 	defer am.debounceMu.Unlock()
 
-	if am.debounceState[rule.ID] == nil {
-		am.debounceState[rule.ID] = make(map[string]*DebounceEntry)
+	group, ok := am.groupedDebounce[containerName]
+	if !ok {
+		group = &ContainerDebounceGroup{
+			Triggers: make(map[int64]*TriggeredRule),
+		}
+		am.groupedDebounce[containerName] = group
+
+		// 30 seconds wait window for intelligent grouping
+		group.Timer = time.AfterFunc(30*time.Second, func() {
+			am.debounceMu.Lock()
+			// Extract all accumulated triggers
+			if g, exists := am.groupedDebounce[containerName]; exists {
+				var triggers []TriggeredRule
+				for _, tr := range g.Triggers {
+					triggers = append(triggers, *tr)
+				}
+				delete(am.groupedDebounce, containerName)
+				am.debounceMu.Unlock()
+				
+				if len(triggers) > 0 {
+					am.deliverGroup(containerName, triggers)
+				}
+			} else {
+				am.debounceMu.Unlock()
+			}
+		})
 	}
 
-	entry, ok := am.debounceState[rule.ID][containerName]
-	if !ok {
-		// Respect original cooldown for creating the first entry of the window.
-		// We do it inside the mutex to avoid race conditions.
-		am.ltMu.Lock()
-		last, seen := am.lastTriggered[rule.ID]
-		canTrigger := !seen || time.Since(last) >= time.Duration(rule.CooldownSeconds)*time.Second
-		if canTrigger {
-			am.lastTriggered[rule.ID] = time.Now()
+	tr, exists := group.Triggers[rule.ID]
+	if !exists {
+		group.Triggers[rule.ID] = &TriggeredRule{
+			Rule:      rule,
+			AlertType: alertType,
+			Details:   details,
+			Count:     1,
 		}
-		am.ltMu.Unlock()
-
-		if !canTrigger {
-			return
-		}
-
-		entry = &DebounceEntry{Count: 1}
-		am.debounceState[rule.ID][containerName] = entry
-
-		entry.Timer = time.AfterFunc(5*time.Minute, func() {
-			am.debounceMu.Lock()
-			count := entry.Count
-			delete(am.debounceState[rule.ID], containerName)
-			am.debounceMu.Unlock()
-
-			enrichedDetails := details
-			if count > 1 {
-				enrichedDetails = fmt.Sprintf("%s (x%d occurrences in last 5m)", details, count)
-			}
-			am.deliverAlert(rule, containerName, alertType, enrichedDetails)
-		})
 	} else {
-		entry.Count++
+		tr.Count++
+		// If multiple events occur, retain the first alertType but maybe append details?
+		// We'll just increment the count for now.
 	}
 }
 
-// deliverAlert persists the alert to history and dispatches notifications.
-func (am *AlertManager) deliverAlert(rule *AlertRule, containerName, alertType, details string) {
-	history := db.AlertHistory{
-		RuleID:        func(i uint) *uint { return &i }(uint(rule.ID)),
-		RuleName:      rule.Name,
-		ContainerName: containerName,
-		AlertType:     alertType,
-		Details:       details,
-	}
-	if err := db.GormDB.Create(&history).Error; err != nil {
-		log.Printf("[Alerts] Failed to record alert_history for rule %d: %v", rule.ID, err)
+// deliverGroup persists the alerts to history and dispatches a consolidated notification.
+func (am *AlertManager) deliverGroup(containerName string, triggers []TriggeredRule) {
+	var combinedDetails strings.Builder
+	var ruleNames []string
+
+	// Union of delivery channels
+	var sendSlack, sendMSTeams, sendGChat, sendWebhook, sendEmail bool
+	emailSet := make(map[string]bool)
+
+	// Keep track of the inserted history records to update their delivery status later
+	var historyRecords []db.AlertHistory
+
+	for _, tr := range triggers {
+		// Persist each alert individually in history
+		history := db.AlertHistory{
+			RuleID:        func(i uint) *uint { return &i }(uint(tr.Rule.ID)),
+			RuleName:      tr.Rule.Name,
+			ContainerName: containerName,
+			AlertType:     tr.AlertType,
+			Details:       tr.Details,
+		}
+		if err := db.GormDB.Create(&history).Error; err != nil {
+			log.Printf("[Alerts] Failed to record alert_history for rule %d: %v", tr.Rule.ID, err)
+		} else {
+			historyRecords = append(historyRecords, history)
+		}
+
+		// Aggregate info for digest payload
+		ruleNames = append(ruleNames, tr.Rule.Name)
+		
+		enrichedDetails := tr.Details
+		if tr.Count > 1 {
+			enrichedDetails = fmt.Sprintf("%s (x%d occurrences)", tr.Details, tr.Count)
+		}
+		combinedDetails.WriteString(fmt.Sprintf("[%s] %s\n", tr.Rule.Name, enrichedDetails))
+
+		// OR delivery methods
+		if tr.Rule.EnableSlack { sendSlack = true }
+		if tr.Rule.EnableMSTeams { sendMSTeams = true }
+		if tr.Rule.EnableGChat { sendGChat = true }
+		if tr.Rule.EnableGenericWebhook { sendWebhook = true }
+		if tr.Rule.EnableEmail && tr.Rule.EmailAddress != "" {
+			sendEmail = true
+			emailSet[tr.Rule.EmailAddress] = true
+		}
 	}
 
 	var setting db.Setting
-	err := db.GormDB.First(&setting, 1).Error
-	if err != nil {
+	if err := db.GormDB.First(&setting, 1).Error; err != nil {
 		log.Printf("[Alerts] Failed to fetch setting: %v", err)
+	}
+
+	if sendEmail && setting.AlertsEmailAddress != "" {
+		emailSet[setting.AlertsEmailAddress] = true
 	}
 
 	var teams []db.Team
@@ -597,36 +657,30 @@ func (am *AlertManager) deliverAlert(rule *AlertRule, containerName, alertType, 
 	msteamsURLs := make(map[string]bool)
 	gchatURLs := make(map[string]bool)
 	genericURLs := make(map[string]bool)
-	emails := make(map[string]bool)
 
-	if setting.SlackWebhookUrl != "" { slackURLs[setting.SlackWebhookUrl] = true }
-	if setting.MSTeamsWebhookUrl != "" { msteamsURLs[setting.MSTeamsWebhookUrl] = true }
-	if setting.GChatWebhookUrl != "" { gchatURLs[setting.GChatWebhookUrl] = true }
-	if setting.GenericWebhookUrl != "" { genericURLs[setting.GenericWebhookUrl] = true }
-	if setting.AlertsEmailAddress != "" { emails[setting.AlertsEmailAddress] = true }
-
-	if setting.AlertsEmailAddress == "" && rule.EmailAddress != "" {
-		emails[rule.EmailAddress] = true
-	}
+	if sendSlack && setting.SlackWebhookUrl != "" { slackURLs[setting.SlackWebhookUrl] = true }
+	if sendMSTeams && setting.MSTeamsWebhookUrl != "" { msteamsURLs[setting.MSTeamsWebhookUrl] = true }
+	if sendGChat && setting.GChatWebhookUrl != "" { gchatURLs[setting.GChatWebhookUrl] = true }
+	if sendWebhook && setting.GenericWebhookUrl != "" { genericURLs[setting.GenericWebhookUrl] = true }
 
 	for _, team := range teams {
 		if team.AllowedContainers != "" {
 			matched, err := regexp.MatchString(team.AllowedContainers, containerName)
 			if err == nil && matched {
-				if team.SlackWebhookUrl != "" { slackURLs[team.SlackWebhookUrl] = true }
-				if team.MSTeamsWebhookUrl != "" { msteamsURLs[team.MSTeamsWebhookUrl] = true }
-				if team.GChatWebhookUrl != "" { gchatURLs[team.GChatWebhookUrl] = true }
-				if team.GenericWebhookUrl != "" { genericURLs[team.GenericWebhookUrl] = true }
-				if team.AlertsEmailAddress != "" { emails[team.AlertsEmailAddress] = true }
+				if sendSlack && team.SlackWebhookUrl != "" { slackURLs[team.SlackWebhookUrl] = true }
+				if sendMSTeams && team.MSTeamsWebhookUrl != "" { msteamsURLs[team.MSTeamsWebhookUrl] = true }
+				if sendGChat && team.GChatWebhookUrl != "" { gchatURLs[team.GChatWebhookUrl] = true }
+				if sendWebhook && team.GenericWebhookUrl != "" { genericURLs[team.GenericWebhookUrl] = true }
+				if sendEmail && team.AlertsEmailAddress != "" { emailSet[team.AlertsEmailAddress] = true }
 			}
 		}
 	}
 
-	payload := NotificationPayload{
-		RuleName:      rule.Name,
+	digestPayload := NotificationPayload{
+		RuleName:      strings.Join(ruleNames, ", "),
 		ContainerName: containerName,
-		Type:          alertType,
-		Details:       details,
+		Type:          "digest",
+		Details:       combinedDetails.String(),
 		Timestamp:     time.Now().UTC().Format(time.RFC3339),
 	}
 
@@ -645,8 +699,8 @@ func (am *AlertManager) deliverAlert(rule *AlertRule, containerName, alertType, 
 
 			cfgMap := map[string]string{"url": url}
 			cfgBytes, _ := json.Marshal(cfgMap)
-			if err := DeliverNotification(channelType, string(cfgBytes), payload); err != nil {
-				log.Printf("[Alerts] Delivery failed for rule %q (%s): %v", payload.RuleName, channelType, err)
+			if err := DeliverNotification(channelType, string(cfgBytes), digestPayload); err != nil {
+				log.Printf("[Alerts] Delivery failed for digest (%s): %v", channelType, err)
 				channelsMu.Lock()
 				statusMsgs = append(statusMsgs, fmt.Sprintf("%s Failed: %v", channelType, err))
 				channelsMu.Unlock()
@@ -660,22 +714,22 @@ func (am *AlertManager) deliverAlert(rule *AlertRule, containerName, alertType, 
 		var wg sync.WaitGroup
 		for url := range slackURLs {
 			wg.Add(1)
-			go func(u string) { defer wg.Done(); deliverCh("slack", u, rule.EnableSlack) }(url)
+			go func(u string) { defer wg.Done(); deliverCh("slack", u, sendSlack) }(url)
 		}
 		for url := range msteamsURLs {
 			wg.Add(1)
-			go func(u string) { defer wg.Done(); deliverCh("msteams", u, rule.EnableMSTeams) }(url)
+			go func(u string) { defer wg.Done(); deliverCh("msteams", u, sendMSTeams) }(url)
 		}
 		for url := range gchatURLs {
 			wg.Add(1)
-			go func(u string) { defer wg.Done(); deliverCh("gchat", u, rule.EnableGChat) }(url)
+			go func(u string) { defer wg.Done(); deliverCh("gchat", u, sendGChat) }(url)
 		}
 		for url := range genericURLs {
 			wg.Add(1)
-			go func(u string) { defer wg.Done(); deliverCh("generic_webhook", u, rule.EnableGenericWebhook) }(url)
+			go func(u string) { defer wg.Done(); deliverCh("generic_webhook", u, sendWebhook) }(url)
 		}
 
-		if rule.EnableEmail && len(emails) > 0 {
+		if sendEmail && len(emailSet) > 0 {
 			if setting.SmtpHost == "" {
 				log.Printf("[Alerts] Cannot send email: SMTP Host not configured")
 				channelsMu.Lock()
@@ -690,7 +744,7 @@ func (am *AlertManager) deliverAlert(rule *AlertRule, containerName, alertType, 
 					toAddr = setting.AlertsEmailAddress
 				}
 
-				for e := range emails {
+				for e := range emailSet {
 					if toAddr == "" {
 						toAddr = e
 					} else if e != toAddr {
@@ -705,12 +759,11 @@ func (am *AlertManager) deliverAlert(rule *AlertRule, containerName, alertType, 
 					channels = append(channels, "email")
 					channelsMu.Unlock()
 
-					log.Printf("[Alerts] Sending email to %s (CC: %v) for rule %q", toAddr, ccAddrs, payload.RuleName)
-					err := DeliverEmail(setting.SmtpHost, setting.SmtpPort, setting.SmtpUser, setting.SmtpPass, toAddr, ccAddrs, payload)
+					err := DeliverEmail(setting.SmtpHost, setting.SmtpPort, setting.SmtpUser, setting.SmtpPass, toAddr, ccAddrs, digestPayload)
 					
 					channelsMu.Lock()
 					if err != nil {
-						log.Printf("[Alerts] Email delivery failed for rule %q: %v", payload.RuleName, err)
+						log.Printf("[Alerts] Email delivery failed for digest: %v", err)
 						statusMsgs = append(statusMsgs, fmt.Sprintf("Email Failed: %v", err))
 					} else {
 						statusMsgs = append(statusMsgs, "Email Success")
@@ -722,16 +775,18 @@ func (am *AlertManager) deliverAlert(rule *AlertRule, containerName, alertType, 
 
 		wg.Wait()
 
-		if len(statusMsgs) > 0 {
-			db.GormDB.Model(&history).Updates(map[string]interface{}{
-				"delivery_status":  strings.Join(statusMsgs, " | "),
-				"delivery_channel": strings.Join(channels, " | "),
-			})
-		} else {
-			db.GormDB.Model(&history).Updates(map[string]interface{}{
-				"delivery_status":  "Not Delivered (No Channels Enabled)",
-				"delivery_channel": "None",
-			})
+		for _, history := range historyRecords {
+			if len(statusMsgs) > 0 {
+				db.GormDB.Model(&history).Updates(map[string]interface{}{
+					"delivery_status":  strings.Join(statusMsgs, " | "),
+					"delivery_channel": strings.Join(channels, " | "),
+				})
+			} else {
+				db.GormDB.Model(&history).Updates(map[string]interface{}{
+					"delivery_status":  "Not Delivered (No Channels Enabled)",
+					"delivery_channel": "None",
+				})
+			}
 		}
 	}()
 }

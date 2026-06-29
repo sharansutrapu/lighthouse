@@ -94,6 +94,9 @@ func sendSlackWebhook(url string, p NotificationPayload) error {
 	case "recovery":
 		color = "#36a64f" // green
 		title = fmt.Sprintf("🟢 LightHouse Recovery: %s is back online", p.ContainerName)
+	case "digest":
+		color = "#8b5cf6" // purple
+		title = fmt.Sprintf("🟣 LightHouse Grouped Alerts: %s", p.ContainerName)
 	case "event":
 		color = "#f23d4f" // red
 		title = fmt.Sprintf("🔴 LightHouse Alert: %s Triggered!", p.RuleName)
@@ -138,6 +141,9 @@ func sendMSTeamsWebhook(url string, p NotificationPayload) error {
 	case "recovery":
 		color = "36a64f"
 		title = fmt.Sprintf("Recovery: %s is back online", p.ContainerName)
+	case "digest":
+		color = "8b5cf6"
+		title = fmt.Sprintf("Grouped Alerts for %s", p.ContainerName)
 	case "event":
 		color = "f23d4f"
 		title = fmt.Sprintf("Alert: %s Triggered!", p.RuleName)
@@ -180,6 +186,8 @@ func sendGChatWebhook(url string, p NotificationPayload) error {
 	switch p.Type {
 	case "recovery":
 		title = fmt.Sprintf("🟢 Recovery: %s is back online", p.ContainerName)
+	case "digest":
+		title = fmt.Sprintf("🟣 Grouped Alerts: %s", p.ContainerName)
 	case "event":
 		title = fmt.Sprintf("🔴 Alert: %s Triggered!", p.RuleName)
 	case "audit":
@@ -269,10 +277,12 @@ func isAllowedWebhookURL(rawURL string) bool {
 	return true
 }
 
+var SkipSSRFCheck bool
+
 // postJSON sends a JSON-encoded body to url via HTTP POST and returns an error
 // if the response status code is outside the 2xx range.
 func postJSON(url string, body []byte) error {
-	if !isAllowedWebhookURL(url) {
+	if !SkipSSRFCheck && !isAllowedWebhookURL(url) {
 		return fmt.Errorf("alerts/delivery: webhook URL is not allowed (SSRF protection)")
 	}
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(body))

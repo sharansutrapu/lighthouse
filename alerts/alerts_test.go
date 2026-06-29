@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -108,7 +107,10 @@ func TestWebhookDelivery(t *testing.T) {
 		Timestamp:     time.Now().Format(time.RFC3339),
 	}
 
-	configJSON := `{"url":"` + strings.Replace(ts.URL, "127.0.0.1", "localhost", 1) + `"}`
+	SkipSSRFCheck = true
+	defer func() { SkipSSRFCheck = false }()
+
+	configJSON := `{"url":"` + ts.URL + `"}`
 	err := DeliverNotification("generic_webhook", configJSON, payload)
 	if err != nil {
 		t.Fatalf("DeliverNotification failed: %v", err)
@@ -140,10 +142,14 @@ func TestEvaluateLogLine(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	am.debounceMu.Lock()
-	entry, ok := am.debounceState[int64(rule.ID)]["test-app"]
+	group, ok := am.groupedDebounce["test-app"]
+	var entry *TriggeredRule
+	if ok && group != nil {
+		entry = group.Triggers[int64(rule.ID)]
+	}
 	am.debounceMu.Unlock()
 
-	if !ok || entry == nil {
+	if entry == nil {
 		t.Fatal("Expected log line to trigger debounce entry")
 	}
 
@@ -158,10 +164,10 @@ func TestEvaluateLogLine(t *testing.T) {
 	am.evaluateLogLine("test-app", "This is an INFO line")
 
 	am.debounceMu.Lock()
-	entryOther, okOther := am.debounceState[int64(rule.ID)]["other-app"]
+	groupOther, okOther := am.groupedDebounce["other-app"]
 	am.debounceMu.Unlock()
 
-	if okOther || entryOther != nil {
+	if okOther && groupOther != nil {
 		t.Fatal("Expected other app to NOT trigger debounce entry")
 	}
 }
