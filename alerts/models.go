@@ -29,8 +29,9 @@ type AlertRule struct {
 	EnableGenericWebhook   bool    `json:"enable_generic_webhook"`
 	EnableEmail     bool   `json:"enable_email"`
 	EmailAddress    string `json:"email_address"`
-	MetricCPUThreshold float64 `json:"metric_cpu_threshold"`
-	MetricMemThreshold int64   `json:"metric_mem_threshold"`
+	MetricCPUThreshold  float64    `json:"metric_cpu_threshold"`
+	MetricMemThreshold  int64      `json:"metric_mem_threshold"`     // percent (0-100)
+	MetricStorageThreshold int64   `json:"metric_storage_threshold"` // percent (0-100)
 	CreatedAt       *time.Time `json:"created_at,omitempty"`
 }
 

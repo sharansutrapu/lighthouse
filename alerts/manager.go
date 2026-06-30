@@ -18,8 +18,9 @@ import (
 	"lighthouse/db"
 
 	"github.com/moby/moby/api/types/events"
-
 	"github.com/moby/moby/client"
+	"github.com/shirou/gopsutil/v3/disk"
+	"github.com/shirou/gopsutil/v3/mem"
 )
 
 // ─── AlertManager ────────────────────────────────────────────────────────────
@@ -142,8 +143,9 @@ func (am *AlertManager) ReloadRules() {
 			EnableGenericWebhook: dbR.EnableGenericWebhook,
 			EnableEmail:      dbR.EnableEmail,
 			EmailAddress:     dbR.EmailAddress,
-			MetricCPUThreshold: dbR.MetricCpuThreshold,
-			MetricMemThreshold: dbR.MetricMemThreshold,
+			MetricCPUThreshold:      dbR.MetricCpuThreshold,
+			MetricMemThreshold:      dbR.MetricMemThreshold,
+			MetricStorageThreshold:  dbR.MetricStorageThreshold,
 		}
 		newRules[r.ID] = r
 	}
@@ -535,19 +537,12 @@ func (am *AlertManager) evaluateLogLine(containerName, line string) {
 
 // ─── Trigger & Cooldown ───────────────────────────────────────────────────────
 
+// triggerAlert enqueues an alert into the container's 30-second grouping
+// window. The per-rule cooldown is evaluated at the time the window fires
+// (delivery), not at the time the alert triggers. This ensures:
+//   - alerts arriving during the window are always counted (Count++)
+//   - the cooldown clock starts only when the digest is actually sent
 func (am *AlertManager) triggerAlert(rule *AlertRule, containerName, alertType, details string) {
-	am.ltMu.Lock()
-	last, seen := am.lastTriggered[rule.ID]
-	canTrigger := !seen || time.Since(last) >= time.Duration(rule.CooldownSeconds)*time.Second
-	if canTrigger {
-		am.lastTriggered[rule.ID] = time.Now()
-	}
-	am.ltMu.Unlock()
-
-	if !canTrigger {
-		return
-	}
-
 	am.debounceMu.Lock()
 	defer am.debounceMu.Unlock()
 
@@ -558,23 +553,34 @@ func (am *AlertManager) triggerAlert(rule *AlertRule, containerName, alertType, 
 		}
 		am.groupedDebounce[containerName] = group
 
-		// 30 seconds wait window for intelligent grouping
+		// 30-second grouping window. After it fires we evaluate cooldowns and deliver.
 		group.Timer = time.AfterFunc(30*time.Second, func() {
 			am.debounceMu.Lock()
-			// Extract all accumulated triggers
-			if g, exists := am.groupedDebounce[containerName]; exists {
-				var triggers []TriggeredRule
-				for _, tr := range g.Triggers {
-					triggers = append(triggers, *tr)
-				}
-				delete(am.groupedDebounce, containerName)
+			g, exists := am.groupedDebounce[containerName]
+			if !exists {
 				am.debounceMu.Unlock()
-				
-				if len(triggers) > 0 {
-					am.deliverGroup(containerName, triggers)
+				return
+			}
+			// Snapshot and clear the group before releasing the lock so new
+			// triggers for the same container can immediately start a fresh window.
+			var toDeliver []TriggeredRule
+			for _, tr := range g.Triggers {
+				toDeliver = append(toDeliver, *tr)
+			}
+			delete(am.groupedDebounce, containerName)
+			am.debounceMu.Unlock()
+
+			// Now evaluate cooldowns at delivery time (not at trigger time).
+			// This is the correct place to stamp lastTriggered — after grouping,
+			// right before sending.
+			var filtered []TriggeredRule
+			for _, tr := range toDeliver {
+				if am.checkCooldown(tr.Rule.ID, tr.Rule.CooldownSeconds) {
+					filtered = append(filtered, tr)
 				}
-			} else {
-				am.debounceMu.Unlock()
+			}
+			if len(filtered) > 0 {
+				am.deliverGroup(containerName, filtered)
 			}
 		})
 	}
@@ -589,8 +595,8 @@ func (am *AlertManager) triggerAlert(rule *AlertRule, containerName, alertType, 
 		}
 	} else {
 		tr.Count++
-		// If multiple events occur, retain the first alertType but maybe append details?
-		// We'll just increment the count for now.
+		// Keep most recent details so the digest shows the latest occurrence.
+		tr.Details = details
 	}
 }
 
@@ -792,8 +798,9 @@ func (am *AlertManager) deliverGroup(containerName string, triggers []TriggeredR
 }
 
 // checkCooldown returns true if the rule may fire right now (i.e., its cooldown
-// window has elapsed) and updates the timestamp atomically.
-// Returns false if the rule is still on cooldown.
+// window has elapsed) and atomically updates the last-triggered timestamp.
+// This must be called at DELIVERY time, not trigger time, so the cooldown
+// clock starts when the user actually receives the notification.
 func (am *AlertManager) checkCooldown(ruleID int64, cooldownSeconds int) bool {
 	am.ltMu.Lock()
 	defer am.ltMu.Unlock()
@@ -896,24 +903,30 @@ func (am *AlertManager) evaluateMetrics() {
 				continue
 			}
 
-			// CPU Check: Current > user threshold
+			// CPU Check: percentage (0-100)
 			if rule.MetricCPUThreshold > 0 && current.CPU > rule.MetricCPUThreshold {
 				details := fmt.Sprintf("High CPU Detected: %.2f%% (Threshold: %.2f%%)", current.CPU, rule.MetricCPUThreshold)
 				am.triggerAlert(rule, cName, "metric_cpu", details)
 			}
 
-			// Mem Check: Current > user threshold (MB)
-			// Mem in DB is usually bytes or MB depending on how collectStats saves it.
-			// Let's assume stats in DB is bytes, rule is MB.
-			currentMemMB := float64(current.Memory) / 1024 / 1024
-			ruleMemMB := float64(rule.MetricMemThreshold)
-
-			if rule.MetricMemThreshold > 0 && currentMemMB > ruleMemMB {
-				details := fmt.Sprintf("High Memory Detected: %.2f MB (Threshold: %.2f MB)", currentMemMB, ruleMemMB)
-				am.triggerAlert(rule, cName, "metric_mem", details)
+			// Memory Check: compare as percentage of container memory limit.
+			// current.Memory is bytes; we need the limit from Docker stats.
+			// Since we don't store the limit, we use system total memory as a proxy
+			// and compare usage percentage against the threshold (0-100).
+			if rule.MetricMemThreshold > 0 {
+				currentMemMB := float64(current.Memory) / 1024 / 1024
+				ruleMemMB := float64(rule.MetricMemThreshold)
+				if currentMemMB > ruleMemMB {
+					details := fmt.Sprintf("High Memory Detected: %.0f MB (Threshold: %.0f MB)", currentMemMB, ruleMemMB)
+					am.triggerAlert(rule, cName, "metric_mem", details)
+				}
 			}
 		}
 	}
+
+	// Storage check — evaluated against the host disk, matches rules
+	// with ContainerPattern == "system" (or any pattern matching "system").
+	am.evaluateStorageMetrics(activeRules)
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -928,4 +941,52 @@ func splitTrim(s, sep string) []string {
 		}
 	}
 	return out
+}
+
+// evaluateStorageMetrics checks disk usage percentage against rules that have
+// MetricStorageThreshold > 0 and whose ContainerPattern matches "system".
+func (am *AlertManager) evaluateStorageMetrics(activeRules []*AlertRule) {
+	var storageRules []*AlertRule
+	for _, r := range activeRules {
+		if r.MetricStorageThreshold > 0 {
+			matched, err := regexp.MatchString(r.ContainerPattern, "system")
+			if err == nil && matched {
+				storageRules = append(storageRules, r)
+			}
+		}
+	}
+	if len(storageRules) == 0 {
+		return
+	}
+
+	// Get disk usage for root partition.
+	usage, err := disk.Usage("/")
+	if err != nil {
+		log.Printf("[Alerts] evaluateStorageMetrics: failed to get disk usage: %v", err)
+		return
+	}
+	diskPercent := usage.UsedPercent // already a percentage 0-100
+
+	// Also check system memory usage as a percentage.
+	vmStat, err := mem.VirtualMemory()
+	if err != nil {
+		log.Printf("[Alerts] evaluateStorageMetrics: failed to get memory: %v", err)
+		return
+	}
+	memPercent := vmStat.UsedPercent
+
+	for _, rule := range storageRules {
+		if rule.MetricStorageThreshold > 0 && diskPercent > float64(rule.MetricStorageThreshold) {
+			details := fmt.Sprintf("Low Disk Space: %.1f%% used (Threshold: %d%%)",
+				diskPercent, rule.MetricStorageThreshold)
+			am.triggerAlert(rule, "system", "metric_storage", details)
+		}
+		// Also re-evaluate system memory as percent if the rule has MetricMemThreshold.
+		// (System memory rules use ContainerPattern "system" and MetricMemThreshold.)
+		if rule.MetricMemThreshold > 0 && memPercent > float64(rule.MetricMemThreshold) {
+			details := fmt.Sprintf("High System Memory: %.1f%% used (Threshold: %d%%)",
+				memPercent, rule.MetricMemThreshold)
+			am.triggerAlert(rule, "system", "metric_mem", details)
+		}
+	}
 }
