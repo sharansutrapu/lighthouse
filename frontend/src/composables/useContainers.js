@@ -9,9 +9,6 @@ const loading = ref(true);
 let pollInterval = null;
 let pollSubscribers = 0;
 
-const activeLiveId = ref(null);
-const liveStats = ref({ cpu: 0, memory: 0 });
-let liveInterval = null;
 
 export async function fetchContainers() {
   try {
@@ -85,35 +82,6 @@ export function useContainers(options = {}) {
     () => containers.value.filter((c) => c.state !== 'running').length,
   );
 
-  const fetchStatsNow = async (id) => {
-    try {
-      const token = secureStorage.getItem('token');
-      const res = await apiFetch(`/api/containers/${id}/stats-now`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        liveStats.value = { cpu: data.cpu, memory: data.memory };
-      }
-    } catch (err) {
-      console.error('Live stats fetch failed', err);
-    }
-  };
-
-  const startLiveStats = (id) => {
-    activeLiveId.value = id;
-    fetchStatsNow(id);
-    if (liveInterval) clearInterval(liveInterval);
-    liveInterval = setInterval(() => fetchStatsNow(id), 2000);
-  };
-
-  const stopLiveStats = () => {
-    activeLiveId.value = null;
-    if (liveInterval) {
-      clearInterval(liveInterval);
-      liveInterval = null;
-    }
-  };
 
   const goToLogs = (id) => {
     router.push({ path: '/logs', query: { c: id } });
@@ -180,15 +148,11 @@ export function useContainers(options = {}) {
     filteredContainers,
     runningCount,
     stoppedCount,
-    activeLiveId,
-    liveStats,
     showConfirm,
     pendingAction,
     actionClass,
     isActionLoading,
     fetchContainers,
-    startLiveStats,
-    stopLiveStats,
     goToLogs,
     goToShell,
     goToDetail,

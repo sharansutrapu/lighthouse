@@ -926,13 +926,22 @@ func main() {
 					memLimit = inspect.Container.HostConfig.Memory
 				}
 
-				// Concurrent DB Fetch
+				// Live Memory Cache Fetch
 				var lastCPU float64
 				var lastMem float64
-				var stat db.Stat
-				db.GormDB.Where("container_id = ?", id).Order("timestamp DESC").First(&stat)
-				lastCPU = stat.CPU
-				lastMem = float64(stat.Memory)
+				liveStatsMu.RLock()
+				if st, ok := liveStatsCache[id]; ok {
+					lastCPU = st.CPU
+					lastMem = float64(st.Memory)
+				} else {
+					// Fallback to DB if live cache isn't populated yet
+					var stat db.Stat
+					if err := db.GormDB.Where("container_id = ?", id).Order("timestamp DESC").First(&stat).Error; err == nil {
+						lastCPU = stat.CPU
+						lastMem = float64(stat.Memory)
+					}
+				}
+				liveStatsMu.RUnlock()
 
 				sizeRwVal, _ := c["SizeRw"].(int64)
 				sizeRootFsVal, _ := c["SizeRootFs"].(int64)
@@ -3488,7 +3497,111 @@ func extractContainers(res interface{}) []map[string]interface{} {
 var (
 	latestSystemStats map[string]interface{}
 	sysStatsMu        sync.RWMutex
+
+	// Live stats cache for the /api/containers endpoint
+	liveStatsCache = make(map[string]struct {
+		CPU    float64
+		Memory int64
+	})
+	liveStatsMu sync.RWMutex
+
+	prevLiveStats = make(map[string]struct {
+		TotalUsage  uint64
+		SystemUsage uint64
+	})
+	prevLiveStatsMu sync.Mutex
 )
+
+func liveStatsBroadcaster(cli *client.Client) {
+	ticker := time.NewTicker(3 * time.Second)
+	for range ticker.C {
+		res, err := cli.ContainerList(context.Background(), client.ContainerListOptions{})
+		if err != nil {
+			continue
+		}
+		containers := extractContainers(res.Items)
+
+		var wg sync.WaitGroup
+		for _, ctr := range containers {
+			id, _ := ctr["ID"].(string)
+			if id == "" {
+				id, _ = ctr["Id"].(string)
+			}
+			state, _ := ctr["State"].(string)
+			if state != "running" {
+				continue
+			}
+
+			wg.Add(1)
+			go func(cid string) {
+				defer wg.Done()
+				stats, err := cli.ContainerStats(context.Background(), cid, client.ContainerStatsOptions{Stream: false})
+				if err != nil {
+					return
+				}
+				defer stats.Body.Close()
+
+				var s struct {
+					CPUStats struct {
+						CPUUsage struct {
+							TotalUsage uint64 `json:"total_usage"`
+						} `json:"cpu_usage"`
+						SystemUsage uint64 `json:"system_cpu_usage"`
+						OnlineCPUs  uint32 `json:"online_cpus"`
+					} `json:"cpu_stats"`
+					MemoryStats struct {
+						Usage uint64            `json:"usage"`
+						Stats map[string]uint64 `json:"stats"`
+					} `json:"memory_stats"`
+				}
+				if err := json.NewDecoder(stats.Body).Decode(&s); err != nil {
+					return
+				}
+
+				cpuPercent := 0.0
+				prevLiveStatsMu.Lock()
+				prev, ok := prevLiveStats[cid]
+				if ok {
+					cpuDelta := float64(s.CPUStats.CPUUsage.TotalUsage) - float64(prev.TotalUsage)
+					systemDelta := float64(s.CPUStats.SystemUsage) - float64(prev.SystemUsage)
+					onlineCPUs := float64(s.CPUStats.OnlineCPUs)
+					if onlineCPUs == 0 {
+						onlineCPUs = float64(runtime.NumCPU())
+					}
+					if systemDelta > 0 && cpuDelta > 0 {
+						cpuPercent = (cpuDelta / systemDelta) * onlineCPUs * 100.0
+					}
+				}
+				prevLiveStats[cid] = struct {
+					TotalUsage  uint64
+					SystemUsage uint64
+				}{
+					TotalUsage:  s.CPUStats.CPUUsage.TotalUsage,
+					SystemUsage: s.CPUStats.SystemUsage,
+				}
+				prevLiveStatsMu.Unlock()
+
+				memUsed := s.MemoryStats.Usage
+				if inactiveFile, ok := s.MemoryStats.Stats["inactive_file"]; ok && inactiveFile < memUsed {
+					memUsed -= inactiveFile
+				} else if cache, ok := s.MemoryStats.Stats["cache"]; ok && cache < memUsed {
+					memUsed -= cache
+				}
+
+				liveStatsMu.Lock()
+				liveStatsCache[cid] = struct {
+					CPU    float64
+					Memory int64
+				}{
+					CPU:    cpuPercent,
+					Memory: int64(memUsed),
+				}
+				liveStatsMu.Unlock()
+			}(id)
+		}
+		wg.Wait()
+	}
+}
 
 func systemStatsBroadcaster(cli *client.Client) {
 	for {
@@ -3545,6 +3658,7 @@ func getRetentionDays() int {
 
 func startStatsCollector(cli *client.Client) {
 	go systemStatsBroadcaster(cli)
+	go liveStatsBroadcaster(cli)
 	// Initial collection
 	collectStats(cli)
 

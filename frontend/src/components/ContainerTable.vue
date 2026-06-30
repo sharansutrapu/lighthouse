@@ -28,11 +28,8 @@
             class="container-row"
             :class="{
               'is-running': c.state === 'running',
-              'is-hovered': showInlineStats && activeLiveId === c.id,
               'is-platform': c.is_platform,
             }"
-            @mouseenter="showInlineStats && c.state === 'running' ? startLiveStats(c.id) : null"
-            @mouseleave="showInlineStats ? stopLiveStats() : null"
           >
             <td data-label="Container">
               <div
@@ -54,11 +51,11 @@
                     v-if="showInlineStats && c.state === 'running'"
                     class="inline-stats"
                   >
-                    <span class="stat-chip" :class="{ live: activeLiveId === c.id }">
-                      CPU {{ (activeLiveId === c.id ? liveStats.cpu : c.cpu)?.toFixed(1) ?? "0.0" }}%
+                    <span class="stat-chip live">
+                      CPU {{ c.cpu?.toFixed(1) ?? "0.0" }}%
                     </span>
-                    <span class="stat-chip" :class="{ live: activeLiveId === c.id }">
-                      {{ formatBytes(activeLiveId === c.id ? liveStats.memory : c.memory) }}
+                    <span class="stat-chip live">
+                      {{ formatBytes(c.memory) }}
                     </span>
                   </div>
                 </div>
