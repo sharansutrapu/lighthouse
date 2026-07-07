@@ -2828,6 +2828,10 @@ func main() {
 			ComposeContent string `json:"compose_content"`
 			Branch         string `json:"branch"`
 			ComposePath    string `json:"compose_path"`
+			Name           string `json:"name"`
+			RepoURL        string `json:"repo_url"`
+			AuthToken      string `json:"auth_token"`
+			TargetNode     string `json:"target_node"`
 		}
 		if err := c.Bind(&updateData); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid payload"})
@@ -2842,6 +2846,18 @@ func main() {
 
 		updates := map[string]interface{}{
 			"status": "pending", // Trigger a redeploy
+			"name":   updateData.Name,
+		}
+		
+		if updateData.RepoURL != "" {
+			updates["repo_url"] = updateData.RepoURL
+		}
+		if updateData.AuthToken != "" || project.AuthToken != "" {
+			// Save token even if empty, to allow clearing it
+			updates["auth_token"] = updateData.AuthToken
+		}
+		if updateData.TargetNode != "" {
+			updates["target_node"] = updateData.TargetNode
 		}
 		if project.SourceType == "inline" {
 			updates["compose_content"] = updateData.ComposeContent

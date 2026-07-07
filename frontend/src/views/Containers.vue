@@ -49,7 +49,7 @@
             </svg>
             <input
               type="text"
-              v-model="sharedState.searchQuery"
+              v-model="searchQuery"
               placeholder="Filter by name or image..."
             />
           </div>
@@ -73,6 +73,7 @@
 
       <ContainerTable
         :state-filter="stateFilter"
+        :search-query="searchQuery"
         show-inline-stats
         embedded
       />
@@ -87,6 +88,7 @@ import { useContainers } from "../composables/useContainers";
 import { sharedState } from "../utils/sharedState";
 
 const stateFilter = ref("all");
+const searchQuery = ref("");
 
 const { containers, loading, runningCount, stoppedCount, fetchContainers } =
   useContainers();

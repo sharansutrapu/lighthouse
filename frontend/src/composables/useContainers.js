@@ -66,13 +66,7 @@ export function useContainers(options = {}) {
     return '';
   });
 
-  const filteredContainers = computed(() =>
-    containers.value.filter(
-      (c) =>
-        c.name.toLowerCase().includes(sharedState.searchQuery.toLowerCase()) ||
-        c.image.toLowerCase().includes(sharedState.searchQuery.toLowerCase()),
-    ),
-  );
+
 
   const runningCount = computed(
     () => containers.value.filter((c) => c.state === 'running').length,
@@ -145,7 +139,7 @@ export function useContainers(options = {}) {
   return {
     containers,
     loading,
-    filteredContainers,
+
     runningCount,
     stoppedCount,
     showConfirm,

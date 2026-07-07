@@ -76,27 +76,43 @@ func processProject(p db.GitProject) error {
 		
 	} else {
 		// Git deployment
-		repoURL := p.RepoURL
+		// Build a sanitized URL for logging (no credentials in it).
+		sanitizedURL := p.RepoURL
+
+		env := os.Environ()
 		if p.AuthToken != "" {
-			if strings.HasPrefix(repoURL, "https://") {
-				repoURL = strings.Replace(repoURL, "https://", "https://oauth2:"+p.AuthToken+"@", 1)
+			// Use GIT_ASKPASS to inject credentials without embedding the
+			// token in the URL, which would expose it in git output / logs.
+			// We write a tiny helper script that echoes the token as the
+			// password; git calls it when credentials are required.
+			askPassScript := filepath.Join(workDir, "git-askpass.sh")
+			askPassContent := fmt.Sprintf("#!/bin/sh\necho '%s'\n", p.AuthToken)
+			if err := os.WriteFile(askPassScript, []byte(askPassContent), 0700); err == nil {
+				defer os.Remove(askPassScript)
+				env = append(env,
+					"GIT_ASKPASS="+askPassScript,
+					"GIT_USERNAME=oauth2",
+				)
 			}
 		}
 
 		if _, err := os.Stat(filepath.Join(workDir, ".git")); os.IsNotExist(err) {
-			cmd := exec.Command("git", "clone", "-b", p.Branch, "--", repoURL, ".")
+			cmd := exec.Command("git", "clone", "-b", p.Branch, "--", p.RepoURL, ".")
 			cmd.Dir = workDir
+			cmd.Env = env
 			if out, err := cmd.CombinedOutput(); err != nil {
-				return fmt.Errorf("clone failed: %s", string(out))
+				return fmt.Errorf("clone failed for %s: %s", sanitizedURL, string(out))
 			}
 		} else {
 			cmd := exec.Command("git", "fetch", "origin", p.Branch)
 			cmd.Dir = workDir
+			cmd.Env = env
 			if out, err := cmd.CombinedOutput(); err != nil {
-				return fmt.Errorf("fetch failed: %s", string(out))
+				return fmt.Errorf("fetch failed for %s: %s", sanitizedURL, string(out))
 			}
 			cmd = exec.Command("git", "reset", "--hard", "origin/"+p.Branch)
 			cmd.Dir = workDir
+			cmd.Env = env
 			if out, err := cmd.CombinedOutput(); err != nil {
 				return fmt.Errorf("reset failed: %s", string(out))
 			}

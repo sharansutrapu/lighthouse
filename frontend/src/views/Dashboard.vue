@@ -341,11 +341,11 @@
           </div>
           <div class="search-box glass">
             <AppIcon name="search" :size="16" />
-            <input type="text" v-model="sharedState.searchQuery" placeholder="Search..." />
+            <input type="text" v-model="searchQuery" placeholder="Search..." />
           </div>
         </div>
       </div>
-      <ContainerTable :state-filter="stateFilter" embedded />
+      <ContainerTable :state-filter="stateFilter" :search-query="searchQuery" embedded />
     </section>
   </div>
 </template>
@@ -360,6 +360,7 @@ import { secureStorage } from "../utils/storage";
 import { apiFetch } from "../utils/apiFetch";
 
 const stateFilter = ref("stopped");
+const searchQuery = ref("");
 
 const { containers, loading, runningCount, stoppedCount, fetchContainers } = useContainers();
 

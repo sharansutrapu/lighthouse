@@ -2,7 +2,7 @@
   <div class="page-container">
     <div class="page-header glass">
       <div class="header-left">
-        <h1>Docker Images</h1>
+        <h1>Docker Images <span class="badge badge-dim" style="font-size: 0.8rem; margin-left: 0.5rem; vertical-align: middle;">{{ images.length }} Total</span></h1>
         <p class="subtitle">Manage local images and clear disk space</p>
       </div>
       <div class="header-actions">

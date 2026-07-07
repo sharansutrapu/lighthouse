@@ -399,6 +399,23 @@
               </div>
             </div>
 
+            <!-- Scans -->
+            <div class="settings-card shadow-lg interactive" @click="activeSettingsModal = 'scans'">
+              <div class="settings-card-header card-header borderless">
+                <div class="card-icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <line x1="12" y1="8" x2="12" y2="12"></line>
+                    <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                  </svg>
+                </div>
+                <div>
+                  <h3>Scans</h3>
+                  <p class="card-desc">Configure auto-scanning.</p>
+                </div>
+              </div>
+            </div>
+
             <!-- Appearance -->
             <div class="settings-card shadow-lg interactive" @click="activeSettingsModal = 'appearance'">
               <div class="settings-card-header card-header borderless">
@@ -797,6 +814,31 @@
                 </button>
               </div>
             </form>
+          </div>
+        </template>
+
+        <!-- Scans -->
+        <template v-else-if="activeSettingsModal === 'scans'">
+          <div class="modal-header">
+            <h3 class="modal-title">Vulnerability Scans</h3>
+            <button class="modal-close" @click="closeModal"><AppIcon name="close" :size="20"/></button>
+          </div>
+          <div class="modal-body" style="padding-top: 1rem;">
+            <div class="settings-form" style="display: flex; flex-direction: column; gap: 1rem;">
+              <div class="input-group" style="display: flex; align-items: flex-start; gap: 1rem;">
+                <input type="checkbox" v-model="settings.auto_scan_enabled" style="transform: scale(1.3); accent-color: var(--accent); cursor: pointer;" />
+                <div>
+                  <label style="margin:0;">Enable Auto Vulnerability Scan</label>
+                  <p class="card-desc" style="margin-top: 0.2rem; font-size: 0.8rem;">Automatically run a vulnerability scan when a container starts (e.g. after redeployment).</p>
+                </div>
+              </div>
+              <div class="modal-footer" style="display: flex; gap: 0.5rem; justify-content: flex-end; padding-top: 1rem; border-top: none;">
+                <button type="button" @click="closeModal" class="modal-btn cancel">Cancel</button>
+                <button type="button" @click="saveSettingsAndClose" class="modal-btn confirm" :disabled="settingsSaving">
+                  {{ settingsSaving ? 'Saving...' : 'Save Settings' }}
+                </button>
+              </div>
+            </div>
           </div>
         </template>
 

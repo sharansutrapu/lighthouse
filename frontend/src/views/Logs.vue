@@ -140,6 +140,20 @@
           </button>
         </div>
       </div>
+      <div class="resource-search" style="padding: 0 1rem 1rem 1rem;">
+        <div class="search-box glass" style="width: 100%; border-radius: 8px; border: 1px solid var(--border); padding: 0.5rem 0.75rem; display: flex; align-items: center; gap: 0.5rem; background: var(--bg-input);">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--text-mute);">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <input
+            v-model="searchQuery"
+            type="text"
+            placeholder="Search containers..."
+            style="background: transparent; border: none; outline: none; width: 100%; color: var(--text-main); font-size: 0.8rem;"
+          />
+        </div>
+      </div>
 
       <div class="resource-list">
         <div
@@ -310,9 +324,11 @@ const formatBytes = (bytes) => {
 };
 
 const containers = ref([]);
+const searchQuery = ref("");
 
 // Live Stats on Hover Logic
 const activeLiveId = ref(null);
+const expandedStates = reactive({});
 const liveStats = ref({ cpu: 0, memory: 0 });
 let liveInterval = null;
 
@@ -352,10 +368,10 @@ const fetchStatsNow = async (id) => {
 
 const filteredContainers = computed(() => {
   let list = containers.value;
-  if (sharedState.searchQuery) {
-    const q = sharedState.searchQuery.toLowerCase();
+  if (searchQuery.value) {
+    const q = searchQuery.value.toLowerCase();
     list = list.filter(
-      (c) => c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q),
+      (c) => c.name.toLowerCase().includes(q) || c.image.toLowerCase().includes(q),
     );
   }
   return [...list].sort((a, b) => {

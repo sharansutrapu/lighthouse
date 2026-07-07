@@ -63,23 +63,49 @@ func TestCooldownLogic(t *testing.T) {
 
 	ruleID := int64(999)
 	cooldown := 2 // 2 seconds
+	containerA := "container-a"
 
 	// First trigger should pass
-	if !am.checkCooldown(ruleID, cooldown) {
+	if !am.checkCooldown(ruleID, containerA, cooldown) {
 		t.Fatal("Expected checkCooldown to be true on first call")
 	}
 
-	// Immediate second trigger should fail
-	if am.checkCooldown(ruleID, cooldown) {
+	// Immediate second trigger on same container should fail
+	if am.checkCooldown(ruleID, containerA, cooldown) {
 		t.Fatal("Expected checkCooldown to be false immediately after first call")
 	}
 
 	// Wait for cooldown
 	time.Sleep(3 * time.Second)
 
-	// Third trigger should pass
-	if !am.checkCooldown(ruleID, cooldown) {
+	// Third trigger should pass after cooldown expires
+	if !am.checkCooldown(ruleID, containerA, cooldown) {
 		t.Fatal("Expected checkCooldown to be true after cooldown expires")
+	}
+}
+
+func TestCooldownPerContainerIsolation(t *testing.T) {
+	am := setupTestManager(t)
+	defer am.Stop()
+
+	ruleID := int64(888)
+	cooldown := 60 // 60 seconds
+	containerA := "container-a"
+	containerB := "container-b"
+
+	// Trigger for container A — should pass
+	if !am.checkCooldown(ruleID, containerA, cooldown) {
+		t.Fatal("Expected containerA first call to pass")
+	}
+
+	// Container A is in cooldown but Container B should NOT be affected
+	if !am.checkCooldown(ruleID, containerB, cooldown) {
+		t.Fatal("Expected containerB to pass even while containerA is in cooldown — cooldowns must be per-container")
+	}
+
+	// Container A should still be in cooldown
+	if am.checkCooldown(ruleID, containerA, cooldown) {
+		t.Fatal("Expected containerA to still be in cooldown")
 	}
 }
 
@@ -169,5 +195,105 @@ func TestEvaluateLogLine(t *testing.T) {
 
 	if okOther && groupOther != nil {
 		t.Fatal("Expected other app to NOT trigger debounce entry")
+	}
+}
+func TestScanThrottle(t *testing.T) {
+	am := setupTestManager(t)
+	defer am.Stop()
+
+	image := "myapp:latest"
+
+	// First entry should not exist → should be allowed to scan
+	am.scanThrottleMu.Lock()
+	_, scanned := am.activeScans[image]
+	am.scanThrottleMu.Unlock()
+	if scanned {
+		t.Fatal("Expected no scan entry initially")
+	}
+
+	// Simulate recording a scan
+	am.scanThrottleMu.Lock()
+	am.activeScans[image] = time.Now()
+	am.scanThrottleMu.Unlock()
+
+	// Now a second scan within 30 minutes should be throttled
+	am.scanThrottleMu.Lock()
+	lastScan, scanned := am.activeScans[image]
+	shouldSkip := scanned && time.Since(lastScan) < 30*time.Minute
+	am.scanThrottleMu.Unlock()
+
+	if !shouldSkip {
+		t.Fatal("Expected scan to be throttled within 30 minutes")
+	}
+}
+
+func TestStartedAtGracePeriod(t *testing.T) {
+	am := setupTestManager(t)
+	defer am.Stop()
+
+	container := "freshly-started"
+
+	// Record start time as now
+	am.startedAtMu.Lock()
+	am.startedAt[container] = time.Now()
+	am.startedAtMu.Unlock()
+
+	// Immediately check — should be in grace period
+	am.startedAtMu.Lock()
+	startT, hasStart := am.startedAt[container]
+	inGrace := hasStart && time.Since(startT) < 2*time.Minute
+	am.startedAtMu.Unlock()
+
+	if !inGrace {
+		t.Fatal("Expected container to be in grace period immediately after start")
+	}
+
+	// Simulate an old start (3 minutes ago)
+	am.startedAtMu.Lock()
+	am.startedAt[container] = time.Now().Add(-3 * time.Minute)
+	am.startedAtMu.Unlock()
+
+	am.startedAtMu.Lock()
+	startT, hasStart = am.startedAt[container]
+	inGrace = hasStart && time.Since(startT) < 2*time.Minute
+	am.startedAtMu.Unlock()
+
+	if inGrace {
+		t.Fatal("Expected container to NOT be in grace period 3 minutes after start")
+	}
+}
+
+func TestDebounceCountIncrement(t *testing.T) {
+	am := setupTestManager(t)
+	defer am.Stop()
+
+	rule := &db.AlertRule{
+		Name:             "Debounce Count Test",
+		ContainerPattern: "^myapp$",
+		LogPattern:       "FAIL",
+		Enabled:          true,
+	}
+	db.GormDB.Create(rule)
+	am.ReloadRules()
+
+	// Trigger same log match 3 times
+	am.evaluateLogLine("myapp", "FAIL: something bad")
+	am.evaluateLogLine("myapp", "FAIL: something bad again")
+	am.evaluateLogLine("myapp", "FAIL: third time")
+
+	time.Sleep(50 * time.Millisecond)
+
+	am.debounceMu.Lock()
+	group, ok := am.groupedDebounce["myapp"]
+	var count int
+	if ok && group != nil {
+		if tr, exists := group.Triggers[int64(rule.ID)]; exists {
+			count = tr.Count
+		}
+	}
+	am.debounceMu.Unlock()
+
+	if count != 3 {
+		t.Errorf("Expected debounce count 3 for repeated log matches, got %d", count)
 	}
 }

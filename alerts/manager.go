@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"lighthouse/db"
+	"lighthouse/scanner"
 
 	"github.com/moby/moby/api/types/events"
 	"github.com/moby/moby/client"
@@ -40,7 +41,15 @@ type AlertManager struct {
 	// ltMu guards the lastTriggered map. A plain Mutex is used because every
 	// access is a short critical section (read-then-write).
 	ltMu          sync.Mutex
-	lastTriggered map[int64]time.Time
+	lastTriggered map[string]time.Time
+
+	// startedAtMu guards the startedAt map
+	startedAtMu sync.Mutex
+	startedAt   map[string]time.Time
+
+	// scanThrottleMu guards the activeScans map
+	scanThrottleMu sync.Mutex
+	activeScans    map[string]time.Time
 
 	// downStateMu guards the downState map
 	downStateMu sync.Mutex
@@ -82,7 +91,9 @@ func NewAlertManager(cli *client.Client) *AlertManager {
 	Global = &AlertManager{
 		cli:           cli,
 		rules:         make(map[int64]*AlertRule),
-		lastTriggered: make(map[int64]time.Time),
+		lastTriggered: make(map[string]time.Time),
+		startedAt:     make(map[string]time.Time),
+		activeScans:   make(map[string]time.Time),
 		downState:     make(map[string]bool),
 		activeTails:   make(map[string]context.CancelFunc),
 		groupedDebounce: make(map[string]*ContainerDebounceGroup),
@@ -146,6 +157,21 @@ func (am *AlertManager) ReloadRules() {
 			MetricCPUThreshold:      dbR.MetricCpuThreshold,
 			MetricMemThreshold:      dbR.MetricMemThreshold,
 			MetricStorageThreshold:  dbR.MetricStorageThreshold,
+		}
+		// Compile regex patterns once at load time so hot-paths
+		// (per-event, per-log-line) don't recompile them repeatedly.
+		if re, err := regexp.Compile(dbR.ContainerPattern); err == nil {
+			r.compiledContainerRe = re
+		} else {
+			log.Printf("[Alerts] Rule %q has invalid ContainerPattern %q: %v — skipping", dbR.Name, dbR.ContainerPattern, err)
+			continue
+		}
+		if dbR.LogPattern != "" {
+			if re, err := regexp.Compile(dbR.LogPattern); err == nil {
+				r.compiledLogRe = re
+			} else {
+				log.Printf("[Alerts] Rule %q has invalid LogPattern %q: %v — log matching disabled", dbR.Name, dbR.LogPattern, err)
+			}
 		}
 		newRules[r.ID] = r
 	}
@@ -261,8 +287,7 @@ func (am *AlertManager) TriggerContainerEvent(eventType string, containerName st
 			continue
 		}
 
-		matched, err := regexp.MatchString(rule.ContainerPattern, containerName)
-		if err != nil || !matched {
+		if !rule.matchesContainer(containerName) {
 			continue
 		}
 
@@ -292,6 +317,34 @@ func (am *AlertManager) processContainerEvent(msg events.Message) { //nolint:goc
 	// new container's log stream immediately.
 	if action == "start" {
 		go am.syncLogTailers()
+
+		am.startedAtMu.Lock()
+		am.startedAt[containerName] = time.Now()
+		am.startedAtMu.Unlock()
+		
+		// Check for auto-scan
+		go func() {
+			var settings db.Setting
+			if err := db.GormDB.First(&settings).Error; err == nil {
+				if settings.AutoScanEnabled {
+					if img, ok := msg.Actor.Attributes["image"]; ok && img != "" {
+						am.scanThrottleMu.Lock()
+						lastScan, scanned := am.activeScans[img]
+						if scanned && time.Since(lastScan) < 30*time.Minute {
+							am.scanThrottleMu.Unlock()
+							return // skip, scanned recently
+						}
+						am.activeScans[img] = time.Now()
+						am.scanThrottleMu.Unlock()
+
+						log.Printf("[Alerts] Auto-scanning image %s for started container %s", img, containerName)
+						// The scanner has built-in deduplication for recent scans (1h cache), 
+						// but we'll fire it off here.
+						_, _ = scanner.ScanImage(context.Background(), am.cli, img)
+					}
+				}
+			}
+		}()
 	}
 
 	am.rulesMu.RLock()
@@ -312,8 +365,7 @@ func (am *AlertManager) processContainerEvent(msg events.Message) { //nolint:goc
 			continue
 		}
 
-		matched, err := regexp.MatchString(rule.ContainerPattern, containerName)
-		if err != nil || !matched {
+		if !rule.matchesContainer(containerName) {
 			continue
 		}
 
@@ -398,11 +450,11 @@ func (am *AlertManager) syncLogTailers() {
 			name = strings.TrimPrefix(ctr.Names[0], "/")
 		}
 		for _, rule := range logRules {
-			matched, err := regexp.MatchString(rule.ContainerPattern, name)
-			if err == nil && matched {
-				needTailer[ctr.ID] = name
-				break
+			if !rule.matchesContainer(name) {
+				continue
 			}
+			needTailer[ctr.ID] = name
+			break
 		}
 	}
 
@@ -517,12 +569,10 @@ func (am *AlertManager) evaluateLogLine(containerName, line string) {
 		if rule.LogPattern == "" {
 			continue
 		}
-		matched, err := regexp.MatchString(rule.ContainerPattern, containerName)
-		if err != nil || !matched {
+		if !rule.matchesContainer(containerName) {
 			continue
 		}
-		logMatched, err := regexp.MatchString(rule.LogPattern, line)
-		if err != nil || !logMatched {
+		if !rule.matchesLog(line) {
 			continue
 		}
 
@@ -575,7 +625,7 @@ func (am *AlertManager) triggerAlert(rule *AlertRule, containerName, alertType, 
 			// right before sending.
 			var filtered []TriggeredRule
 			for _, tr := range toDeliver {
-				if am.checkCooldown(tr.Rule.ID, tr.Rule.CooldownSeconds) {
+				if am.checkCooldown(tr.Rule.ID, containerName, tr.Rule.CooldownSeconds) {
 					filtered = append(filtered, tr)
 				}
 			}
@@ -801,15 +851,16 @@ func (am *AlertManager) deliverGroup(containerName string, triggers []TriggeredR
 // window has elapsed) and atomically updates the last-triggered timestamp.
 // This must be called at DELIVERY time, not trigger time, so the cooldown
 // clock starts when the user actually receives the notification.
-func (am *AlertManager) checkCooldown(ruleID int64, cooldownSeconds int) bool {
+func (am *AlertManager) checkCooldown(ruleID int64, containerName string, cooldownSeconds int) bool {
 	am.ltMu.Lock()
 	defer am.ltMu.Unlock()
 
-	last, seen := am.lastTriggered[ruleID]
+	key := fmt.Sprintf("%d-%s", ruleID, containerName)
+	last, seen := am.lastTriggered[key]
 	if seen && time.Since(last) < time.Duration(cooldownSeconds)*time.Second {
 		return false
 	}
-	am.lastTriggered[ruleID] = time.Now()
+	am.lastTriggered[key] = time.Now()
 	return true
 }
 
@@ -898,8 +949,15 @@ func (am *AlertManager) evaluateMetrics() {
 
 
 		for _, rule := range activeRules {
-			matched, err := regexp.MatchString(rule.ContainerPattern, cName)
-			if err != nil || !matched {
+			if !rule.matchesContainer(cName) {
+				continue
+			}
+
+			// Grace Period check: if the container started within the last 2 minutes, skip metrics.
+			am.startedAtMu.Lock()
+			startT, hasStart := am.startedAt[cName]
+			am.startedAtMu.Unlock()
+			if hasStart && time.Since(startT) < 2*time.Minute {
 				continue
 			}
 
@@ -948,11 +1006,8 @@ func splitTrim(s, sep string) []string {
 func (am *AlertManager) evaluateStorageMetrics(activeRules []*AlertRule) {
 	var storageRules []*AlertRule
 	for _, r := range activeRules {
-		if r.MetricStorageThreshold > 0 {
-			matched, err := regexp.MatchString(r.ContainerPattern, "system")
-			if err == nil && matched {
-				storageRules = append(storageRules, r)
-			}
+		if r.MetricStorageThreshold > 0 && r.matchesContainer("system") {
+			storageRules = append(storageRules, r)
 		}
 	}
 	if len(storageRules) == 0 {

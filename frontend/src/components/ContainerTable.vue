@@ -290,17 +290,28 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  searchQuery: {
+    type: String,
+    default: '',
+  },
 });
 
 const {
-  loading, filteredContainers, activeLiveId, liveStats,
+  containers, loading, activeLiveId, liveStats,
   showConfirm, pendingAction, actionClass,
   startLiveStats, stopLiveStats, goToLogs, goToShell, goToDetail, triggerConfirm, executeAction,
   formatBytes, formatDate,
 } = useContainers();
 
 const displayContainers = computed(() => {
-  let list = filteredContainers.value;
+  let list = containers.value || [];
+  if (props.searchQuery) {
+    const q = props.searchQuery.toLowerCase();
+    list = list.filter(c => 
+      c.name.toLowerCase().includes(q) || 
+      c.image.toLowerCase().includes(q)
+    );
+  }
   if (props.stateFilter === 'running') {
     list = list.filter((c) => c.state === 'running');
   } else if (props.stateFilter === 'stopped') {
