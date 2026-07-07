@@ -2543,6 +2543,7 @@ func main() {
 			"archival_endpoint":      settings.ArchivalEndpoint,
 			"archival_auth1":         settings.ArchivalAuth1,
 			"archival_auth2":         maskSecret(settings.ArchivalAuth2),
+			"auto_scan_enabled":      settings.AutoScanEnabled,
 		})
 	})
 
@@ -2578,6 +2579,7 @@ func main() {
 			ArchivalEndpoint     string `json:"archival_endpoint"`
 			ArchivalAuth1        string `json:"archival_auth1"`
 			ArchivalAuth2        string `json:"archival_auth2"`
+			AutoScanEnabled      bool   `json:"auto_scan_enabled"`
 		}
 		if err := c.Bind(&payload); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid request"})
@@ -2630,6 +2632,7 @@ func main() {
 			"archival_endpoint":      payload.ArchivalEndpoint,
 			"archival_auth1":         payload.ArchivalAuth1,
 			"archival_auth2":         payload.ArchivalAuth2,
+			"auto_scan_enabled":      payload.AutoScanEnabled,
 		}).Error
 
 		if err != nil {
@@ -2856,9 +2859,8 @@ func main() {
 			// Save token even if empty, to allow clearing it
 			updates["auth_token"] = updateData.AuthToken
 		}
-		if updateData.TargetNode != "" {
-			updates["target_node"] = updateData.TargetNode
-		}
+		// Always update target_node, even if empty — allows clearing it.
+		updates["target_node"] = updateData.TargetNode
 		if project.SourceType == "inline" {
 			updates["compose_content"] = updateData.ComposeContent
 		} else {

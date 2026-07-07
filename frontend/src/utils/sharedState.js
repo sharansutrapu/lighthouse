@@ -38,7 +38,7 @@ if (typeof document !== 'undefined') {
 export const sharedState = reactive({
   currentUser: null,
   systemStats: { cpu: 0, usedMemGB: 0, memory: '0 / 0' },
-  searchQuery: '',
+  // Note: searchQuery intentionally removed — each page manages its own local search ref.
   themePreference: initialThemePreference,
   theme: initialResolvedTheme,
   showPasswordModal: false,
