@@ -898,6 +898,25 @@ onUnmounted(() => {
   padding: 0;
 }
 
+@media (max-width: 768px) {
+  .layout-body {
+    padding: 1rem 1rem;
+  }
+  .main-header {
+    padding: 0 1rem;
+  }
+  .search-wrapper {
+    width: 140px; /* Instead of hiding, make it compact */
+  }
+  .search-wrapper:focus-within {
+    width: 100%;
+    position: absolute;
+    left: 0;
+    right: 0;
+    z-index: 200;
+  }
+}
+
 /* Redesigned Sidebar Profile Section */
 .sidebar-profile {
   margin-top: auto;

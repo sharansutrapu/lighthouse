@@ -565,6 +565,7 @@ input, textarea, pre, code, .log-line, .selectable {
 
 .premium-table {
   width: 100%;
+  min-width: 800px;
   border-collapse: collapse;
   text-align: left;
 }
@@ -1630,6 +1631,29 @@ input, textarea, pre, code, .log-line, .selectable {
 @media (max-width: 600px) {
   .page-metrics {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .page-panel {
+    padding: 1rem;
+  }
+  
+  .view-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1rem;
+  }
+  
+  .page-actions {
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .modal-content {
+    max-height: 90vh;
+    overflow-y: auto;
+    padding: 1.25rem;
   }
 }
 
