@@ -1558,7 +1558,9 @@ onUnmounted(() => {
   }
 
   .detail-panels,
-  .kv-grid {
+  .kv-grid,
+  .header-actions,
+  .layout-main-split {
     grid-template-columns: 1fr;
   }
 }

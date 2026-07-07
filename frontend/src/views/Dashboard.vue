@@ -1149,6 +1149,9 @@ const refresh = async () => {
   .metrics-bento {
     grid-template-columns: repeat(2, 1fr);
   }
+  .consumers-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
 
   .metric-card {
     min-height: 120px;
@@ -1175,7 +1178,8 @@ const refresh = async () => {
     min-width: calc(50% - 0.35rem);
   }
 
-  .metrics-bento {
+  .metrics-bento,
+  .consumers-grid {
     grid-template-columns: 1fr;
   }
 

@@ -1707,6 +1707,13 @@ onMounted(() => {
   .perm-tags {
     flex-wrap: wrap;
   }
+  .form-grid.dual,
+  .form-row.dual {
+    grid-template-columns: 1fr;
+  }
+  .role-columns {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 480px) {

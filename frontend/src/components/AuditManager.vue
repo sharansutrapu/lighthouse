@@ -864,5 +864,8 @@ onMounted(fetchAuditLogs);
   .user-pill {
     padding: 0.2rem 0.5rem 0.2rem 0.2rem;
   }
+  .preset-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

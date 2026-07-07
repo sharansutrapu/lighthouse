@@ -378,7 +378,7 @@
                   <!-- Events -->
                   <div class="input-group">
                     <label class="label-caps">Container Lifecycle Triggers</label>
-                    <div class="checkbox-row" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem; margin-bottom: 1rem;">
+                    <div class="checkbox-row checkbox-grid" style="margin-bottom: 1rem;">
                       <label class="choice-chip" :class="{ 'info active': form.events.die }">
                         <input type="checkbox" v-model="form.events.die" style="display:none"/>
                         <strong>💀 Container Die</strong>
@@ -412,7 +412,7 @@
                     </div>
 
                     <label class="label-caps">System, Security & Delivery Triggers</label>
-                    <div class="checkbox-row" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem;">
+                    <div class="checkbox-row checkbox-grid">
                       <label class="choice-chip" :class="{ 'info active': form.events.audit }">
                         <input type="checkbox" v-model="form.events.audit" style="display:none"/>
                         <strong>🛡️ System Audit</strong>
@@ -1513,6 +1513,12 @@ select.premium-input { cursor: pointer; }
 
 .form-grid.dual { display: grid; grid-template-columns: 1fr 1fr; gap: 0.85rem; }
 
+.checkbox-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.5rem;
+}
+
 .checkbox-row {
   display: flex;
   flex-wrap: wrap;
@@ -1625,6 +1631,7 @@ select.premium-input { cursor: pointer; }
 @media (max-width: 640px) {
   .rules-grid { grid-template-columns: 1fr; }
   .form-grid.dual { grid-template-columns: 1fr; }
+  .checkbox-grid { grid-template-columns: 1fr !important; }
   .alerts-toolbar { flex-direction: column; align-items: stretch; }
   .toolbar-right { justify-content: flex-end; }
   .modal-card { max-height: 95vh; }

@@ -50,7 +50,7 @@
     </section>
 
     <!-- ── Metrics row ────────────────────────────────────────────────────────── -->
-    <section class="page-metrics animate-slide-up" style="display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 0.5rem;">
+    <section class="page-metrics admin-metrics-grid animate-slide-up">
       <div class="page-metric-card" style="padding: 1rem;">
         <div class="stat-header">
           <div class="stat-icon success"><AppIcon name="checkCircle"/></div>
@@ -1198,6 +1198,30 @@ const testArchival = async () => {
 .access-denied p { font-size: 0.88rem; color: var(--text-mute); max-width: 340px; line-height: 1.6; }
 
 /* ── Settings specific styles ── */
+.admin-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+@media (max-width: 1200px) {
+  .admin-metrics-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .admin-metrics-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 480px) {
+  .admin-metrics-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .settings-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
