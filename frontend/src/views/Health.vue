@@ -235,6 +235,7 @@
 
 <script setup>
 import AppIcon from "../components/AppIcon.vue";
+import { showToast } from "../utils/sharedState";
 import { ref, onMounted, onUnmounted, watch, computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { Line } from "vue-chartjs";
@@ -514,7 +515,7 @@ const fetchData = async () => {
       systemInfo.value = await resInfo.json();
     }
   } catch (err) {
-    console.error(err);
+    console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
   }
 };
 

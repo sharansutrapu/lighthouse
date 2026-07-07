@@ -62,6 +62,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from "vue";
+import { showToast } from "../utils/sharedState";
 import { useRouter } from "vue-router";
 import { secureStorage } from "../utils/storage";
 import { apiFetch } from "../utils/apiFetch";
@@ -121,7 +122,7 @@ const login = async () => {
     }
   } catch (err) {
     error.value = "A network error occurred.";
-    console.error(err);
+    console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
   } finally {
     loading.value = false;
   }

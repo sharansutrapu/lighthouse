@@ -352,6 +352,7 @@
 
 <script setup>
 import { ref, computed, watch, onMounted } from "vue";
+import { showToast } from "../utils/sharedState";
 import AppIcon from "../components/AppIcon.vue";
 import ContainerTable from "../components/ContainerTable.vue";
 import { useContainers } from "../composables/useContainers";
@@ -527,7 +528,7 @@ const fetchEngineResources = async () => {
       networks.value = Array.isArray(data?.Items) ? data.Items : (Array.isArray(data) ? data : []);
     }
   } catch (err) {
-    console.error('Failed to fetch engine resources', err);
+    console.error('Failed to fetch engine resources', err); showToast('Error', 'An error occurred. Check console for details.', 'error');
   }
 };
 

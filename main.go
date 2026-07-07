@@ -2644,6 +2644,9 @@ func main() {
 		userClaims := token.Claims.(*UserClaims)
 		logAudit(userClaims.ID, userClaims.Username, "UPDATE_SETTINGS", "GlobalSettings", "Success", "Updated global settings including SMTP, OAuth, and Backups")
 
+		// Note: AutoScanEnabled does not require a background scheduler reload
+		// because the AlertManager dynamically queries the setting on-demand
+		// for every new container start event.
 		// Reload backup and archival cron schedulers
 		backup.ReloadSchedule()
 		archival.ReloadSchedule()

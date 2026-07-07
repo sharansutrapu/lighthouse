@@ -247,6 +247,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from "vue";
+import { showToast } from "../utils/sharedState";
 import { apiFetch } from "../utils/apiFetch";
 
 const props = defineProps({
@@ -313,7 +314,7 @@ const fetchAuditLogs = async () => {
       emit("update-count", auditLogs.value.length);
     }
   } catch (err) {
-    console.error(err);
+    console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
   } finally {
     loadingLogs.value = false;
   }

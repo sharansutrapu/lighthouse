@@ -704,7 +704,7 @@ const fetchRunningContainers = async () => {
       fleetContainers.value = await res.json();
     }
   } catch (err) {
-    console.error(err);
+    console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
   } finally {
     containersLoaded.value = true;
   }
@@ -775,7 +775,7 @@ const fetchStaff = async () => {
       emit("update-count", staffUsers.value.length);
     }
   } catch (err) {
-    console.error(err);
+    console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
   }
 };
 
@@ -791,7 +791,7 @@ const fetchRoleTemplates = async () => {
       }
     }
   } catch (err) {
-    console.error(err);
+    console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
   }
 };
 
@@ -804,7 +804,7 @@ const fetchTeams = async () => {
       teamsList.value = await res.json() || [];
     }
   } catch (err) {
-    console.error(err);
+    console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
   }
 };
 
@@ -861,7 +861,7 @@ const createUser = async () => {
       );
     }
   } catch (err) {
-    console.error(err);
+    console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
     showToast("Error", "A network error occurred", "error");
   }
 };
@@ -885,7 +885,7 @@ const toggleUserStatus = async (user) => {
       );
     }
   } catch (err) {
-    console.error(err);
+    console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
   }
 };
 
@@ -934,7 +934,7 @@ const confirmResetPassword = async () => {
       );
     }
   } catch (err) {
-    console.error(err);
+    console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
     showToast("Error", "Network error", "error");
   }
 };
@@ -968,7 +968,7 @@ const updatePermissions = async () => {
       fetchStaff();
     }
   } catch (err) {
-    console.error(err);
+    console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
   }
 };
 
@@ -990,7 +990,7 @@ const confirmDelete = async () => {
       closeAllModals();
     }
   } catch (err) {
-    console.error(err);
+    console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
   }
 };
 

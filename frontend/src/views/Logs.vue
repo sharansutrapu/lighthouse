@@ -362,7 +362,7 @@ const fetchStatsNow = async (id) => {
       liveStats.value = { cpu: data.cpu, memory: data.memory };
     }
   } catch (err) {
-    console.error("Live stats fetch failed", err);
+    console.error("Live stats fetch failed", err); showToast('Error', 'An error occurred. Check console for details.', 'error');
   }
 };
 
@@ -445,7 +445,7 @@ const fetchContainers = async () => {
       syncStateFromUrl();
     }
   } catch (err) {
-    console.error(err);
+    console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
   }
 };
 

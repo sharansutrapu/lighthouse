@@ -20,7 +20,7 @@ export async function fetchContainers() {
       containers.value = await res.json();
     }
   } catch (err) {
-    console.error(err);
+    console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
   } finally {
     loading.value = false;
   }
@@ -116,7 +116,7 @@ export function useContainers(options = {}) {
         showToast('Error', 'Action failed.', 'error');
       }
     } catch (err) {
-      console.error(err);
+      console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
       showToast('Error', 'Action failed.', 'error');
     } finally {
       isActionLoading.value = false;

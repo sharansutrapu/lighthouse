@@ -802,7 +802,7 @@ async function fetchHistoryData() {
       updateCharts();
     }
   } catch (err) {
-    console.error(err);
+    console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
   }
 }
 
@@ -817,7 +817,7 @@ async function fetchInspect() {
       inspectData.value = await res.json();
     }
   } catch (err) {
-    console.error(err);
+    console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
   } finally {
     inspectLoading.value = false;
   }
@@ -846,7 +846,7 @@ async function fetchLiveStats() {
       };
     }
   } catch (err) {
-    console.error(err);
+    console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
   }
 }
 
@@ -878,7 +878,7 @@ const connectEventsWS = () => {
         if (containerEvents.value.length > 50) containerEvents.value.pop();
       }
     } catch (e) {
-      console.error("Failed to parse event:", e);
+      console.error("Failed to parse event:", e); showToast('Error', 'An error occurred. Check console for details.', 'error');
     }
   };
 };
@@ -916,7 +916,7 @@ const executeAction = async (action) => {
       showToast("Error", "Action failed.", "error");
     }
   } catch (err) {
-    console.error(err);
+    console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
     showToast("Error", "Action failed.", "error");
   }
 };

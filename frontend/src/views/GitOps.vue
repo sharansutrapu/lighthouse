@@ -247,7 +247,7 @@ const loadProjects = async () => {
       projects.value = await res.json();
     }
   } catch (e) {
-    console.error(e);
+    console.error(e); showToast('Error', 'An error occurred. Check console for details.', 'error');
   } finally {
     loading.value = false;
   }
@@ -388,7 +388,7 @@ const viewLogs = async (id) => {
       deployments.value = await res.json();
     }
   } catch (e) {
-    console.error(e);
+    console.error(e); showToast('Error', 'An error occurred. Check console for details.', 'error');
   } finally {
     historyLoading.value = false;
   }

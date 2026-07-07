@@ -951,7 +951,7 @@ onMounted(async () => {
         alertRulesCount.value = 0;
       }
     } catch (e) {
-      console.error('Failed to fetch alert rules count:', e);
+      console.error('Failed to fetch alert rules count:', e); showToast('Error', 'An error occurred. Check console for details.', 'error');
     }
   };
   fetchAlertRulesCount();
@@ -970,7 +970,7 @@ onMounted(async () => {
         alertsTriggeredCount.value = 0;
       }
     } catch (e) {
-      console.error('Failed to fetch alerts triggered count:', e);
+      console.error('Failed to fetch alerts triggered count:', e); showToast('Error', 'An error occurred. Check console for details.', 'error');
     }
   };
   fetchAlertsTriggeredCount();
@@ -986,10 +986,10 @@ onMounted(async () => {
         const data = await res.json();
         settings.value = data;
       } else {
-        console.error('Failed to fetch settings');
+        console.error('Failed to fetch settings'); showToast('Error', 'An error occurred. Check console for details.', 'error');
       }
     } catch (e) {
-      console.error('Failed to fetch settings:', e);
+      console.error('Failed to fetch settings:', e); showToast('Error', 'An error occurred. Check console for details.', 'error');
     }
   };
   fetchSettings();
@@ -1017,7 +1017,7 @@ const saveSettings = async () => {
       showToast('Error', 'Failed to update settings', 'error');
     }
   } catch (e) {
-    console.error(e);
+    console.error(e); showToast('Error', 'An error occurred. Check console for details.', 'error');
     showToast('Error', 'Failed to update settings', 'error');
   } finally {
     settingsSaving.value = false;

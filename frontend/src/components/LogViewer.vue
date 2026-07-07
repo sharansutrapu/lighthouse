@@ -252,6 +252,7 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted, nextTick, watch, computed } from "vue";
+import { showToast } from "../utils/sharedState";
 import { secureStorage } from "../utils/storage";
 import { createAuthenticatedWebSocket } from "../utils/wsAuth";
 import { apiFetch } from "../utils/apiFetch";
@@ -429,7 +430,7 @@ const fetchHistoricalLogs = async () => {
       }
     }
   } catch (err) {
-    console.error("Failed to fetch historical logs:", err);
+    console.error("Failed to fetch historical logs:", err); showToast('Error', 'An error occurred. Check console for details.', 'error');
   } finally {
     if (fetchId === historyFetchId) {
       isLoadingHistory.value = false;
@@ -523,7 +524,7 @@ const downloadFullLogs = async () => {
       showDownloadModal.value = false;
     }
   } catch (err) {
-    console.error(err);
+    console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
   }
 };
 
@@ -611,7 +612,7 @@ const fetchLogCount = async () => {
       totalLogs.value = data.total;
     }
   } catch (err) {
-    console.error("Failed to fetch log count:", err);
+    console.error("Failed to fetch log count:", err); showToast('Error', 'An error occurred. Check console for details.', 'error');
   }
 };
 

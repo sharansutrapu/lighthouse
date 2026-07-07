@@ -908,10 +908,10 @@ const clearAllHistory = async () => {
     if (res.ok) {
       history.value = [];
     } else {
-      console.error('Failed to clear history');
+      console.error('Failed to clear history'); showToast('Error', 'An error occurred. Check console for details.', 'error');
     }
   } catch (e) {
-    console.error('Error clearing history:', e);
+    console.error('Error clearing history:', e); showToast('Error', 'An error occurred. Check console for details.', 'error');
   } finally {
     historyLoading.value = false;
     showClearHistoryModal.value = false;

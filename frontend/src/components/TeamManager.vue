@@ -264,7 +264,7 @@ const fetchTeams = async () => {
       emit("update-count", teams.value.length);
     }
   } catch (err) {
-    console.error(err);
+    console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
   }
 };
 
@@ -278,7 +278,7 @@ const fetchRoleTemplates = async () => {
       roleTemplates.value = await res.json();
     }
   } catch (err) {
-    console.error("Failed to fetch role templates", err);
+    console.error("Failed to fetch role templates", err); showToast('Error', 'An error occurred. Check console for details.', 'error');
   }
 };
 
@@ -293,7 +293,7 @@ const fetchContainers = async () => {
       runningContainers.value = data.filter(c => c.state === 'running') || [];
     }
   } catch (err) {
-    console.error("Failed to fetch containers", err);
+    console.error("Failed to fetch containers", err); showToast('Error', 'An error occurred. Check console for details.', 'error');
   }
 };
 
@@ -410,7 +410,7 @@ const saveTeam = async () => {
       showToast("Error", errorData.error || "Failed to save team", "error");
     }
   } catch (err) {
-    console.error(err);
+    console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
     showToast("Error", "Network error", "error");
   }
 };
@@ -428,7 +428,7 @@ const confirmDelete = async () => {
       fetchTeams();
     }
   } catch (err) {
-    console.error(err);
+    console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
   }
 };
 

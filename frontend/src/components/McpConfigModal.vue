@@ -156,7 +156,7 @@ const fetchTokens = async () => {
       tokens.value = await res.json();
     }
   } catch (err) {
-    console.error("Failed to fetch tokens:", err);
+    console.error("Failed to fetch tokens:", err); showToast('Error', 'An error occurred. Check console for details.', 'error');
   } finally {
     isLoading.value = false;
   }
