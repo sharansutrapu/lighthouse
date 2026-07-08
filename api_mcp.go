@@ -42,6 +42,35 @@ func registerMCPRoutes(r *echo.Group, cli *client.Client) {
 		mcp.WithString("container_id", mcp.Required(), mcp.Description("The ID or name of the container.")),
 	), mcpInspectContainerHandler(cli))
 
+	// Lifecycle Tools
+	mcpServer.AddTool(mcp.NewTool("start_container",
+		mcp.WithDescription("Start a specific container."),
+		mcp.WithString("container_id", mcp.Required(), mcp.Description("The ID or name of the container to start.")),
+	), mcpStartContainerHandler(cli))
+
+	mcpServer.AddTool(mcp.NewTool("stop_container",
+		mcp.WithDescription("Stop a specific container."),
+		mcp.WithString("container_id", mcp.Required(), mcp.Description("The ID or name of the container to stop.")),
+	), mcpStopContainerHandler(cli))
+
+	mcpServer.AddTool(mcp.NewTool("restart_container",
+		mcp.WithDescription("Restart a specific container."),
+		mcp.WithString("container_id", mcp.Required(), mcp.Description("The ID or name of the container to restart.")),
+	), mcpRestartContainerHandler(cli))
+
+	// System Resource Tools (Admin Only)
+	mcpServer.AddTool(mcp.NewTool("list_images",
+		mcp.WithDescription("List available Docker images (Admin only)."),
+	), mcpListImagesHandler(cli))
+
+	mcpServer.AddTool(mcp.NewTool("list_volumes",
+		mcp.WithDescription("List Docker volumes (Admin only)."),
+	), mcpListVolumesHandler(cli))
+
+	mcpServer.AddTool(mcp.NewTool("list_networks",
+		mcp.WithDescription("List Docker networks (Admin only)."),
+	), mcpListNetworksHandler(cli))
+
 	// Create SSE server
 	sseServer := server.NewSSEServer(mcpServer, 
 		server.WithStaticBasePath("/api/mcp"),
@@ -252,6 +281,130 @@ func mcpInspectContainerHandler(cli *client.Client) server.ToolHandlerFunc {
 		}
 
 		b, _ := json.MarshalIndent(container.Container, "", "  ")
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+// -- Lifecycle Management --
+
+func mcpStartContainerHandler(cli *client.Client) server.ToolHandlerFunc {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		claims, ok := ctx.Value("userClaims").(*UserClaims)
+		if !ok { return mcp.NewToolResultError("Unauthorized"), nil }
+
+		containerID, err := request.RequireString("container_id")
+		if err != nil { return mcp.NewToolResultError("container_id is required"), nil }
+
+		isAdmin := getMCPUserIsAdmin(claims.ID)
+		container, err := cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
+		if err != nil { return mcp.NewToolResultError("Container not found"), nil }
+
+		image := ""
+		if container.Container.Config != nil { image = container.Container.Config.Image }
+		if !isMCPContainerAuthorized(claims.ID, isAdmin, container.Container.Name, image) {
+			return mcp.NewToolResultError("Unauthorized to start this container"), nil
+		}
+
+		if _, err := cli.ContainerStart(ctx, container.Container.ID, client.ContainerStartOptions{}); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to start container: %v", err)), nil
+		}
+		return mcp.NewToolResultText("Container started successfully"), nil
+	}
+}
+
+func mcpStopContainerHandler(cli *client.Client) server.ToolHandlerFunc {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		claims, ok := ctx.Value("userClaims").(*UserClaims)
+		if !ok { return mcp.NewToolResultError("Unauthorized"), nil }
+
+		containerID, err := request.RequireString("container_id")
+		if err != nil { return mcp.NewToolResultError("container_id is required"), nil }
+
+		isAdmin := getMCPUserIsAdmin(claims.ID)
+		container, err := cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
+		if err != nil { return mcp.NewToolResultError("Container not found"), nil }
+
+		image := ""
+		if container.Container.Config != nil { image = container.Container.Config.Image }
+		if !isMCPContainerAuthorized(claims.ID, isAdmin, container.Container.Name, image) {
+			return mcp.NewToolResultError("Unauthorized to stop this container"), nil
+		}
+
+		if _, err := cli.ContainerStop(ctx, container.Container.ID, client.ContainerStopOptions{}); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to stop container: %v", err)), nil
+		}
+		return mcp.NewToolResultText("Container stopped successfully"), nil
+	}
+}
+
+func mcpRestartContainerHandler(cli *client.Client) server.ToolHandlerFunc {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		claims, ok := ctx.Value("userClaims").(*UserClaims)
+		if !ok { return mcp.NewToolResultError("Unauthorized"), nil }
+
+		containerID, err := request.RequireString("container_id")
+		if err != nil { return mcp.NewToolResultError("container_id is required"), nil }
+
+		isAdmin := getMCPUserIsAdmin(claims.ID)
+		container, err := cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
+		if err != nil { return mcp.NewToolResultError("Container not found"), nil }
+
+		image := ""
+		if container.Container.Config != nil { image = container.Container.Config.Image }
+		if !isMCPContainerAuthorized(claims.ID, isAdmin, container.Container.Name, image) {
+			return mcp.NewToolResultError("Unauthorized to restart this container"), nil
+		}
+
+		if _, err := cli.ContainerRestart(ctx, container.Container.ID, client.ContainerRestartOptions{}); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to restart container: %v", err)), nil
+		}
+		return mcp.NewToolResultText("Container restarted successfully"), nil
+	}
+}
+
+// -- System Resources (Admin Only) --
+
+func mcpListImagesHandler(cli *client.Client) server.ToolHandlerFunc {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		claims, ok := ctx.Value("userClaims").(*UserClaims)
+		if !ok || !getMCPUserIsAdmin(claims.ID) { return mcp.NewToolResultError("Unauthorized: Admin only"), nil }
+
+		res, err := cli.ImageList(ctx, client.ImageListOptions{All: true})
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to list images: %v", err)), nil
+		}
+
+		b, _ := json.MarshalIndent(res, "", "  ")
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+func mcpListVolumesHandler(cli *client.Client) server.ToolHandlerFunc {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		claims, ok := ctx.Value("userClaims").(*UserClaims)
+		if !ok || !getMCPUserIsAdmin(claims.ID) { return mcp.NewToolResultError("Unauthorized: Admin only"), nil }
+
+		res, err := cli.VolumeList(ctx, client.VolumeListOptions{})
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to list volumes: %v", err)), nil
+		}
+
+		b, _ := json.MarshalIndent(res, "", "  ")
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+func mcpListNetworksHandler(cli *client.Client) server.ToolHandlerFunc {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		claims, ok := ctx.Value("userClaims").(*UserClaims)
+		if !ok || !getMCPUserIsAdmin(claims.ID) { return mcp.NewToolResultError("Unauthorized: Admin only"), nil }
+
+		res, err := cli.NetworkList(ctx, client.NetworkListOptions{})
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to list networks: %v", err)), nil
+		}
+
+		b, _ := json.MarshalIndent(res, "", "  ")
 		return mcp.NewToolResultText(string(b)), nil
 	}
 }
