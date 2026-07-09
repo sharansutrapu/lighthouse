@@ -3708,12 +3708,26 @@ func startStatsCollector(cli *client.Client) {
 	go func() {
 		for range ticker.C {
 			collectStats(cli)
-			retentionDays := getRetentionDays()
-			db.DB.Exec("DELETE FROM stats WHERE timestamp < datetime('now', '-' || ? || ' days')", retentionDays)
-			db.DB.Exec("DELETE FROM system_stats WHERE timestamp < datetime('now', '-' || ? || ' days')", retentionDays)
+			pruneOldStats()
 		}
 	}()
 }
+
+// pruneOldStats deletes metrics older than the configured retention period.
+// Uses a Go time.Time cutoff value so it works correctly with both SQLite and PostgreSQL.
+func pruneOldStats() {
+	retentionDays := getRetentionDays()
+	cutoff := time.Now().AddDate(0, 0, -retentionDays)
+	db.GormDB.Where("timestamp < ?", cutoff).Delete(&db.Stat{})
+	db.GormDB.Where("timestamp < ?", cutoff).Delete(&db.SystemStat{})
+
+	// Prune audit logs and alert history at 3x the metrics retention window.
+	// Audit and alert history are critical records — we keep them much longer than raw metrics.
+	auditCutoff := time.Now().AddDate(0, 0, -(retentionDays * 3))
+	db.GormDB.Where("timestamp < ?", auditCutoff).Delete(&db.AuditLog{})
+	db.GormDB.Where("timestamp < ?", auditCutoff).Delete(&db.AlertHistory{})
+}
+
 
 var (
 	prevStats = make(map[string]struct {

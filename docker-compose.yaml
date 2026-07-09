@@ -19,5 +19,15 @@ services:
       - TRUST_PROXY=${TRUST_PROXY:-false}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./data:/app/data
+      # Named volume ensures ALL data (DB, metrics, settings, audit logs, users)
+      # persists across container restarts, image upgrades and docker-compose down/up.
+      # DO NOT change this to a bind mount (./data) unless you understand the implications.
+      - lighthouse-data:/app/data
     restart: unless-stopped
+
+# Named volume: managed by Docker, survives container recreation and upgrades.
+# To back up: docker run --rm -v lighthouse-data:/data -v $(pwd):/backup alpine \
+#   tar czf /backup/lighthouse-data-backup.tar.gz -C /data .
+volumes:
+  lighthouse-data:
+

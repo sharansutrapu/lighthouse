@@ -281,9 +281,28 @@ func InitDB(dataSourceName string) error {
 	}
 
 	// Optimize DB Connection Pooling
-	DB.SetMaxOpenConns(100)
-	DB.SetMaxIdleConns(20)
-	DB.SetConnMaxLifetime(time.Hour)
+	// SQLite is a single-file DB — only 1 writer can hold the lock at a time.
+	// Using more than 1 connection causes "database is locked" errors that silently
+	// drop metrics, settings and audit log writes. PostgreSQL keeps a full pool.
+	if dbType == "postgres" {
+		DB.SetMaxOpenConns(100)
+		DB.SetMaxIdleConns(20)
+		DB.SetConnMaxLifetime(time.Hour)
+	} else {
+		// Single connection for SQLite to eliminate lock contention
+		DB.SetMaxOpenConns(1)
+		DB.SetMaxIdleConns(1)
+		DB.SetConnMaxLifetime(0) // keep connection alive; SQLite has no server-side timeout
+
+		// Enable WAL mode for crash-safe writes — data survives hard stops and OOM kills.
+		// busy_timeout prevents "database is locked" on the rare write collision.
+		// synchronous=NORMAL gives a good balance of durability vs. performance.
+		_, _ = DB.Exec("PRAGMA journal_mode=WAL")
+		_, _ = DB.Exec("PRAGMA busy_timeout=5000")
+		_, _ = DB.Exec("PRAGMA synchronous=NORMAL")
+		_, _ = DB.Exec("PRAGMA cache_size=-64000") // 64MB page cache
+		_, _ = DB.Exec("PRAGMA temp_store=MEMORY")
+	}
 
 	err = GormDB.AutoMigrate(
 		&User{},
