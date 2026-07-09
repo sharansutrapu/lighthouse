@@ -292,6 +292,10 @@ func mcpStartContainerHandler(cli *client.Client) server.ToolHandlerFunc {
 		claims, ok := ctx.Value("userClaims").(*UserClaims)
 		if !ok { return mcp.NewToolResultError("Unauthorized"), nil }
 
+		if !claims.IsAdmin && !claims.CanStart {
+			return mcp.NewToolResultError("Unauthorized: User lacks Start permission"), nil
+		}
+
 		containerID, err := request.RequireString("container_id")
 		if err != nil { return mcp.NewToolResultError("container_id is required"), nil }
 
@@ -317,6 +321,10 @@ func mcpStopContainerHandler(cli *client.Client) server.ToolHandlerFunc {
 		claims, ok := ctx.Value("userClaims").(*UserClaims)
 		if !ok { return mcp.NewToolResultError("Unauthorized"), nil }
 
+		if !claims.IsAdmin && !claims.CanStop {
+			return mcp.NewToolResultError("Unauthorized: User lacks Stop permission"), nil
+		}
+
 		containerID, err := request.RequireString("container_id")
 		if err != nil { return mcp.NewToolResultError("container_id is required"), nil }
 
@@ -341,6 +349,10 @@ func mcpRestartContainerHandler(cli *client.Client) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		claims, ok := ctx.Value("userClaims").(*UserClaims)
 		if !ok { return mcp.NewToolResultError("Unauthorized"), nil }
+
+		if !claims.IsAdmin && !claims.CanRestart {
+			return mcp.NewToolResultError("Unauthorized: User lacks Restart permission"), nil
+		}
 
 		containerID, err := request.RequireString("container_id")
 		if err != nil { return mcp.NewToolResultError("container_id is required"), nil }
