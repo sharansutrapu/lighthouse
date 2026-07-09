@@ -519,7 +519,8 @@ func issueTokenPair(claims *UserClaims) (string, string, error) {
 
 func refreshClaimsFromDB(claims *UserClaims) error {
 	var u db.User
-	if err := db.GormDB.First(&u, claims.ID).Error; err != nil {
+	// Preload Team so we can merge team-level permissions
+	if err := db.GormDB.Preload("Team").First(&u, claims.ID).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return fmt.Errorf("user not found")
 		}
@@ -532,6 +533,7 @@ func refreshClaimsFromDB(claims *UserClaims) error {
 		dbPwdVersion = 1
 	}
 	isAdmin := u.IsAdmin
+	// Start with user-level permissions
 	canStart := u.CanStart
 	canStop := u.CanStop
 	canRestart := u.CanRestart
@@ -540,6 +542,22 @@ func refreshClaimsFromDB(claims *UserClaims) error {
 	isRestricted := u.IsRestrictedAccess
 	allowedContainers := u.AllowedContainers
 	changed := u.PasswordChanged
+
+	// Merge team permissions via OR (same logic as login)
+	if u.Team != nil {
+		canStart = canStart || u.Team.CanStart
+		canStop = canStop || u.Team.CanStop
+		canRestart = canRestart || u.Team.CanRestart
+		canDelete = canDelete || u.Team.CanDelete
+		canShell = canShell || u.Team.CanShell
+		if u.Team.AllowedContainers != "" {
+			if allowedContainers == "" || allowedContainers == ".*" {
+				allowedContainers = u.Team.AllowedContainers
+			} else {
+				allowedContainers = allowedContainers + "," + u.Team.AllowedContainers
+			}
+		}
+	}
 
 	if !active {
 		return fmt.Errorf("account deactivated")

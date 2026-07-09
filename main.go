@@ -740,18 +740,39 @@ func main() {
 				if err := db.GormDB.Where("token = ?", tokenStr).First(&apiToken).Error; err == nil {
 					db.GormDB.Model(&apiToken).Update("last_used", time.Now())
 					var u db.User
-					if err := db.GormDB.First(&u, apiToken.UserID).Error; err == nil {
+					if err := db.GormDB.Preload("Team").First(&u, apiToken.UserID).Error; err == nil {
+						// Merge team permissions (same OR logic as login)
+						canStart := u.CanStart
+						canStop := u.CanStop
+						canRestart := u.CanRestart
+						canDelete := u.CanDelete
+						canShell := u.CanShell
+						allowedContainers := u.AllowedContainers
+						if u.Team != nil {
+							canStart = canStart || u.Team.CanStart
+							canStop = canStop || u.Team.CanStop
+							canRestart = canRestart || u.Team.CanRestart
+							canDelete = canDelete || u.Team.CanDelete
+							canShell = canShell || u.Team.CanShell
+							if u.Team.AllowedContainers != "" {
+								if allowedContainers == "" || allowedContainers == ".*" {
+									allowedContainers = u.Team.AllowedContainers
+								} else {
+									allowedContainers = allowedContainers + "," + u.Team.AllowedContainers
+								}
+							}
+						}
 						claims := &UserClaims{
 							ID:                 int(u.ID),
 							Username:           u.Username,
 							IsAdmin:            u.IsAdmin,
-							CanStart:           u.CanStart,
-							CanStop:            u.CanStop,
-							CanRestart:         u.CanRestart,
-							CanDelete:          u.CanDelete,
-							CanShell:           u.CanShell,
+							CanStart:           canStart,
+							CanStop:            canStop,
+							CanRestart:         canRestart,
+							CanDelete:          canDelete,
+							CanShell:           canShell,
 							IsRestrictedAccess: u.IsRestrictedAccess,
-							AllowedContainers:  u.AllowedContainers,
+							AllowedContainers:  allowedContainers,
 							IsActive:           u.IsActive,
 							PasswordChanged:    u.PasswordChanged,
 							PasswordVersion:    u.PasswordVersion,
