@@ -80,6 +80,7 @@ type Container struct {
 	ID         string  `json:"id"`
 	Name       string  `json:"name"`
 	Image      string  `json:"image"`
+	ImageID    string  `json:"image_id"`
 	State      string  `json:"state"`
 	Created    int64   `json:"created"`
 	Status     string  `json:"status"`
@@ -880,6 +881,7 @@ func main() {
 			}
 
 			image, _ := ctr["Image"].(string)
+			imageID, _ := ctr["ImageID"].(string)
 
 			id, ok := ctr["ID"].(string)
 			if !ok {
@@ -907,6 +909,7 @@ func main() {
 			if visible {
 				ctr["_parsed_name"] = name
 				ctr["_parsed_image"] = image
+				ctr["_parsed_image_id"] = imageID
 				ctr["_parsed_id"] = id
 				ctr["_is_platform"] = isPlatform
 				visibleContainers = append(visibleContainers, ctr)
@@ -925,6 +928,7 @@ func main() {
 				id := c["_parsed_id"].(string)
 				name := c["_parsed_name"].(string)
 				image := c["_parsed_image"].(string)
+				imageID := c["_parsed_image_id"].(string)
 				isPlatform := c["_is_platform"].(bool)
 
 				shortID := id
@@ -982,6 +986,7 @@ func main() {
 					ID:         shortID,
 					Name:       name,
 					Image:      image,
+					ImageID:    imageID,
 					State:      state,
 					Created:    int64(createdVal),
 					Status:     statusVal,
