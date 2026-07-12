@@ -3574,18 +3574,20 @@ var (
 	latestSystemStats map[string]interface{}
 	sysStatsMu        sync.RWMutex
 
-	// Live stats cache for the /api/containers endpoint
+	// Live stats cache for the /api/containers endpoint and historical DB metrics
 	liveStatsCache = make(map[string]struct {
-		CPU    float64
-		Memory int64
+		CPU            float64
+		Memory         int64
+		NetRxBytes     int64
+		NetTxBytes     int64
+		DiskReadBytes  int64
+		DiskWriteBytes int64
 	})
 	liveStatsMu sync.RWMutex
 
-	prevLiveStats = make(map[string]struct {
-		TotalUsage  uint64
-		SystemUsage uint64
-	})
-	prevLiveStatsMu sync.Mutex
+	// activeStatsStreams holds cancel functions for continuous docker stat streams
+	activeStatsStreams   = make(map[string]context.CancelFunc)
+	activeStatsStreamsMu sync.Mutex
 
 	// Cache for container limits (avoid N+1 inspects)
 	containerLimitsCache = make(map[string]struct {
@@ -3596,95 +3598,153 @@ var (
 	containerLimitsMu sync.RWMutex
 )
 
-func liveStatsBroadcaster(cli *client.Client) {
-	ticker := time.NewTicker(5 * time.Second)
+func syncStatsStreamsLoop(cli *client.Client) {
+	ticker := time.NewTicker(10 * time.Second)
 	for range ticker.C {
+		if cli == nil {
+			continue
+		}
 		res, err := cli.ContainerList(context.Background(), client.ContainerListOptions{})
 		if err != nil {
 			continue
 		}
-		containers := extractContainers(res.Items)
-
-		var wg sync.WaitGroup
-		for _, ctr := range containers {
-			id, _ := ctr["ID"].(string)
-			if id == "" {
-				id, _ = ctr["Id"].(string)
+		
+		runningContainers := make(map[string]bool)
+		for _, ctr := range res.Items {
+			if ctr.State == "running" {
+				runningContainers[ctr.ID] = true
 			}
-			state, _ := ctr["State"].(string)
-			if state != "running" {
-				continue
-			}
-
-			wg.Add(1)
-			go func(cid string) {
-				defer wg.Done()
-				stats, err := cli.ContainerStats(context.Background(), cid, client.ContainerStatsOptions{Stream: false})
-				if err != nil {
-					return
-				}
-				defer stats.Body.Close()
-
-				var s struct {
-					CPUStats struct {
-						CPUUsage struct {
-							TotalUsage uint64 `json:"total_usage"`
-						} `json:"cpu_usage"`
-						SystemUsage uint64 `json:"system_cpu_usage"`
-						OnlineCPUs  uint32 `json:"online_cpus"`
-					} `json:"cpu_stats"`
-					MemoryStats struct {
-						Usage uint64            `json:"usage"`
-						Stats map[string]uint64 `json:"stats"`
-					} `json:"memory_stats"`
-				}
-				if err := json.NewDecoder(stats.Body).Decode(&s); err != nil {
-					return
-				}
-
-				cpuPercent := 0.0
-				prevLiveStatsMu.Lock()
-				prev, ok := prevLiveStats[cid]
-				if ok {
-					cpuDelta := float64(s.CPUStats.CPUUsage.TotalUsage) - float64(prev.TotalUsage)
-					systemDelta := float64(s.CPUStats.SystemUsage) - float64(prev.SystemUsage)
-					onlineCPUs := float64(s.CPUStats.OnlineCPUs)
-					if onlineCPUs == 0 {
-						onlineCPUs = float64(runtime.NumCPU())
-					}
-					if systemDelta > 0 && cpuDelta > 0 {
-						cpuPercent = (cpuDelta / systemDelta) * onlineCPUs * 100.0
-					}
-				}
-				prevLiveStats[cid] = struct {
-					TotalUsage  uint64
-					SystemUsage uint64
-				}{
-					TotalUsage:  s.CPUStats.CPUUsage.TotalUsage,
-					SystemUsage: s.CPUStats.SystemUsage,
-				}
-				prevLiveStatsMu.Unlock()
-
-				memUsed := s.MemoryStats.Usage
-				if inactiveFile, ok := s.MemoryStats.Stats["inactive_file"]; ok && inactiveFile < memUsed {
-					memUsed -= inactiveFile
-				} else if cache, ok := s.MemoryStats.Stats["cache"]; ok && cache < memUsed {
-					memUsed -= cache
-				}
-
-				liveStatsMu.Lock()
-				liveStatsCache[cid] = struct {
-					CPU    float64
-					Memory int64
-				}{
-					CPU:    cpuPercent,
-					Memory: int64(memUsed),
-				}
-				liveStatsMu.Unlock()
-			}(id)
 		}
-		wg.Wait()
+
+		activeStatsStreamsMu.Lock()
+		// Stop streams for containers that are no longer running
+		for id, cancel := range activeStatsStreams {
+			if !runningContainers[id] {
+				cancel()
+				delete(activeStatsStreams, id)
+				// Clean up cache
+				liveStatsMu.Lock()
+				delete(liveStatsCache, id)
+				liveStatsMu.Unlock()
+			}
+		}
+
+		// Start streams for new containers
+		for id := range runningContainers {
+			if _, exists := activeStatsStreams[id]; !exists {
+				ctx, cancel := context.WithCancel(context.Background())
+				activeStatsStreams[id] = cancel
+				go streamContainerStats(ctx, cli, id)
+			}
+		}
+		activeStatsStreamsMu.Unlock()
 	}
+}
+
+func streamContainerStats(ctx context.Context, cli *client.Client, id string) {
+	stats, err := cli.ContainerStats(ctx, id, client.ContainerStatsOptions{Stream: true})
+	if err != nil {
+		activeStatsStreamsMu.Lock()
+		delete(activeStatsStreams, id)
+		activeStatsStreamsMu.Unlock()
+		return
+	}
+	defer stats.Body.Close()
+
+	var s struct {
+		CPUStats struct {
+			CPUUsage struct {
+				TotalUsage uint64 `json:"total_usage"`
+			} `json:"cpu_usage"`
+			SystemUsage uint64 `json:"system_cpu_usage"`
+			OnlineCPUs  uint32 `json:"online_cpus"`
+		} `json:"cpu_stats"`
+		PreCPUStats struct {
+			CPUUsage struct {
+				TotalUsage uint64 `json:"total_usage"`
+			} `json:"cpu_usage"`
+			SystemUsage uint64 `json:"system_cpu_usage"`
+		} `json:"precpu_stats"`
+		MemoryStats struct {
+			Usage uint64            `json:"usage"`
+			Stats map[string]uint64 `json:"stats"`
+		} `json:"memory_stats"`
+		Networks map[string]struct {
+			RxBytes uint64 `json:"rx_bytes"`
+			TxBytes uint64 `json:"tx_bytes"`
+		} `json:"networks"`
+		BlkioStats struct {
+			IoServiceBytesRecursive []struct {
+				Op    string `json:"op"`
+				Value uint64 `json:"value"`
+			} `json:"io_service_bytes_recursive"`
+		} `json:"blkio_stats"`
+	}
+
+	decoder := json.NewDecoder(stats.Body)
+	for {
+		if err := decoder.Decode(&s); err != nil {
+			break
+		}
+
+		// CPU Calculation
+		cpuPercent := 0.0
+		cpuDelta := float64(s.CPUStats.CPUUsage.TotalUsage - s.PreCPUStats.CPUUsage.TotalUsage)
+		systemDelta := float64(s.CPUStats.SystemUsage - s.PreCPUStats.SystemUsage)
+		onlineCPUs := float64(s.CPUStats.OnlineCPUs)
+		if onlineCPUs == 0 {
+			onlineCPUs = float64(runtime.NumCPU())
+		}
+		if systemDelta > 0.0 && cpuDelta > 0.0 {
+			cpuPercent = (cpuDelta / systemDelta) * onlineCPUs * 100.0
+		}
+
+		// Memory Calculation
+		memUsed := s.MemoryStats.Usage
+		if inactiveFile, ok := s.MemoryStats.Stats["inactive_file"]; ok && inactiveFile < memUsed {
+			memUsed -= inactiveFile
+		} else if cache, ok := s.MemoryStats.Stats["cache"]; ok && cache < memUsed {
+			memUsed -= cache
+		}
+
+		// Network/Disk Parsing
+		var curRx, curTx, curRead, curWrite uint64
+		for _, netIf := range s.Networks {
+			curRx += netIf.RxBytes
+			curTx += netIf.TxBytes
+		}
+		for _, ioStat := range s.BlkioStats.IoServiceBytesRecursive {
+			switch op := strings.ToLower(ioStat.Op); op {
+			case "read":
+				curRead += ioStat.Value
+			case "write":
+				curWrite += ioStat.Value
+			}
+		}
+
+		liveStatsMu.Lock()
+		liveStatsCache[id] = struct {
+			CPU            float64
+			Memory         int64
+			NetRxBytes     int64
+			NetTxBytes     int64
+			DiskReadBytes  int64
+			DiskWriteBytes int64
+		}{
+			CPU:            cpuPercent,
+			Memory:         int64(memUsed),
+			NetRxBytes:     int64(curRx),
+			NetTxBytes:     int64(curTx),
+			DiskReadBytes:  int64(curRead),
+			DiskWriteBytes: int64(curWrite),
+		}
+		liveStatsMu.Unlock()
+	}
+
+	// Cleanup on exit
+	activeStatsStreamsMu.Lock()
+	delete(activeStatsStreams, id)
+	activeStatsStreamsMu.Unlock()
 }
 
 func systemStatsBroadcaster(cli *client.Client) {
@@ -3748,7 +3808,7 @@ func getRetentionDays() int {
 
 func startStatsCollector(cli *client.Client) {
 	go systemStatsBroadcaster(cli)
-	go liveStatsBroadcaster(cli)
+	go syncStatsStreamsLoop(cli)
 	// Initial collection
 	collectStats(cli)
 
@@ -3857,94 +3917,25 @@ func collectStats(cli *client.Client) {
 		db.GormDB.Create(&sysStat)
 	}
 
-	// Container Stats Snapshot
-	res, _ := cli.ContainerList(context.Background(), client.ContainerListOptions{})
-	containers := extractContainers(res.Items)
-	for _, ctr := range containers {
-		id, _ := ctr["ID"].(string)
-		if id == "" {
-			id, _ = ctr["Id"].(string)
-		}
-		state, _ := ctr["State"].(string)
-		if state != "running" {
-			continue
-		}
-		stats, err := cli.ContainerStats(context.Background(), id, client.ContainerStatsOptions{Stream: false})
-		if err != nil {
-			continue
-		}
-		var s struct {
-			CPUStats struct {
-				CPUUsage struct {
-					TotalUsage uint64 `json:"total_usage"`
-				} `json:"cpu_usage"`
-				SystemUsage uint64 `json:"system_cpu_usage"`
-				OnlineCPUs  uint32 `json:"online_cpus"`
-			} `json:"cpu_stats"`
-			MemoryStats struct {
-				Usage uint64            `json:"usage"`
-				Stats map[string]uint64 `json:"stats"`
-			} `json:"memory_stats"`
-			Networks map[string]struct {
-				RxBytes uint64 `json:"rx_bytes"`
-				TxBytes uint64 `json:"tx_bytes"`
-			} `json:"networks"`
-			BlkioStats struct {
-				IoServiceBytesRecursive []struct {
-					Op    string `json:"op"`
-					Value uint64 `json:"value"`
-				} `json:"io_service_bytes_recursive"`
-			} `json:"blkio_stats"`
-		}
-		if err := json.NewDecoder(stats.Body).Decode(&s); err != nil {
-			stats.Body.Close()
-			continue
-		}
-		stats.Body.Close()
-
-		var curRx, curTx, curRead, curWrite uint64
-		for _, netIf := range s.Networks {
-			curRx += netIf.RxBytes
-			curTx += netIf.TxBytes
-		}
-		for _, ioStat := range s.BlkioStats.IoServiceBytesRecursive {
-			switch op := strings.ToLower(ioStat.Op); op {
-			case "read":
-				curRead += ioStat.Value
-			case "write":
-				curWrite += ioStat.Value
-			}
-		}
-
-		cpuPercent := 0.0
+	// Container Stats Snapshot from live streams
+	liveStatsMu.RLock()
+	for id, stats := range liveStatsCache {
 		var rxDelta, txDelta, readDelta, writeDelta uint64
 
 		prevStatsMu.Lock()
 		prev, ok := prevStats[id]
 		if ok {
-			cpuDelta := float64(s.CPUStats.CPUUsage.TotalUsage) - float64(prev.TotalUsage)
-			systemDelta := float64(s.CPUStats.SystemUsage) - float64(prev.SystemUsage)
-
-			onlineCPUs := float64(s.CPUStats.OnlineCPUs)
-			if onlineCPUs == 0 {
-				onlineCPUs = float64(runtime.NumCPU())
+			if uint64(stats.NetRxBytes) > prev.NetRx {
+				rxDelta = uint64(stats.NetRxBytes) - prev.NetRx
 			}
-
-			if systemDelta > 0 && cpuDelta > 0 {
-				cpuPercent = (cpuDelta / systemDelta) * onlineCPUs * 100.0
+			if uint64(stats.NetTxBytes) > prev.NetTx {
+				txDelta = uint64(stats.NetTxBytes) - prev.NetTx
 			}
-
-			if curRx > prev.NetRx {
-				rxDelta = curRx - prev.NetRx
+			if uint64(stats.DiskReadBytes) > prev.DiskRead {
+				readDelta = uint64(stats.DiskReadBytes) - prev.DiskRead
 			}
-			if curTx > prev.NetTx {
-				txDelta = curTx - prev.NetTx
-			}
-			if curRead > prev.DiskRead {
-				readDelta = curRead - prev.DiskRead
-			}
-			if curWrite > prev.DiskWrite {
-				writeDelta = curWrite - prev.DiskWrite
+			if uint64(stats.DiskWriteBytes) > prev.DiskWrite {
+				writeDelta = uint64(stats.DiskWriteBytes) - prev.DiskWrite
 			}
 		}
 		prevStats[id] = struct {
@@ -3955,38 +3946,32 @@ func collectStats(cli *client.Client) {
 			DiskRead    uint64
 			DiskWrite   uint64
 		}{
-			TotalUsage:  s.CPUStats.CPUUsage.TotalUsage,
-			SystemUsage: s.CPUStats.SystemUsage,
-			NetRx:       curRx,
-			NetTx:       curTx,
-			DiskRead:    curRead,
-			DiskWrite:   curWrite,
+			TotalUsage:  0, // Handled continuously in stream
+			SystemUsage: 0,
+			NetRx:       uint64(stats.NetRxBytes),
+			NetTx:       uint64(stats.NetTxBytes),
+			DiskRead:    uint64(stats.DiskReadBytes),
+			DiskWrite:   uint64(stats.DiskWriteBytes),
 		}
 		prevStatsMu.Unlock()
 
-		// cgroups v2 uses "inactive_file", cgroups v1 uses "cache".
-		// Docker recommends subtracting inactive_file for accurate working-set memory.
-		memUsed := s.MemoryStats.Usage
-		if inactiveFile, ok := s.MemoryStats.Stats["inactive_file"]; ok && inactiveFile < memUsed {
-			memUsed -= inactiveFile
-		} else if cache, ok := s.MemoryStats.Stats["cache"]; ok && cache < memUsed {
-			memUsed -= cache
-		}
 		stat := db.Stat{
 			ContainerID:    id,
-			CPU:            cpuPercent,
-			Memory:         int64(memUsed),
+			CPU:            stats.CPU,
+			Memory:         stats.Memory,
 			NetRxBytes:     int64(rxDelta),
 			NetTxBytes:     int64(txDelta),
 			DiskReadBytes:  int64(readDelta),
 			DiskWriteBytes: int64(writeDelta),
 		}
+		
 		if LighthouseMode == "spoke" {
-			cluster.PushToHub("stat", stat)
+			cluster.PushToHub("container_stat", stat)
 		} else {
 			db.GormDB.Create(&stat)
 		}
 	}
+	liveStatsMu.RUnlock()
 }
 
 func seedAdmin() {
