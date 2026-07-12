@@ -534,6 +534,8 @@ const fetchEngineResources = async () => {
   }
 };
 
+let enginePollInterval = null;
+
 onMounted(() => {
   fetchEngineResources();
   enginePollInterval = setInterval(fetchEngineResources, 5000);
