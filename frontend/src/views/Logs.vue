@@ -342,7 +342,7 @@ const startLiveStats = (id) => {
   activeLiveId.value = id;
   fetchStatsNow(id);
   if (liveInterval) clearInterval(liveInterval);
-  liveInterval = setInterval(() => fetchStatsNow(id), 5000);
+  liveInterval = setInterval(() => fetchStatsNow(id), 2000);
 };
 
 const stopLiveStats = () => {
@@ -503,7 +503,7 @@ let statusInterval = null;
 onMounted(() => {
   fetchContainers();
   // Real-time status heartbeat
-  statusInterval = setInterval(fetchContainers, 10000);
+  statusInterval = setInterval(fetchContainers, 3000);
 });
 
 onUnmounted(() => {

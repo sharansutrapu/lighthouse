@@ -545,7 +545,7 @@ const triggerScan = async () => {
             showToast("Timeout", "Scan is taking too long.", "warning");
           }
         }
-      }, 10000);
+      }, 3000);
     }
   } catch(e) {
     scanResults.value.loading = false;
@@ -853,7 +853,7 @@ async function fetchLiveStats() {
 function startStatsPolling() {
   stopStatsPolling();
   fetchLiveStats();
-  statsTimer = setInterval(fetchLiveStats, 5000);
+  statsTimer = setInterval(fetchLiveStats, 2000);
 }
 
 function stopStatsPolling() {
