@@ -529,16 +529,16 @@ func main() {
 		canCreateDep, canEditDep, canDeleteDep := user.CanCreateDeployments, user.CanEditDeployments, user.CanDeleteDeployments
 
 		if user.Team != nil {
-			canStart = user.Team.CanStart
-			canStop = user.Team.CanStop
-			canRestart = user.Team.CanRestart
-			canDelete = user.Team.CanDelete
-			canShell = user.Team.CanShell
-			canViewHealth = user.Team.CanViewSystemHealth
-			canRunScans = user.Team.CanRunScans
-			canCreateDep = user.Team.CanCreateDeployments
-			canEditDep = user.Team.CanEditDeployments
-			canDeleteDep = user.Team.CanDeleteDeployments
+			canStart = canStart || user.Team.CanStart
+			canStop = canStop || user.Team.CanStop
+			canRestart = canRestart || user.Team.CanRestart
+			canDelete = canDelete || user.Team.CanDelete
+			canShell = canShell || user.Team.CanShell
+			canViewHealth = canViewHealth || user.Team.CanViewSystemHealth
+			canRunScans = canRunScans || user.Team.CanRunScans
+			canCreateDep = canCreateDep || user.Team.CanCreateDeployments
+			canEditDep = canEditDep || user.Team.CanEditDeployments
+			canDeleteDep = canDeleteDep || user.Team.CanDeleteDeployments
 		}
 
 		claims := &UserClaims{
@@ -1352,7 +1352,7 @@ func main() {
 
 		logAudit(userClaims.ID, userClaims.Username, "DOWNLOAD_LOGS", id, "Success", "Full log archive exported")
 
-		c.Response().Header().Set(echo.HeaderContentDisposition, "attachment; filename="+id+"_full.log")
+		c.Response().Header().Set(echo.HeaderContentDisposition, "attachment; filename=\""+id+"_full.log\"")
 		c.Response().Header().Set(echo.HeaderContentType, "text/plain")
 		c.Response().WriteHeader(http.StatusOK)
 
@@ -1434,17 +1434,22 @@ func main() {
 		} else {
 			// Historical fetch - get 100 lines before 'until'
 			var untilTime time.Time
+			var parseErr error
 			// Try parsing as RFC3339Nano (Docker's default)
-			untilTime, err = time.Parse(time.RFC3339Nano, untilStr)
-			if err != nil {
+			untilTime, parseErr = time.Parse(time.RFC3339Nano, untilStr)
+			if parseErr != nil {
 				// Fallback to RFC3339
-				untilTime, err = time.Parse(time.RFC3339, untilStr)
-				if err != nil {
+				untilTime, parseErr = time.Parse(time.RFC3339, untilStr)
+				if parseErr != nil {
 					// Fallback to Unix
 					if unix, err := strconv.ParseInt(untilStr, 10, 64); err == nil {
 						untilTime = time.Unix(unix, 0)
+						parseErr = nil
 					}
 				}
+			}
+			if parseErr != nil {
+				return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid 'until' timestamp format"})
 			}
 
 			var filtered []string
@@ -1822,7 +1827,7 @@ func main() {
 		} else if duration != "" && strings.HasSuffix(duration, "h") {
 			hours, err := strconv.Atoi(strings.TrimSuffix(duration, "h"))
 			if err == nil && hours > 0 {
-				query = query.Where("timestamp >= datetime('now', '-" + strconv.Itoa(hours) + " hours')")
+				query = query.Where("timestamp >= ?", time.Now().Add(-time.Duration(hours)*time.Hour))
 			}
 		}
 
@@ -1875,7 +1880,7 @@ func main() {
 		} else if duration != "" && strings.HasSuffix(duration, "h") {
 			hours, err := strconv.Atoi(strings.TrimSuffix(duration, "h"))
 			if err == nil && hours > 0 {
-				query = query.Where("timestamp >= datetime('now', '-" + strconv.Itoa(hours) + " hours')")
+				query = query.Where("timestamp >= ?", time.Now().Add(-time.Duration(hours)*time.Hour))
 			}
 		} else {
 			days := 30
@@ -3672,7 +3677,7 @@ func systemStatsBroadcaster(cli *client.Client) {
 				containers := extractContainers(res.Items)
 				totalContainers = len(containers)
 				for _, c := range containers {
-					if c["state"] == "running" {
+					if c["State"] == "running" {
 						runningContainers++
 					}
 				}

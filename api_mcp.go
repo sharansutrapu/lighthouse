@@ -381,7 +381,7 @@ func mcpListImagesHandler(cli *client.Client) server.ToolHandlerFunc {
 		claims, ok := ctx.Value("userClaims").(*UserClaims)
 		if !ok || !getMCPUserIsAdmin(claims.ID) { return mcp.NewToolResultError("Unauthorized: Admin only"), nil }
 
-		res, err := cli.ImageList(ctx, client.ImageListOptions{All: true})
+		res, err := cli.ImageList(ctx, client.ImageListOptions{All: false})
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("Failed to list images: %v", err)), nil
 		}
