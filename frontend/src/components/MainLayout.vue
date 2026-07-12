@@ -691,7 +691,7 @@ const initializeLayoutData = async () => {
       clearInterval(userInterval);
       router.replace("/login");
     }
-  }, 2000);
+  }, 60000); // Check session every 60 seconds instead of every 2 seconds
 };
 
 onMounted(async () => {
