@@ -305,7 +305,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from "vue";
+import { ref, reactive, computed, onMounted, onUnmounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { sharedState, showToast, fetchCurrentUser, toggleTheme } from "../utils/sharedState";
 import { secureStorage } from "../utils/storage";
