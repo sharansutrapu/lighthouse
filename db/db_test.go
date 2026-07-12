@@ -28,6 +28,43 @@ func TestInitDB(t *testing.T) {
 	}
 }
 
+// TestWALModeEnabled verifies that WAL journal mode is enabled on a real
+// file-backed SQLite database. WAL mode is critical for crash-safe writes
+// — data must survive hard container stops and OOM kills.
+func TestWALModeEnabled(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "lighthouse-test-wal-*.db")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	tmpFile.Close()
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+	defer os.Remove(tmpPath + "-wal")
+	defer os.Remove(tmpPath + "-shm")
+
+	os.Setenv("DB_TYPE", "sqlite")
+	os.Setenv("DB_DSN", tmpPath)
+	if err := InitDB(tmpPath); err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+
+	var journalMode string
+	if err := DB.QueryRow("PRAGMA journal_mode").Scan(&journalMode); err != nil {
+		t.Fatalf("Failed to query journal_mode: %v", err)
+	}
+	if journalMode != "wal" {
+		t.Errorf("Expected journal_mode=wal, got %q — crash-safe writes are NOT enabled", journalMode)
+	}
+
+	var maxConns int
+	DB.Stats() // ensure pool is configured
+	if DB.Stats().MaxOpenConnections != 1 {
+		t.Errorf("Expected MaxOpenConnections=1 for SQLite, got %d — lock contention risk", DB.Stats().MaxOpenConnections)
+	}
+	_ = maxConns
+}
+
+
 func TestUserCRUD(t *testing.T) {
 	setupTestDB(t)
 

@@ -255,9 +255,10 @@
             </div>
             <div class="host-stat">
               <div class="host-stat-head">
-                <span>Dangling</span>
-                <strong :style="{ color: danglingImagesCount > 0 ? 'var(--warning)' : 'inherit' }">{{ danglingImagesCount }} unused</strong>
+                <span>Unused</span>
+                <strong :style="{ color: unusedImagesCount > 0 ? 'var(--warning)' : 'inherit' }">{{ unusedImagesCount }} stale</strong>
               </div>
+              <div class="host-stat-sub">Removable images</div>
             </div>
             <div style="margin-top: auto; padding-top: 1rem;">
               <router-link to="/images" class="dash-action-btn" style="width: 100%; justify-content: center;">
@@ -495,8 +496,9 @@ const totalImageSize = computed(() => {
   return images.value.reduce((acc, img) => acc + (img.Size || 0), 0);
 });
 
-const danglingImagesCount = computed(() => {
-  return images.value.filter(img => !img.RepoTags || img.RepoTags.length === 0 || img.RepoTags.includes('<none>:<none>')).length;
+const unusedImagesCount = computed(() => {
+  const usedIds = new Set(containers.value.map(c => c.ImageID || c.imageId || c.image_id));
+  return images.value.filter(img => !usedIds.has(img.Id)).length;
 });
 
 const localVolumesCount = computed(() => {
@@ -534,6 +536,13 @@ const fetchEngineResources = async () => {
 
 onMounted(() => {
   fetchEngineResources();
+  enginePollInterval = setInterval(fetchEngineResources, 5000);
+});
+
+onUnmounted(() => {
+  if (enginePollInterval) {
+    clearInterval(enginePollInterval);
+  }
 });
 
 const isRefreshing = ref(false);

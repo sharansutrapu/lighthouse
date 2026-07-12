@@ -12,7 +12,7 @@ import (
 
 func RegisterImageRoutes(r *echo.Group, cli *client.Client) {
 	r.GET("/images", func(c echo.Context) error {
-		images, err := cli.ImageList(context.Background(), client.ImageListOptions{All: true})
+		images, err := cli.ImageList(context.Background(), client.ImageListOptions{All: false})
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		}
