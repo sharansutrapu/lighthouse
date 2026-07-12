@@ -257,7 +257,7 @@ const triggerScan = async (c) => {
           showToast('Timeout', 'Scan is taking too long.', 'warning');
         }
       }
-    }, 5000);
+    }, 10000);
   } catch (err) {
     showToast('Scan Failed', err.message, 'error');
     scanning.value[c.id] = false;

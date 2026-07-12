@@ -940,15 +940,39 @@ func main() {
 				createdVal, _ := c["Created"].(float64)
 				statusVal, _ := c["Status"].(string)
 
-				// Concurrent Inspect
-				inspect, _ := cli.ContainerInspect(context.Background(), id, client.ContainerInspectOptions{})
+				// Concurrent Inspect with 5-minute TTL cache
 				cpuLimit := 0.0
 				memLimit := int64(0)
-				if inspect.Container.HostConfig != nil {
-					if inspect.Container.HostConfig.NanoCPUs > 0 {
-						cpuLimit = float64(inspect.Container.HostConfig.NanoCPUs) / 1e9
+				needsFetch := false
+				
+				containerLimitsMu.RLock()
+				if limits, ok := containerLimitsCache[id]; ok && time.Since(limits.Fetched) < 5*time.Minute {
+					cpuLimit = limits.CPULimit
+					memLimit = limits.MemLimit
+				} else {
+					needsFetch = true
+				}
+				containerLimitsMu.RUnlock()
+
+				if needsFetch {
+					inspect, _ := cli.ContainerInspect(context.Background(), id, client.ContainerInspectOptions{})
+					if inspect.Container.HostConfig != nil {
+						if inspect.Container.HostConfig.NanoCPUs > 0 {
+							cpuLimit = float64(inspect.Container.HostConfig.NanoCPUs) / 1e9
+						}
+						memLimit = inspect.Container.HostConfig.Memory
 					}
-					memLimit = inspect.Container.HostConfig.Memory
+					containerLimitsMu.Lock()
+					containerLimitsCache[id] = struct {
+						CPULimit float64
+						MemLimit int64
+						Fetched  time.Time
+					}{
+						CPULimit: cpuLimit,
+						MemLimit: memLimit,
+						Fetched:  time.Now(),
+					}
+					containerLimitsMu.Unlock()
 				}
 
 				// Live Memory Cache Fetch
@@ -3562,10 +3586,18 @@ var (
 		SystemUsage uint64
 	})
 	prevLiveStatsMu sync.Mutex
+
+	// Cache for container limits (avoid N+1 inspects)
+	containerLimitsCache = make(map[string]struct {
+		CPULimit float64
+		MemLimit int64
+		Fetched  time.Time
+	})
+	containerLimitsMu sync.RWMutex
 )
 
 func liveStatsBroadcaster(cli *client.Client) {
-	ticker := time.NewTicker(3 * time.Second)
+	ticker := time.NewTicker(5 * time.Second)
 	for range ticker.C {
 		res, err := cli.ContainerList(context.Background(), client.ContainerListOptions{})
 		if err != nil {
@@ -3656,6 +3688,10 @@ func liveStatsBroadcaster(cli *client.Client) {
 }
 
 func systemStatsBroadcaster(cli *client.Client) {
+	cycleCount := 0
+	runningContainers := 0
+	totalContainers := 0
+
 	for {
 		v, _ := mem.VirtualMemory()
 		cp, _ := cpu.Percent(500*time.Millisecond, false)
@@ -3669,18 +3705,19 @@ func systemStatsBroadcaster(cli *client.Client) {
 			cores = runtime.NumCPU()
 		}
 
-		runningContainers := 0
-		totalContainers := 0
-		if cli != nil {
+		// Only fetch container list every 5 seconds (10 cycles of 500ms sleep)
+		if cycleCount%10 == 0 && cli != nil {
 			res, err := cli.ContainerList(context.Background(), client.ContainerListOptions{All: true})
 			if err == nil {
 				containers := extractContainers(res.Items)
 				totalContainers = len(containers)
+				runCount := 0
 				for _, c := range containers {
 					if c["State"] == "running" {
-						runningContainers++
+						runCount++
 					}
 				}
+				runningContainers = runCount
 			}
 		}
 
@@ -3695,6 +3732,7 @@ func systemStatsBroadcaster(cli *client.Client) {
 		}
 		sysStatsMu.Unlock()
 
+		cycleCount++
 		time.Sleep(500 * time.Millisecond) // Total cycle ~1s (500ms sample + 500ms sleep)
 	}
 }

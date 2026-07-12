@@ -397,7 +397,7 @@ const viewLogs = async (id) => {
 onMounted(() => {
   loadProjects();
   // Poll for updates every 10s
-  setInterval(loadProjects, 10000);
+  setInterval(loadProjects, 30000);
 });
 </script>
 
