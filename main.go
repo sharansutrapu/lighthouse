@@ -65,6 +65,9 @@ var (
 	AllowShell       bool
 	pendingAuthCodes sync.Map
 	LighthouseMode   string
+	apiContainersCache   []map[string]interface{}
+	apiContainersCacheMu sync.RWMutex
+	apiContainersCacheTS time.Time
 	NodeID           string
 )
 
@@ -847,13 +850,40 @@ func main() {
 		db.GormDB.Select("is_admin").First(&u, user.ID)
 		dbIsAdmin := u.IsAdmin
 
-		res, err := cli.ContainerList(context.Background(), client.ContainerListOptions{All: true, Size: true})
-		if err != nil {
-			log.Printf("ContainerList error: %v", err)
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to list containers"})
+		apiContainersCacheMu.RLock()
+		cachedAge := time.Since(apiContainersCacheTS)
+		var baseContainers []map[string]interface{}
+		
+		if cachedAge < 2*time.Second && len(apiContainersCache) > 0 {
+			baseContainers = apiContainersCache
+			apiContainersCacheMu.RUnlock()
+		} else {
+			apiContainersCacheMu.RUnlock()
+			
+			res, err := cli.ContainerList(context.Background(), client.ContainerListOptions{All: true, Size: true})
+			if err != nil {
+				log.Printf("ContainerList error: %v", err)
+				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to list containers"})
+			}
+			
+			baseContainers = extractContainers(res.Items)
+			
+			apiContainersCacheMu.Lock()
+			apiContainersCache = baseContainers
+			apiContainersCacheTS = time.Now()
+			apiContainersCacheMu.Unlock()
 		}
 
-		containers := extractContainers(res.Items)
+		// Make a copy so we don't mutate the cache
+		containers := make([]map[string]interface{}, len(baseContainers))
+		for i, v := range baseContainers {
+			// shallow copy of the map is usually enough here, but to be completely safe against mutating ctr["NodeID"]
+			newMap := make(map[string]interface{})
+			for k, val := range v {
+				newMap[k] = val
+			}
+			containers[i] = newMap
+		}
 
 		if LighthouseMode == "hub" {
 			cluster.GlobalHub.RLock()
@@ -3769,11 +3799,10 @@ func systemStatsBroadcaster(cli *client.Client) {
 		if cycleCount%10 == 0 && cli != nil {
 			res, err := cli.ContainerList(context.Background(), client.ContainerListOptions{All: true})
 			if err == nil {
-				containers := extractContainers(res.Items)
-				totalContainers = len(containers)
+				totalContainers = len(res.Items)
 				runCount := 0
-				for _, c := range containers {
-					if c["State"] == "running" {
+				for _, c := range res.Items {
+					if c.State == "running" {
 						runCount++
 					}
 				}
