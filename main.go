@@ -854,13 +854,13 @@ func main() {
 		cachedAge := time.Since(apiContainersCacheTS)
 		var baseContainers []map[string]interface{}
 		
-		if cachedAge < 2*time.Second && len(apiContainersCache) > 0 {
+		if cachedAge < 4*time.Second && len(apiContainersCache) > 0 {
 			baseContainers = apiContainersCache
 			apiContainersCacheMu.RUnlock()
 		} else {
 			apiContainersCacheMu.RUnlock()
 			
-			res, err := cli.ContainerList(context.Background(), client.ContainerListOptions{All: true, Size: true})
+			res, err := cli.ContainerList(context.Background(), client.ContainerListOptions{All: true})
 			if err != nil {
 				log.Printf("ContainerList error: %v", err)
 				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to list containers"})
@@ -3712,10 +3712,24 @@ func streamContainerStats(ctx context.Context, cli *client.Client, id string) {
 	}
 
 	decoder := json.NewDecoder(stats.Body)
+	// Throttle: don't update the shared cache more than once per second per container.
+	// Docker pushes frames every ~1s anyway; this eliminates redundant mutex lock contention
+	// when 20+ goroutines all try to write simultaneously.
+	const minUpdateInterval = 900 * time.Millisecond
+	lastUpdated := time.Time{}
+
 	for {
 		if err := decoder.Decode(&s); err != nil {
 			break
 		}
+
+		// Drop frames that arrive too quickly (shouldn't happen normally, but guards
+		// against Docker daemons that stream faster than 1Hz on some platforms).
+		now := time.Now()
+		if now.Sub(lastUpdated) < minUpdateInterval {
+			continue
+		}
+		lastUpdated = now
 
 		// CPU Calculation
 		cpuPercent := 0.0
@@ -3744,7 +3758,7 @@ func streamContainerStats(ctx context.Context, cli *client.Client, id string) {
 			curTx += netIf.TxBytes
 		}
 		for _, ioStat := range s.BlkioStats.IoServiceBytesRecursive {
-			switch op := strings.ToLower(ioStat.Op); op {
+			switch strings.ToLower(ioStat.Op) {
 			case "read":
 				curRead += ioStat.Value
 			case "write":
@@ -3777,52 +3791,75 @@ func streamContainerStats(ctx context.Context, cli *client.Client, id string) {
 	activeStatsStreamsMu.Unlock()
 }
 
+
 func systemStatsBroadcaster(cli *client.Client) {
-	cycleCount := 0
+	// Pre-compute core count once — it essentially never changes at runtime.
+	cores, err := cpu.Counts(true)
+	if err != nil || cores == 0 {
+		cores = runtime.NumCPU()
+	}
+
 	runningContainers := 0
 	totalContainers := 0
 
-	for {
-		v, _ := mem.VirtualMemory()
-		cp, _ := cpu.Percent(500*time.Millisecond, false)
-		cpuVal := 0.0
-		if len(cp) > 0 {
-			cpuVal = cp[0]
-		}
-
-		cores, err := cpu.Counts(true)
-		if err != nil || cores == 0 {
-			cores = runtime.NumCPU()
-		}
-
-		// Only fetch container list every 5 seconds (10 cycles of 500ms sleep)
-		if cycleCount%10 == 0 && cli != nil {
-			res, err := cli.ContainerList(context.Background(), client.ContainerListOptions{All: true})
-			if err == nil {
-				totalContainers = len(res.Items)
-				runCount := 0
-				for _, c := range res.Items {
-					if c.State == "running" {
-						runCount++
-					}
-				}
-				runningContainers = runCount
+	// Seed the very first CPU reading in the background so it's ready after 1s.
+	var latestCPU float64
+	var cpuMu sync.Mutex
+	go func() {
+		for {
+			// cpu.Percent(interval, false) blocks for `interval` while measuring.
+			// Run it in this dedicated goroutine so the ticker loop never stalls.
+			cp, _ := cpu.Percent(2*time.Second, false)
+			cpuMu.Lock()
+			if len(cp) > 0 {
+				latestCPU = cp[0]
 			}
+			cpuMu.Unlock()
 		}
+	}()
 
-		sysStatsMu.Lock()
-		latestSystemStats = map[string]interface{}{
-			"cpu":                cpuVal,
-			"memory":             v.Used,
-			"total_memory":       v.Total,
-			"cores":              cores,
-			"running_containers": runningContainers,
-			"total_containers":   totalContainers,
+	// Tick every 2 seconds — fast enough for the UI, lightweight on the CPU.
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	ctrTicker := time.NewTicker(10 * time.Second)
+	defer ctrTicker.Stop()
+
+	for {
+		select {
+		case <-ctrTicker.C:
+			// Refresh container counts every 10s (cheap — no Size calculation).
+			if cli != nil {
+				res, err := cli.ContainerList(context.Background(), client.ContainerListOptions{All: true})
+				if err == nil {
+					totalContainers = len(res.Items)
+					runCount := 0
+					for _, c := range res.Items {
+						if c.State == "running" {
+							runCount++
+						}
+					}
+					runningContainers = runCount
+				}
+			}
+		case <-ticker.C:
+			v, _ := mem.VirtualMemory()
+
+			cpuMu.Lock()
+			cpuVal := latestCPU
+			cpuMu.Unlock()
+
+			sysStatsMu.Lock()
+			latestSystemStats = map[string]interface{}{
+				"cpu":                cpuVal,
+				"memory":             v.Used,
+				"total_memory":       v.Total,
+				"cores":              cores,
+				"running_containers": runningContainers,
+				"total_containers":   totalContainers,
+			}
+			sysStatsMu.Unlock()
 		}
-		sysStatsMu.Unlock()
-
-		cycleCount++
-		time.Sleep(500 * time.Millisecond) // Total cycle ~1s (500ms sample + 500ms sleep)
 	}
 }
 
@@ -3881,7 +3918,10 @@ var (
 func collectStats(cli *client.Client) {
 	// System Stats
 	v, _ := mem.VirtualMemory()
-	cp, _ := cpu.Percent(time.Second, false)
+	// Use interval=0 to return the last measured CPU value instantly.
+	// collectStats runs every 30s — there's no need to block for 1s here.
+	// The dedicated cpu-sampling goroutine in systemStatsBroadcaster keeps the value fresh.
+	cp, _ := cpu.Percent(0, false)
 	netStats, _ := net.IOCounters(false)
 	diskStats, _ := disk.IOCounters()
 
