@@ -3662,8 +3662,7 @@ func statPollLoop(cli *client.Client) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
-	var prevCPU = make(map[string][2]uint64) // retained for potential future delta tracking
-	_ = prevCPU
+	var prevCPU = make(map[string][2]uint64) // id → [totalUsage, systemUsage]
 
 	for range ticker.C {
 		if cli == nil {
@@ -3687,21 +3686,21 @@ func statPollLoop(cli *client.Client) {
 		for id := range liveStatsCache {
 			if !running[id] {
 				delete(liveStatsCache, id)
+				delete(prevCPU, id)
 			}
 		}
 		liveStatsMu.Unlock()
 
 		// Poll each running container — one HTTP round-trip per container, then done.
 		for id := range running {
-			pollOneStat(cli, id)
+			pollOneStat(cli, id, prevCPU)
 		}
 	}
 }
 
 // pollOneStat fetches a single one-shot stats snapshot for one container and
-// updates liveStatsCache. Docker's Stream:false mode returns both cpu_stats and
-// precpu_stats in a single response, so no external delta tracking is needed.
-func pollOneStat(cli *client.Client, id string) {
+// updates liveStatsCache. prevCPU is used to compute accurate CPU deltas across polls.
+func pollOneStat(cli *client.Client, id string, prevCPU map[string][2]uint64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -3719,12 +3718,6 @@ func pollOneStat(cli *client.Client, id string) {
 			SystemUsage uint64 `json:"system_cpu_usage"`
 			OnlineCPUs  uint32 `json:"online_cpus"`
 		} `json:"cpu_stats"`
-		PreCPUStats struct {
-			CPUUsage struct {
-				TotalUsage uint64 `json:"total_usage"`
-			} `json:"cpu_usage"`
-			SystemUsage uint64 `json:"system_cpu_usage"`
-		} `json:"precpu_stats"`
 		MemoryStats struct {
 			Usage uint64            `json:"usage"`
 			Stats map[string]uint64 `json:"stats"`
@@ -3745,18 +3738,27 @@ func pollOneStat(cli *client.Client, id string) {
 		return
 	}
 
-	// CPU %: use Docker's standard delta formula.
-	// With Stream:false, Docker provides both cpu_stats and precpu_stats in one response.
+	// CPU %: compute delta manually across the 2-second polling interval.
 	cpuPercent := 0.0
-	cpuDelta := float64(stat.CPUStats.CPUUsage.TotalUsage) - float64(stat.PreCPUStats.CPUUsage.TotalUsage)
-	sysDelta := float64(stat.CPUStats.SystemUsage) - float64(stat.PreCPUStats.SystemUsage)
-	onlineCPUs := float64(stat.CPUStats.OnlineCPUs)
-	if onlineCPUs == 0 {
-		onlineCPUs = float64(runtime.NumCPU())
+	curTotal := stat.CPUStats.CPUUsage.TotalUsage
+	curSystem := stat.CPUStats.SystemUsage
+	
+	if prev, ok := prevCPU[id]; ok {
+		prevTotal := prev[0]
+		prevSys := prev[1]
+		
+		if curSystem > prevSys && curTotal > prevTotal {
+			cpuDelta := float64(curTotal - prevTotal)
+			sysDelta := float64(curSystem - prevSys)
+			onlineCPUs := float64(stat.CPUStats.OnlineCPUs)
+			if onlineCPUs == 0 {
+				onlineCPUs = float64(runtime.NumCPU())
+			}
+			cpuPercent = (cpuDelta / sysDelta) * onlineCPUs * 100.0
+		}
 	}
-	if sysDelta > 0 && cpuDelta > 0 {
-		cpuPercent = (cpuDelta / sysDelta) * onlineCPUs * 100.0
-	}
+	// Store current for next tick
+	prevCPU[id] = [2]uint64{curTotal, curSystem}
 
 	// Memory: subtract inactive_file (cgroups v2) or cache (v1) for working-set usage.
 	memUsed := stat.MemoryStats.Usage
