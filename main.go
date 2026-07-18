@@ -3639,9 +3639,6 @@ var (
 	})
 	liveStatsMu sync.RWMutex
 
-	// activeStatsStreams holds cancel functions for continuous docker stat streams
-	activeStatsStreams   = make(map[string]context.CancelFunc)
-	activeStatsStreamsMu sync.Mutex
 
 	// Cache for container limits (avoid N+1 inspects)
 	containerLimitsCache = make(map[string]struct {
@@ -3652,8 +3649,22 @@ var (
 	containerLimitsMu sync.RWMutex
 )
 
-func syncStatsStreamsLoop(cli *client.Client) {
-	ticker := time.NewTicker(10 * time.Second)
+// statPollLoop replaces the old per-container streaming goroutines with a single
+// controlled polling loop. Every 2 seconds it fetches one-shot stats for each
+// running container sequentially. This eliminates:
+//  - 23 persistent HTTP connections to the Docker daemon
+//  - 23 always-running JSON decode loops competing for liveStatsMu
+//  - Sawtooth CPU spikes from simultaneous mutex lock contention
+//
+// One-shot stats (Stream:false) are cheap: Docker computes cgroups metrics once
+// and closes the connection. The 2-second cadence keeps the UI feeling live.
+func statPollLoop(cli *client.Client) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	var prevCPU = make(map[string][2]uint64) // retained for potential future delta tracking
+	_ = prevCPU
+
 	for range ticker.C {
 		if cli == nil {
 			continue
@@ -3662,50 +3673,45 @@ func syncStatsStreamsLoop(cli *client.Client) {
 		if err != nil {
 			continue
 		}
-		
-		runningContainers := make(map[string]bool)
+
+		// Build set of currently running IDs so we can prune stale cache entries.
+		running := make(map[string]bool, len(res.Items))
 		for _, ctr := range res.Items {
 			if ctr.State == "running" {
-				runningContainers[ctr.ID] = true
+				running[ctr.ID] = true
 			}
 		}
 
-		activeStatsStreamsMu.Lock()
-		// Stop streams for containers that are no longer running
-		for id, cancel := range activeStatsStreams {
-			if !runningContainers[id] {
-				cancel()
-				delete(activeStatsStreams, id)
-				// Clean up cache
-				liveStatsMu.Lock()
+		// Remove stale entries for stopped containers.
+		liveStatsMu.Lock()
+		for id := range liveStatsCache {
+			if !running[id] {
 				delete(liveStatsCache, id)
-				liveStatsMu.Unlock()
 			}
 		}
+		liveStatsMu.Unlock()
 
-		// Start streams for new containers
-		for id := range runningContainers {
-			if _, exists := activeStatsStreams[id]; !exists {
-				ctx, cancel := context.WithCancel(context.Background())
-				activeStatsStreams[id] = cancel
-				go streamContainerStats(ctx, cli, id)
-			}
+		// Poll each running container — one HTTP round-trip per container, then done.
+		for id := range running {
+			pollOneStat(cli, id)
 		}
-		activeStatsStreamsMu.Unlock()
 	}
 }
 
-func streamContainerStats(ctx context.Context, cli *client.Client, id string) {
-	stats, err := cli.ContainerStats(ctx, id, client.ContainerStatsOptions{Stream: true})
+// pollOneStat fetches a single one-shot stats snapshot for one container and
+// updates liveStatsCache. Docker's Stream:false mode returns both cpu_stats and
+// precpu_stats in a single response, so no external delta tracking is needed.
+func pollOneStat(cli *client.Client, id string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	s, err := cli.ContainerStats(ctx, id, client.ContainerStatsOptions{Stream: false})
 	if err != nil {
-		activeStatsStreamsMu.Lock()
-		delete(activeStatsStreams, id)
-		activeStatsStreamsMu.Unlock()
 		return
 	}
-	defer stats.Body.Close()
+	defer s.Body.Close()
 
-	var s struct {
+	var stat struct {
 		CPUStats struct {
 			CPUUsage struct {
 				TotalUsage uint64 `json:"total_usage"`
@@ -3735,85 +3741,65 @@ func streamContainerStats(ctx context.Context, cli *client.Client, id string) {
 		} `json:"blkio_stats"`
 	}
 
-	decoder := json.NewDecoder(stats.Body)
-	// Throttle: don't update the shared cache more than once per second per container.
-	// Docker pushes frames every ~1s anyway; this eliminates redundant mutex lock contention
-	// when 20+ goroutines all try to write simultaneously.
-	const minUpdateInterval = 900 * time.Millisecond
-	lastUpdated := time.Time{}
-
-	for {
-		if err := decoder.Decode(&s); err != nil {
-			break
-		}
-
-		// Drop frames that arrive too quickly (shouldn't happen normally, but guards
-		// against Docker daemons that stream faster than 1Hz on some platforms).
-		now := time.Now()
-		if now.Sub(lastUpdated) < minUpdateInterval {
-			continue
-		}
-		lastUpdated = now
-
-		// CPU Calculation
-		cpuPercent := 0.0
-		cpuDelta := float64(s.CPUStats.CPUUsage.TotalUsage - s.PreCPUStats.CPUUsage.TotalUsage)
-		systemDelta := float64(s.CPUStats.SystemUsage - s.PreCPUStats.SystemUsage)
-		onlineCPUs := float64(s.CPUStats.OnlineCPUs)
-		if onlineCPUs == 0 {
-			onlineCPUs = float64(runtime.NumCPU())
-		}
-		if systemDelta > 0.0 && cpuDelta > 0.0 {
-			cpuPercent = (cpuDelta / systemDelta) * onlineCPUs * 100.0
-		}
-
-		// Memory Calculation
-		memUsed := s.MemoryStats.Usage
-		if inactiveFile, ok := s.MemoryStats.Stats["inactive_file"]; ok && inactiveFile < memUsed {
-			memUsed -= inactiveFile
-		} else if cache, ok := s.MemoryStats.Stats["cache"]; ok && cache < memUsed {
-			memUsed -= cache
-		}
-
-		// Network/Disk Parsing
-		var curRx, curTx, curRead, curWrite uint64
-		for _, netIf := range s.Networks {
-			curRx += netIf.RxBytes
-			curTx += netIf.TxBytes
-		}
-		for _, ioStat := range s.BlkioStats.IoServiceBytesRecursive {
-			switch strings.ToLower(ioStat.Op) {
-			case "read":
-				curRead += ioStat.Value
-			case "write":
-				curWrite += ioStat.Value
-			}
-		}
-
-		liveStatsMu.Lock()
-		liveStatsCache[id] = struct {
-			CPU            float64
-			Memory         int64
-			NetRxBytes     int64
-			NetTxBytes     int64
-			DiskReadBytes  int64
-			DiskWriteBytes int64
-		}{
-			CPU:            cpuPercent,
-			Memory:         int64(memUsed),
-			NetRxBytes:     int64(curRx),
-			NetTxBytes:     int64(curTx),
-			DiskReadBytes:  int64(curRead),
-			DiskWriteBytes: int64(curWrite),
-		}
-		liveStatsMu.Unlock()
+	if err := json.NewDecoder(s.Body).Decode(&stat); err != nil {
+		return
 	}
 
-	// Cleanup on exit
-	activeStatsStreamsMu.Lock()
-	delete(activeStatsStreams, id)
-	activeStatsStreamsMu.Unlock()
+	// CPU %: use Docker's standard delta formula.
+	// With Stream:false, Docker provides both cpu_stats and precpu_stats in one response.
+	cpuPercent := 0.0
+	cpuDelta := float64(stat.CPUStats.CPUUsage.TotalUsage) - float64(stat.PreCPUStats.CPUUsage.TotalUsage)
+	sysDelta := float64(stat.CPUStats.SystemUsage) - float64(stat.PreCPUStats.SystemUsage)
+	onlineCPUs := float64(stat.CPUStats.OnlineCPUs)
+	if onlineCPUs == 0 {
+		onlineCPUs = float64(runtime.NumCPU())
+	}
+	if sysDelta > 0 && cpuDelta > 0 {
+		cpuPercent = (cpuDelta / sysDelta) * onlineCPUs * 100.0
+	}
+
+	// Memory: subtract inactive_file (cgroups v2) or cache (v1) for working-set usage.
+	memUsed := stat.MemoryStats.Usage
+	if inactiveFile, ok := stat.MemoryStats.Stats["inactive_file"]; ok && inactiveFile < memUsed {
+		memUsed -= inactiveFile
+	} else if cache, ok := stat.MemoryStats.Stats["cache"]; ok && cache < memUsed {
+		memUsed -= cache
+	}
+
+	// Network / disk totals.
+	var curRx, curTx, curRead, curWrite uint64
+	for _, netIf := range stat.Networks {
+		curRx += netIf.RxBytes
+		curTx += netIf.TxBytes
+	}
+	for _, io := range stat.BlkioStats.IoServiceBytesRecursive {
+		switch strings.ToLower(io.Op) {
+		case "read":
+			curRead += io.Value
+		case "write":
+			curWrite += io.Value
+		}
+	}
+
+	liveStatsMu.Lock()
+	liveStatsCache[id] = struct {
+		CPU            float64
+		Memory         int64
+		NetRxBytes     int64
+		NetTxBytes     int64
+		DiskReadBytes  int64
+		DiskWriteBytes int64
+	}{
+		CPU:            cpuPercent,
+		Memory:         int64(memUsed),
+		NetRxBytes:     int64(curRx),
+		NetTxBytes:     int64(curTx),
+		DiskReadBytes:  int64(curRead),
+		DiskWriteBytes: int64(curWrite),
+	}
+	liveStatsMu.Unlock()
 }
+
 
 
 func systemStatsBroadcaster(cli *client.Client) {
@@ -3900,8 +3886,8 @@ func getRetentionDays() int {
 
 func startStatsCollector(cli *client.Client) {
 	go systemStatsBroadcaster(cli)
-	go syncStatsStreamsLoop(cli)
-	// Initial collection
+	go statPollLoop(cli)
+	// Initial collection (runs once synchronously to seed the DB immediately)
 	collectStats(cli)
 
 	ticker := time.NewTicker(30 * time.Second)

@@ -712,7 +712,21 @@ const makeChartOptions = (unit) => ({
   },
 });
 
-const cpuChartOptions = computed(() => makeChartOptions("%"));
+const cpuChartOptions = computed(() => ({
+  ...makeChartOptions("%"),
+  scales: {
+    ...makeChartOptions("%").scales,
+    y: {
+      ...makeChartOptions("%").scales.y,
+      min: 0,
+      max: 100,
+      ticks: {
+        ...makeChartOptions("%").scales.y.ticks,
+        callback: (v) => v + "%",
+      },
+    },
+  },
+}));
 const memChartOptions = computed(() => makeChartOptions("GB"));
 
 watch(() => sharedState.theme, () => {
@@ -720,11 +734,13 @@ watch(() => sharedState.theme, () => {
 });
 
 const updateCharts = () => {
+  // Parse the active filter (e.g. "1h", "6h", "12h", "24h") into hours.
+  const rangeHours = parseInt(activeHistoryFilter.value, 10) || 1;
   const now = new Date();
-  const rangeHours = 1; // last 1 hour
   const startTime = new Date(now.getTime() - rangeHours * 60 * 60 * 1000);
   
-  const binCount = 60;
+  // Use more bins for longer ranges so the chart stays legible.
+  const binCount = rangeHours <= 1 ? 60 : rangeHours <= 6 ? 72 : rangeHours <= 12 ? 72 : 96;
   const binSizeMs = (rangeHours * 60 * 60 * 1000) / binCount;
   const timeline = [];
   
