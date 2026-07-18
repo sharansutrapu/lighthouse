@@ -300,8 +300,9 @@ func InitDB(dataSourceName string) error {
 		_, _ = DB.Exec("PRAGMA journal_mode=WAL")
 		_, _ = DB.Exec("PRAGMA busy_timeout=5000")
 		_, _ = DB.Exec("PRAGMA synchronous=NORMAL")
-		_, _ = DB.Exec("PRAGMA cache_size=-64000") // 64MB page cache
-		_, _ = DB.Exec("PRAGMA temp_store=MEMORY")
+		// 8 MB page cache — sufficient for a metrics DB with 30s write cadence.
+		// The previous 64 MB was pinning 64 MB permanently in the Go heap.
+		_, _ = DB.Exec("PRAGMA cache_size=-8000")
 	}
 
 	err = GormDB.AutoMigrate(

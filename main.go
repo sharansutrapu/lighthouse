@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -223,6 +224,11 @@ func main() {
 		os.Exit(code)
 	}
 
+	// Tune GC aggressiveness: fire collection when live heap grows by 50% instead of
+	// the default 100%. This keeps steady-state memory ~halved (target: <120 MB)
+	// at the cost of marginally more frequent (but very short) GC pauses.
+	debug.SetGCPercent(50)
+
 	LighthouseMode = os.Getenv("LIGHTHOUSE_MODE")
 	if LighthouseMode == "" {
 		LighthouseMode = "standalone"
@@ -285,7 +291,16 @@ func main() {
 	if TrustProxy {
 		e.IPExtractor = echo.ExtractIPFromXFFHeader()
 	}
-	e.Use(middleware.Logger())
+	// Skip request logging for high-frequency polling routes to avoid allocating
+	// a log-line string on every 4-5 second frontend poll.
+	e.Use(middleware.LoggerWithConfig(middleware.LoggerConfig{
+		Skipper: func(c echo.Context) bool {
+			p := c.Path()
+			return p == "/api/containers" ||
+				p == "/api/system/stats" ||
+				strings.HasPrefix(p, "/ws/")
+		},
+	}))
 	e.Use(middleware.Recover())
 	e.Use(securityHeadersMiddleware())
 	e.Use(middleware.RateLimiter(middleware.NewRateLimiterMemoryStore(rate.Limit(50))))
@@ -874,26 +889,27 @@ func main() {
 			apiContainersCacheMu.Unlock()
 		}
 
-		// Make a copy so we don't mutate the cache
-		containers := make([]map[string]interface{}, len(baseContainers))
-		for i, v := range baseContainers {
-			// shallow copy of the map is usually enough here, but to be completely safe against mutating ctr["NodeID"]
-			newMap := make(map[string]interface{})
-			for k, val := range v {
-				newMap[k] = val
-			}
-			containers[i] = newMap
-		}
-
+		// In hub mode we must inject NodeID into spoke containers — use a copy only
+		// for those entries so the shared cache is never mutated.
+		var containers []map[string]interface{}
 		if LighthouseMode == "hub" {
+			containers = make([]map[string]interface{}, len(baseContainers))
+			copy(containers, baseContainers)
 			cluster.GlobalHub.RLock()
 			for nodeID, spContainers := range cluster.GlobalHub.SpokeContainers {
 				for _, ctr := range spContainers {
-					ctr["NodeID"] = nodeID
-					containers = append(containers, ctr)
+					spoke := make(map[string]interface{}, len(ctr)+1)
+					for k, v := range ctr {
+						spoke[k] = v
+					}
+					spoke["NodeID"] = nodeID
+					containers = append(containers, spoke)
 				}
 			}
 			cluster.GlobalHub.RUnlock()
+		} else {
+			// Non-hub: read directly from cache — no copy needed.
+			containers = baseContainers
 		}
 
 		var patterns []string
@@ -3570,39 +3586,47 @@ func main() {
 	e.Logger.Fatal(e.Start(port))
 }
 
+// extractContainers converts the Docker client's typed container list into the
+// generic map slice expected by the rest of the API. A single json.Marshal is
+// performed on the already-typed slice and immediately decoded into []map — no
+// intermediate []byte is retained after the call returns.
 func extractContainers(res interface{}) []map[string]interface{} {
-	b, _ := json.Marshal(res)
-	var m interface{}
-	json.Unmarshal(b, &m)
-
-	if list, ok := m.([]interface{}); ok {
-		var ret []map[string]interface{}
-		for _, item := range list {
-			if mm, ok := item.(map[string]interface{}); ok {
-				ret = append(ret, mm)
-			}
-		}
-		return ret
+	b, err := json.Marshal(res)
+	if err != nil {
+		return nil
 	}
-	if mm, ok := m.(map[string]interface{}); ok {
-		for _, val := range mm {
-			if list, ok := val.([]interface{}); ok {
-				var ret []map[string]interface{}
-				for _, item := range list {
-					if mmm, ok := item.(map[string]interface{}); ok {
-						ret = append(ret, mmm)
-					}
-				}
-				return ret
-			}
+	var out []map[string]interface{}
+	if err := json.Unmarshal(b, &out); err == nil && out != nil {
+		return out
+	}
+	// Fallback: some API versions wrap the list inside a top-level object.
+	var wrapper map[string]json.RawMessage
+	if err := json.Unmarshal(b, &wrapper); err != nil {
+		return nil
+	}
+	for _, raw := range wrapper {
+		var inner []map[string]interface{}
+		if err := json.Unmarshal(raw, &inner); err == nil {
+			return inner
 		}
 	}
 	return nil
 }
 
+// systemStatsSnapshot is a zero-allocation holder for the latest host metrics.
+// Fields are updated in-place under sysStatsMu — the struct itself is never re-allocated.
+type systemStatsSnapshot struct {
+	CPU               float64 `json:"cpu"`
+	Memory            uint64  `json:"memory"`
+	TotalMemory       uint64  `json:"total_memory"`
+	Cores             int     `json:"cores"`
+	RunningContainers int     `json:"running_containers"`
+	TotalContainers   int     `json:"total_containers"`
+}
+
 var (
-	latestSystemStats map[string]interface{}
-	sysStatsMu        sync.RWMutex
+	latestSystemStats    *systemStatsSnapshot // pointer; nil until first tick
+	sysStatsMu           sync.RWMutex
 
 	// Live stats cache for the /api/containers endpoint and historical DB metrics
 	liveStatsCache = make(map[string]struct {
@@ -3850,14 +3874,16 @@ func systemStatsBroadcaster(cli *client.Client) {
 			cpuMu.Unlock()
 
 			sysStatsMu.Lock()
-			latestSystemStats = map[string]interface{}{
-				"cpu":                cpuVal,
-				"memory":             v.Used,
-				"total_memory":       v.Total,
-				"cores":              cores,
-				"running_containers": runningContainers,
-				"total_containers":   totalContainers,
+			if latestSystemStats == nil {
+				// First tick: allocate once. Never reallocated after this point.
+				latestSystemStats = &systemStatsSnapshot{}
 			}
+			latestSystemStats.CPU = cpuVal
+			latestSystemStats.Memory = v.Used
+			latestSystemStats.TotalMemory = v.Total
+			latestSystemStats.Cores = cores
+			latestSystemStats.RunningContainers = runningContainers
+			latestSystemStats.TotalContainers = totalContainers
 			sysStatsMu.Unlock()
 		}
 	}
