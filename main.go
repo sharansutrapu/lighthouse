@@ -3760,12 +3760,14 @@ func pollOneStat(cli *client.Client, id string, prevCPU map[string][2]uint64) {
 	// Store current for next tick
 	prevCPU[id] = [2]uint64{curTotal, curSystem}
 
-	// Memory: subtract inactive_file (cgroups v2) or cache (v1) for working-set usage.
+	// Memory: subtract inactive_file (cgroups v2) or total_inactive_file (cgroups v1) for working-set usage.
 	memUsed := stat.MemoryStats.Usage
-	if inactiveFile, ok := stat.MemoryStats.Stats["inactive_file"]; ok && inactiveFile < memUsed {
-		memUsed -= inactiveFile
-	} else if cache, ok := stat.MemoryStats.Stats["cache"]; ok && cache < memUsed {
-		memUsed -= cache
+	if v, ok := stat.MemoryStats.Stats["inactive_file"]; ok && v < memUsed {
+		memUsed -= v
+	} else if v, ok := stat.MemoryStats.Stats["total_inactive_file"]; ok && v < memUsed {
+		memUsed -= v
+	} else if v, ok := stat.MemoryStats.Stats["cache"]; ok && v < memUsed {
+		memUsed -= v
 	}
 
 	// Network / disk totals.
