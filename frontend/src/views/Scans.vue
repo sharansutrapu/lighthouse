@@ -77,6 +77,9 @@
                  0 Vulnerabilities
                </span>
             </div>
+            <div style="margin-top: 0.5rem; font-size: 0.75rem; color: var(--text-mute);">
+               Last Scanned: {{ new Date(scanResults[c.id].createdAt).toLocaleString() }}
+            </div>
           </div>
           <div v-else class="scan-result-summary pending">
             <span>No scan run yet</span>
@@ -228,8 +231,10 @@ const loadScanForContainer = async (c) => {
     if (res.ok) {
       const text = await res.text();
       if (text && text.trim() !== '') {
-        const data = JSON.parse(text);
+        const wrapper = JSON.parse(text);
+        const data = JSON.parse(wrapper.result);
         scanResults.value[c.id] = parseScanResults(data);
+        scanResults.value[c.id].createdAt = wrapper.created_at;
         return true;
       }
     }

@@ -832,6 +832,20 @@
                   <p class="card-desc" style="margin-top: 0.2rem; font-size: 0.8rem;">Automatically run a vulnerability scan when a container starts (e.g. after redeployment).</p>
                 </div>
               </div>
+              
+              <div class="input-group" style="display: flex; align-items: flex-start; gap: 1rem; margin-top: 1rem;">
+                <input type="checkbox" v-model="settings.scheduled_scan_enabled" style="transform: scale(1.3); accent-color: var(--accent); cursor: pointer;" />
+                <div>
+                  <label style="margin:0;">Enable Scheduled Vulnerability Scans</label>
+                  <p class="card-desc" style="margin-top: 0.2rem; font-size: 0.8rem;">Periodically scan all running containers to catch newly published CVEs.</p>
+                </div>
+              </div>
+
+              <div class="input-group" v-if="settings.scheduled_scan_enabled" style="margin-left: 2.3rem;">
+                <label>Scheduled Scan Cron</label>
+                <input v-model="settings.scheduled_scan_cron" type="text" class="premium-input mono" placeholder="0 0 * * * (Daily at midnight)" />
+              </div>
+
               <div class="modal-footer" style="display: flex; gap: 0.5rem; justify-content: flex-end; padding-top: 1rem; border-top: none;">
                 <button type="button" @click="closeModal" class="modal-btn cancel">Cancel</button>
                 <button type="button" @click="saveSettingsAndClose" class="modal-btn confirm" :disabled="settingsSaving">
@@ -928,6 +942,19 @@ const settings = ref({
   backup_endpoint: "",
   backup_auth1: "",
   backup_auth2: "",
+  archival_enabled: false,
+  archive_metrics: false,
+  archive_logs: false,
+  archival_provider: "s3",
+  archival_cron: "0 * * * *",
+  archival_bucket: "",
+  archival_region: "",
+  archival_endpoint: "",
+  archival_auth1: "",
+  archival_auth2: "",
+  auto_scan_enabled: false,
+  scheduled_scan_enabled: false,
+  scheduled_scan_cron: "0 0 * * *"
 });
 
 const backupTesting = ref(false);

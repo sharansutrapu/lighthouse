@@ -340,7 +340,7 @@ func (am *AlertManager) processContainerEvent(msg events.Message) { //nolint:goc
 						log.Printf("[Alerts] Auto-scanning image %s for started container %s", img, containerName)
 						// The scanner has built-in deduplication for recent scans (1h cache), 
 						// but we'll fire it off here.
-						_, _ = scanner.ScanImage(context.Background(), am.cli, img)
+						_, _ = scanner.ExecuteAndSaveScan(context.Background(), am.cli, img)
 					}
 				}
 			}

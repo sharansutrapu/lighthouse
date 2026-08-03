@@ -467,7 +467,8 @@ const loadScans = async () => {
       if (res.ok) {
         const text = await res.text();
         if (text && text.trim() !== '') {
-          vulnScanData.value[c.id] = parseScanResults(JSON.parse(text));
+          const wrapper = JSON.parse(text);
+          vulnScanData.value[c.id] = parseScanResults(JSON.parse(wrapper.result));
         }
       }
     } catch(e) {}

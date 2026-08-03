@@ -339,8 +339,16 @@ func main() {
 	// Start background backup scheduler
 	backup.InitScheduler()
 
-	// Start background archival scheduler
-	archival.InitScheduler()
+	// Start archival scheduler
+	archival.ReloadSchedule()
+
+	// Setup scanner alert callback and start scheduler
+	scanner.AlertCallback = func(imageName string, resultBytes []byte) {
+		if strings.Contains(string(resultBytes), `"Severity":"CRITICAL"`) || strings.Contains(string(resultBytes), `"Severity": "CRITICAL"`) {
+			alerts.Global.TriggerContainerEvent("vulnerability_found", "auto-scanner", fmt.Sprintf("CRITICAL vulnerabilities found during scan of image: %s", imageName))
+		}
+	}
+	scanner.ReloadSchedule(cli)
 
 	gitops.StartManager()
 	defer alertMgr.Stop()
@@ -1337,20 +1345,10 @@ func main() {
 				}
 			}
 			log.Printf("Scanning image %s...", imageName)
-			res, err := scanner.ScanImage(ctx, cli, imageName)
+			_, err = scanner.ExecuteAndSaveScan(ctx, cli, imageName)
 			if err != nil {
 				log.Printf("scan error: %v", err)
 				return
-			}
-			b, _ := json.Marshal(res)
-			db.GormDB.Create(&db.ImageScanResult{
-				Image:  imageName,
-				Result: string(b),
-			})
-
-			// Check for critical vulnerabilities
-			if strings.Contains(string(b), `"Severity":"CRITICAL"`) || strings.Contains(string(b), `"Severity": "CRITICAL"`) {
-				alerts.Global.TriggerContainerEvent("vulnerability_found", strings.TrimPrefix(ctr.Container.Name, "/"), fmt.Sprintf("CRITICAL vulnerabilities found during scan of image: %s", imageName))
 			}
 			log.Printf("Scan complete for %s", imageName)
 		}()
@@ -1368,7 +1366,7 @@ func main() {
 		if err := db.GormDB.Where("image = ?", imageName).Order("created_at desc").First(&result).Error; err != nil {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "No scan results found"})
 		}
-		return c.String(http.StatusOK, result.Result)
+		return c.JSON(http.StatusOK, result)
 	})
 
 	r.GET("/containers/:id/logs/download", func(c echo.Context) error {
@@ -2645,6 +2643,8 @@ func main() {
 			"archival_auth1":         settings.ArchivalAuth1,
 			"archival_auth2":         maskSecret(settings.ArchivalAuth2),
 			"auto_scan_enabled":      settings.AutoScanEnabled,
+			"scheduled_scan_enabled": settings.ScheduledScanEnabled,
+			"scheduled_scan_cron":    settings.ScheduledScanCron,
 		})
 	})
 
@@ -2681,6 +2681,8 @@ func main() {
 			ArchivalAuth1        string `json:"archival_auth1"`
 			ArchivalAuth2        string `json:"archival_auth2"`
 			AutoScanEnabled      bool   `json:"auto_scan_enabled"`
+			ScheduledScanEnabled bool   `json:"scheduled_scan_enabled"`
+			ScheduledScanCron    string `json:"scheduled_scan_cron"`
 		}
 		if err := c.Bind(&payload); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid request"})
@@ -2734,6 +2736,8 @@ func main() {
 			"archival_auth1":         payload.ArchivalAuth1,
 			"archival_auth2":         payload.ArchivalAuth2,
 			"auto_scan_enabled":      payload.AutoScanEnabled,
+			"scheduled_scan_enabled": payload.ScheduledScanEnabled,
+			"scheduled_scan_cron":    payload.ScheduledScanCron,
 		}).Error
 
 		if err != nil {
@@ -2745,12 +2749,15 @@ func main() {
 		userClaims := token.Claims.(*UserClaims)
 		logAudit(userClaims.ID, userClaims.Username, "UPDATE_SETTINGS", "GlobalSettings", "Success", "Updated global settings including SMTP, OAuth, and Backups")
 
-		// Note: AutoScanEnabled does not require a background scheduler reload
-		// because the AlertManager dynamically queries the setting on-demand
-		// for every new container start event.
-		// Reload backup and archival cron schedulers
+		// Reload schedulers
 		backup.ReloadSchedule()
 		archival.ReloadSchedule()
+		scanner.ReloadSchedule(cli)
+
+		// Trigger retroactive sweep if AutoScanEnabled just transitioned to true
+		if payload.AutoScanEnabled && !s.AutoScanEnabled {
+			go triggerRetroactiveScans(cli)
+		}
 
 		return c.NoContent(http.StatusOK)
 	})
@@ -4107,4 +4114,28 @@ func cleanupStaleAlerts() {
 	} else if res.RowsAffected > 0 {
 		log.Printf("Cleaned up %d stale pending alerts.", res.RowsAffected)
 	}
+}
+
+func triggerRetroactiveScans(cli *client.Client) {
+	log.Println("Starting retroactive vulnerability scan sweep...")
+	containers, err := cli.ContainerList(context.Background(), client.ContainerListOptions{All: false})
+	if err != nil {
+		log.Printf("Failed to list containers for retroactive scan: %v", err)
+		return
+	}
+
+	for _, c := range containers.Items {
+		imageName := c.Image
+		if imageName == "" {
+			continue
+		}
+		
+		var count int64
+		db.GormDB.Model(&db.ImageScanResult{}).Where("image = ?", imageName).Count(&count)
+		if count == 0 {
+			log.Printf("No previous scan found for %s, executing retroactive scan...", imageName)
+			_, _ = scanner.ExecuteAndSaveScan(context.Background(), cli, imageName)
+		}
+	}
+	log.Println("Retroactive vulnerability scan sweep complete.")
 }

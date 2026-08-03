@@ -158,7 +158,9 @@ type Setting struct {
 	ArchivalAuth1    string `json:"archival_auth1"`
 	ArchivalAuth2    string `json:"archival_auth2"`
 
-	AutoScanEnabled  bool   `json:"auto_scan_enabled"`
+	AutoScanEnabled      bool   `json:"auto_scan_enabled"`
+	ScheduledScanEnabled bool   `json:"scheduled_scan_enabled"`
+	ScheduledScanCron    string `json:"scheduled_scan_cron"`
 }
 
 type AlertRule struct {
