@@ -5,7 +5,18 @@
         <h1>Docker Images <span class="badge badge-dim" style="font-size: 0.8rem; margin-left: 0.5rem; vertical-align: middle;">{{ images.length }} Total</span></h1>
         <p class="subtitle">Manage local images and clear disk space</p>
       </div>
-      <div class="header-actions">
+      <div class="header-actions" style="display: flex; gap: 1rem; align-items: center;">
+        <div class="search-box glass" style="margin: 0; min-width: 250px;">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <input
+            type="text"
+            v-model="searchQuery"
+            placeholder="Search by ID or Tag..."
+          />
+        </div>
         <button class="btn btn-warning" @click="pruneImages" :disabled="isLoading">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="18" height="18">
             <polyline points="3 6 5 6 21 6"></polyline>
@@ -32,8 +43,8 @@
               <th class="text-right">Actions</th>
             </tr>
           </thead>
-          <tbody v-if="images.length > 0">
-            <tr v-for="img in images" :key="img.Id">
+          <tbody v-if="filteredImages.length > 0">
+            <tr v-for="img in filteredImages" :key="img.Id">
               <td data-label="ID">{{ img.Id.split(':')[1]?.substring(0, 12) || img.Id }}</td>
               <td data-label="Tags">
                 <div class="tags-container">
@@ -108,12 +119,23 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { apiFetch } from '../utils/apiFetch';
 import { formatBytes, showToast } from '../utils/sharedState';
 
 const images = ref([]);
 const isLoading = ref(true);
+const searchQuery = ref('');
+
+const filteredImages = computed(() => {
+  const query = searchQuery.value.toLowerCase().trim();
+  if (!query) return images.value;
+  return images.value.filter(img => {
+    const id = img.Id.toLowerCase();
+    const tags = (img.RepoTags || []).join(' ').toLowerCase();
+    return id.includes(query) || tags.includes(query);
+  });
+});
 
 const fetchImages = async () => {
   isLoading.value = true;

@@ -5,7 +5,18 @@
         <h1>Docker Volumes</h1>
         <p class="subtitle">Manage persistent storage and mounts</p>
       </div>
-      <div class="header-actions">
+      <div class="header-actions" style="display: flex; gap: 1rem; align-items: center;">
+        <div class="search-box glass" style="margin: 0; min-width: 250px;">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <input
+            type="text"
+            v-model="searchQuery"
+            placeholder="Search volumes..."
+          />
+        </div>
         <button class="btn btn-warning" @click="pruneVolumes" :disabled="isLoading">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="18" height="18">
             <polyline points="3 6 5 6 21 6"></polyline>
@@ -31,8 +42,8 @@
               <th class="text-right">Actions</th>
             </tr>
           </thead>
-          <tbody v-if="volumes.length > 0">
-            <tr v-for="vol in volumes" :key="vol.Name">
+          <tbody v-if="filteredVolumes.length > 0">
+            <tr v-for="vol in filteredVolumes" :key="vol.Name">
               <td data-label="Name"><strong>{{ vol.Name.length > 30 ? vol.Name.substring(0,30) + '...' : vol.Name }}</strong></td>
               <td data-label="Driver"><span class="badge badge-dim mini">{{ vol.Driver }}</span></td>
               <td data-label="Mountpoint" class="text-mute"><small>{{ vol.Mountpoint }}</small></td>
@@ -90,12 +101,23 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { apiFetch } from '../utils/apiFetch';
 import { formatBytes, showToast } from '../utils/sharedState';
 
 const volumes = ref([]);
 const isLoading = ref(true);
+const searchQuery = ref('');
+
+const filteredVolumes = computed(() => {
+  const query = searchQuery.value.toLowerCase().trim();
+  if (!query) return volumes.value;
+  return volumes.value.filter(vol => {
+    const name = (vol.Name || '').toLowerCase();
+    const driver = (vol.Driver || '').toLowerCase();
+    return name.includes(query) || driver.includes(query);
+  });
+});
 
 const fetchVolumes = async () => {
   isLoading.value = true;
