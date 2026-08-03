@@ -19,6 +19,32 @@
             placeholder="Search containers or images..."
           />
         </div>
+        
+        <button 
+          v-if="containers.some(c => scanResults[c.id])"
+          class="page-btn glass" 
+          @click="toggleSelectAll"
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5">
+            <polyline points="9 11 12 14 22 4"></polyline>
+            <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
+          </svg>
+          {{ isAllSelected ? 'Deselect All' : 'Select All' }}
+        </button>
+
+        <button 
+          v-if="selectedScans.size > 0"
+          class="page-btn primary" 
+          @click="exportSelected"
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="7 10 12 15 17 10"></polyline>
+            <line x1="12" y1="15" x2="12" y2="3"></line>
+          </svg>
+          Export {{ selectedScans.size }} Selected
+        </button>
+
         <button 
           v-if="sharedState.currentUser?.is_admin || sharedState.currentUser?.can_run_scans"
           class="page-btn primary" 
@@ -47,10 +73,19 @@
     <div v-else class="scans-grid">
       <article v-for="c in sortedContainers" :key="c.id" class="scan-card shadow-lg" :class="{ 'is-platform': c.is_platform }">
         <div class="card-header">
-          <h3>
-            {{ c.name.replace(/^\//, '') }}
-            <span v-if="c.is_platform" class="platform-badge" style="font-size: 0.6rem; padding: 0.1rem 0.3rem; margin-left: 0.3rem;">⚡ PLATFORM</span>
-          </h3>
+          <div style="display: flex; align-items: center; gap: 0.5rem; overflow: hidden;">
+            <input 
+              v-if="scanResults[c.id]"
+              type="checkbox" 
+              :checked="selectedScans.has(c.id)"
+              @change="toggleSelection(c)"
+              style="cursor: pointer; transform: scale(1.2); accent-color: var(--accent); flex-shrink: 0;"
+            />
+            <h3 :title="c.name.replace(/^\//, '')">
+              {{ c.name.replace(/^\//, '') }}
+              <span v-if="c.is_platform" class="platform-badge" style="font-size: 0.6rem; padding: 0.1rem 0.3rem; margin-left: 0.3rem;">⚡ PLATFORM</span>
+            </h3>
+          </div>
           <span :class="['status-badge', c.state]">{{ c.state }}</span>
         </div>
         <div class="card-body">
@@ -87,13 +122,28 @@
         </div>
 
         <div class="card-footer">
-          <button 
-            class="page-btn cancel sm" 
-            v-if="scanResults[c.id]"
-            @click="viewDetails(c)"
-          >
-            Details
-          </button>
+          <div style="display: flex; gap: 0.5rem;">
+            <button 
+              class="page-btn cancel sm" 
+              v-if="scanResults[c.id]"
+              @click="viewDetails(c)"
+            >
+              Details
+            </button>
+            <button 
+              class="page-btn glass sm" 
+              v-if="scanResults[c.id]"
+              @click="exportSingle(c)"
+              title="Export as JSON"
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" style="margin-right: 0.2rem;">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+              </svg>
+              Export
+            </button>
+          </div>
           <button 
             v-if="sharedState.currentUser?.is_admin || sharedState.currentUser?.can_run_scans"
             class="page-btn primary sm" 
@@ -181,6 +231,72 @@ const sortedContainers = computed(() => {
 const scanning = ref({});
 const scanResults = ref({});
 const isScanningAll = ref(false);
+const selectedScans = ref(new Set());
+
+const isAllSelected = computed(() => {
+  if (containers.value.length === 0) return false;
+  const scansWithResults = containers.value.filter(c => scanResults.value[c.id]);
+  return scansWithResults.length > 0 && selectedScans.value.size === scansWithResults.length;
+});
+
+const toggleSelection = (c) => {
+  if (!scanResults.value[c.id]) return;
+  const newSet = new Set(selectedScans.value);
+  if (newSet.has(c.id)) {
+    newSet.delete(c.id);
+  } else {
+    newSet.add(c.id);
+  }
+  selectedScans.value = newSet;
+};
+
+const toggleSelectAll = () => {
+  if (isAllSelected.value) {
+    selectedScans.value = new Set();
+  } else {
+    const allWithResults = containers.value.filter(c => scanResults.value[c.id]).map(c => c.id);
+    selectedScans.value = new Set(allWithResults);
+  }
+};
+
+const downloadJSON = (filename, data) => {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
+
+const exportSelected = () => {
+  if (selectedScans.value.size === 0) return;
+  const dataToExport = containers.value
+    .filter(c => selectedScans.value.has(c.id) && scanResults.value[c.id])
+    .map(c => ({
+      container: c.name.replace(/^\//, ''),
+      image: c.image,
+      scan_date: scanResults.value[c.id].createdAt,
+      results: scanResults.value[c.id].data
+    }));
+  
+  downloadJSON(`lighthouse-scans-${new Date().toISOString().split('T')[0]}.json`, dataToExport);
+  showToast('Export Successful', `Exported ${dataToExport.length} scan(s) to JSON.`, 'success');
+};
+
+const exportSingle = (c) => {
+  if (!scanResults.value[c.id]) return;
+  const dataToExport = {
+    container: c.name.replace(/^\//, ''),
+    image: c.image,
+    scan_date: scanResults.value[c.id].createdAt,
+    results: scanResults.value[c.id].data
+  };
+  downloadJSON(`lighthouse-scan-${c.name.replace(/^\//, '')}-${new Date().toISOString().split('T')[0]}.json`, dataToExport);
+  showToast('Export Successful', `Exported scan for ${c.name.replace(/^\//, '')} to JSON.`, 'success');
+};
 
 const showModal = ref(false);
 const activeScan = ref(null);
