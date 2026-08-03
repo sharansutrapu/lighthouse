@@ -9,8 +9,11 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/stretchr/testify/assert"
+	"github.com/moby/moby/client"
+	"context"
 
 	"lighthouse/db"
+	"lighthouse/scanner"
 )
 
 func TestMain(m *testing.M) {
@@ -56,4 +59,43 @@ func TestConfigRoute(t *testing.T) {
 
 	assert.Equal(t, true, response["allow_start"])
 	assert.Equal(t, false, response["allow_shell"])
+}
+
+func TestTriggerRetroactiveScans(t *testing.T) {
+	// Mock docker daemon
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		importPath := r.URL.Path
+		if len(importPath) >= 16 && importPath[len(importPath)-16:] == "/containers/json" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`[{"Id":"123","Image":"mock-image:latest","Names":["/mock-container"]}]`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	cli, err := client.NewClientWithOpts(client.WithHost(server.URL), client.WithHTTPClient(server.Client()))
+	assert.NoError(t, err)
+
+	originalScanImageFunc := scanner.ScanImageFunc
+	defer func() { scanner.ScanImageFunc = originalScanImageFunc }()
+
+	scanExecuted := false
+	scanner.ScanImageFunc = func(ctx context.Context, cli *client.Client, imageName string) (map[string]interface{}, error) {
+		scanExecuted = true
+		return map[string]interface{}{}, nil
+	}
+
+	db.GormDB.Where("1=1").Delete(&db.ImageScanResult{})
+
+	triggerRetroactiveScans(cli)
+	assert.True(t, scanExecuted, "Expected scan to execute on empty db")
+
+	// Trigger again, mock ExecuteAndSaveScan will have saved it to DB?
+	// Wait, we need the scanner package to actually save it! Let's insert a dummy record manually to simulate save.
+	db.GormDB.Create(&db.ImageScanResult{Image: "mock-image:latest", Result: "{}"})
+
+	scanExecuted = false
+	triggerRetroactiveScans(cli)
+	assert.False(t, scanExecuted, "Expected scan to NOT execute when result exists")
 }

@@ -9,7 +9,11 @@ import (
 	"time"
 
 	"lighthouse/db"
+	"lighthouse/scanner"
 
+	"context"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/api/types/events"
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 )
@@ -295,5 +299,48 @@ func TestDebounceCountIncrement(t *testing.T) {
 
 	if count != 3 {
 		t.Errorf("Expected debounce count 3 for repeated log matches, got %d", count)
+	}
+}
+
+func TestAutoScanOnContainerStart(t *testing.T) {
+	am := setupTestManager(t)
+
+	// Enable AutoScan in DB
+	db.GormDB.Model(&db.Setting{}).Where("id = ?", 1).Update("auto_scan_enabled", true)
+
+	// Mock scanner
+	originalScanImageFunc := scanner.ScanImageFunc
+	defer func() { scanner.ScanImageFunc = originalScanImageFunc }()
+
+	scanExecuted := false
+	scanner.ScanImageFunc = func(ctx context.Context, cli *client.Client, imageName string) (map[string]interface{}, error) {
+		scanExecuted = true
+		return map[string]interface{}{}, nil
+	}
+
+	// Trigger container start event
+	event := events.Message{
+		Action: "start",
+		Actor: events.Actor{
+			Attributes: map[string]string{
+				"name":  "test-container",
+				"image": "test-image:latest",
+			},
+		},
+	}
+	am.processContainerEvent(event)
+
+	time.Sleep(100 * time.Millisecond)
+
+	if !scanExecuted {
+		t.Errorf("Expected auto-scan to execute for started container")
+	}
+
+	// Test Throttle (30 minutes)
+	scanExecuted = false
+	am.processContainerEvent(event)
+	time.Sleep(100 * time.Millisecond)
+	if scanExecuted {
+		t.Errorf("Expected auto-scan to be throttled for the same image")
 	}
 }

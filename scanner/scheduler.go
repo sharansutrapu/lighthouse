@@ -72,7 +72,7 @@ func RunScheduledScans(cli *client.Client) {
 
 // ExecuteAndSaveScan scans the image and saves the result to the DB
 func ExecuteAndSaveScan(ctx context.Context, cli *client.Client, imageName string) (map[string]interface{}, error) {
-	res, err := ScanImage(ctx, cli, imageName)
+	res, err := ScanImageFunc(ctx, cli, imageName)
 	if err != nil {
 		return nil, err
 	}

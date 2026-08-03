@@ -14,9 +14,9 @@ import (
 
 var scanSem = make(chan struct{}, 2) // Limit to 2 concurrent trivy scans
 
-// ScanImage runs aquasec/trivy against the given docker image name using the local docker binary.
+// ScanImageFunc runs aquasec/trivy against the given docker image name using the local docker binary.
 // This requires the host to have docker installed and accessible.
-func ScanImage(ctx context.Context, cli *client.Client, imageName string) (map[string]interface{}, error) {
+var ScanImageFunc = func(ctx context.Context, cli *client.Client, imageName string) (map[string]interface{}, error) {
 	log.Printf("Queuing trivy scan for image: %s", imageName)
 
 	// Acquire semaphore to limit concurrency

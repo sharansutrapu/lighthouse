@@ -132,7 +132,7 @@ func handleCommand(action, containerID string) {
 			}
 			imageName := c.Container.Config.Image
 			log.Printf("[Spoke] Scanning image %s...", imageName)
-			res, err := scanner.ScanImage(ctx, dockerClient, imageName)
+			res, err := scanner.ScanImageFunc(ctx, dockerClient, imageName)
 			if err != nil {
 				log.Printf("[Spoke] scan error: %v", err)
 				return
