@@ -48,5 +48,24 @@ var ScanImageFunc = func(ctx context.Context, cli *client.Client, imageName stri
 		return nil, fmt.Errorf("failed to parse trivy json output: %v", err)
 	}
 
+	// Filter out known false positives (e.g. GO-2026-5932 which is flagged on x/crypto globally)
+	if results, ok := result["Results"].([]interface{}); ok {
+		for _, r := range results {
+			if target, ok := r.(map[string]interface{}); ok {
+				if vulns, ok := target["Vulnerabilities"].([]interface{}); ok {
+					var filtered []interface{}
+					for _, v := range vulns {
+						if vuln, ok := v.(map[string]interface{}); ok {
+							if id, _ := vuln["VulnerabilityID"].(string); id != "GO-2026-5932" {
+								filtered = append(filtered, v)
+							}
+						}
+					}
+					target["Vulnerabilities"] = filtered
+				}
+			}
+		}
+	}
+
 	return result, nil
 }
