@@ -292,7 +292,20 @@ const exportSelected = () => {
       container: c.name.replace(/^\//, ''),
       image: c.image,
       scan_date: scanResults.value[c.id].createdAt,
-      results: scanResults.value[c.id].data
+      results: (scanResults.value[c.id].data?.Results || [])
+        .filter(target => target.Vulnerabilities && target.Vulnerabilities.length > 0)
+        .map(target => ({
+          target: target.Target,
+          vulnerabilities: target.Vulnerabilities.map(v => ({
+            id: v.VulnerabilityID,
+            package: v.PkgName,
+            installed_version: v.InstalledVersion,
+            fixed_version: v.FixedVersion || null,
+            severity: v.Severity,
+            title: v.Title || '',
+            url: v.PrimaryURL || ''
+          }))
+        }))
     }));
   
   downloadJSON(`lighthouse-scans-${new Date().toISOString().split('T')[0]}.json`, dataToExport);
