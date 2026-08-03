@@ -139,7 +139,8 @@
                   <div class="vuln-item" v-for="v in target.Vulnerabilities" :key="v.VulnerabilityID">
                     <div class="vuln-header">
                       <span :class="['vuln-badge', v.Severity.toLowerCase()]">{{ v.Severity }}</span>
-                      <a :href="v.PrimaryURL" target="_blank" class="vuln-id">{{ v.VulnerabilityID }}</a>
+                      <a v-if="v.PrimaryURL" :href="v.PrimaryURL" target="_blank" class="vuln-id">{{ v.VulnerabilityID }}</a>
+                      <span v-else class="vuln-id" style="text-decoration: none; cursor: default;">{{ v.VulnerabilityID }}</span>
                       <span class="vuln-pkg">{{ v.PkgName }}</span>
                     </div>
                     <p class="vuln-desc">{{ v.Title || 'No description available' }}</p>
