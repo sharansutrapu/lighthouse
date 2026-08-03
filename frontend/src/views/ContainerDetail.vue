@@ -869,7 +869,7 @@ async function fetchLiveStats() {
 function startStatsPolling() {
   stopStatsPolling();
   fetchLiveStats();
-  statsTimer = setInterval(fetchLiveStats, 4000);
+  statsTimer = setInterval(fetchLiveStats, 5000);
 }
 
 function stopStatsPolling() {

@@ -122,7 +122,7 @@ func isMCPContainerAuthorized(userID int, isAdmin bool, containerName string, im
 
 	patterns := getAuthorizedPatterns(userID)
 	for _, p := range patterns {
-		if matched, _ := regexp.MatchString(p, containerName); matched {
+		if p.MatchString(containerName) {
 			return true
 		}
 	}
@@ -146,7 +146,7 @@ func mcpListContainersHandler(cli *client.Client) server.ToolHandlerFunc {
 		}
 
 		isAdmin := getMCPUserIsAdmin(claims.ID)
-		var patterns []string
+		var patterns []*regexp.Regexp
 		if !isAdmin {
 			patterns = getAuthorizedPatterns(claims.ID)
 		}
@@ -170,7 +170,7 @@ func mcpListContainersHandler(cli *client.Client) server.ToolHandlerFunc {
 			visible := isAdmin
 			if !visible {
 				for _, p := range patterns {
-					if matched, _ := regexp.MatchString(p, name); matched {
+					if p.MatchString(name) {
 						visible = true
 						break
 					}

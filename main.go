@@ -153,10 +153,24 @@ func logAudit(userID int, username, action, resource, status, message string) {
 	}
 }
 
-func getAuthorizedPatterns(userID int) []string {
+type cachedPattern struct {
+	patterns []*regexp.Regexp
+	expiry   time.Time
+}
+
+var patternCache sync.Map
+
+func getAuthorizedPatterns(userID int) []*regexp.Regexp {
+	if cached, ok := patternCache.Load(userID); ok {
+		cp := cached.(cachedPattern)
+		if time.Now().Before(cp.expiry) {
+			return cp.patterns
+		}
+	}
+
 	var user db.User
 	if err := db.GormDB.Preload("Team").First(&user, userID).Error; err != nil {
-		return []string{"^$"}
+		return []*regexp.Regexp{regexp.MustCompile("^$")}
 	}
 	isRestricted := user.IsRestrictedAccess || (user.Team != nil)
 
@@ -171,15 +185,19 @@ func getAuthorizedPatterns(userID int) []string {
 	pattern := allowedContainers
 
 	if !isRestricted {
-		return []string{".*"}
+		res := []*regexp.Regexp{regexp.MustCompile(".*")}
+		patternCache.Store(userID, cachedPattern{patterns: res, expiry: time.Now().Add(30 * time.Second)})
+		return res
 	}
 
 	if pattern == "" {
-		return []string{""}
+		res := []*regexp.Regexp{regexp.MustCompile("^$")}
+		patternCache.Store(userID, cachedPattern{patterns: res, expiry: time.Now().Add(30 * time.Second)})
+		return res
 	}
 
 	rawPatterns := strings.Split(pattern, ",")
-	var finalPatterns []string
+	var finalPatterns []*regexp.Regexp
 	for _, p := range rawPatterns {
 		p = strings.TrimSpace(p)
 		if p == "" {
@@ -204,19 +222,21 @@ func getAuthorizedPatterns(userID int) []string {
 		}
 		finalPatterns = appendValidatedPattern(finalPatterns, regP)
 	}
+	patternCache.Store(userID, cachedPattern{patterns: finalPatterns, expiry: time.Now().Add(30 * time.Second)})
 	return finalPatterns
 }
 
-func appendValidatedPattern(patterns []string, regP string) []string {
+func appendValidatedPattern(patterns []*regexp.Regexp, regP string) []*regexp.Regexp {
 	if len(regP) > maxContainerPatternLen {
 		log.Printf("Skipping container pattern: exceeds %d characters", maxContainerPatternLen)
 		return patterns
 	}
-	if _, err := regexp.Compile(regP); err != nil {
+	compiled, err := regexp.Compile(regP)
+	if err != nil {
 		log.Printf("Skipping invalid container pattern: %v", err)
 		return patterns
 	}
-	return append(patterns, regP)
+	return append(patterns, compiled)
 }
 
 func main() {
@@ -920,7 +940,7 @@ func main() {
 			containers = baseContainers
 		}
 
-		var patterns []string
+		var patterns []*regexp.Regexp
 		if !dbIsAdmin {
 			patterns = getAuthorizedPatterns(user.ID)
 		}
@@ -953,7 +973,7 @@ func main() {
 			visible := dbIsAdmin
 			if !visible {
 				for _, p := range patterns {
-					if matched, _ := regexp.MatchString(p, name); matched {
+					if p.MatchString(name) {
 						visible = true
 						break
 					}
@@ -1108,7 +1128,7 @@ func main() {
 			patterns := getAuthorizedPatterns(userClaims.ID)
 			authorized := false
 			for _, p := range patterns {
-				if matched, _ := regexp.MatchString(p, containerName); matched {
+				if p.MatchString(containerName) {
 					authorized = true
 					break
 				}
@@ -1192,7 +1212,7 @@ func main() {
 			patterns := getAuthorizedPatterns(userClaims.ID)
 			authorized := false
 			for _, p := range patterns {
-				if matched, _ := regexp.MatchString(p, targetName); matched {
+				if p.MatchString(targetName) {
 					authorized = true
 					break
 				}
@@ -1394,7 +1414,7 @@ func main() {
 			patterns := getAuthorizedPatterns(userClaims.ID)
 			authorized := false
 			for _, p := range patterns {
-				if matched, _ := regexp.MatchString(p, containerName); matched {
+				if p.MatchString(containerName) {
 					authorized = true
 					break
 				}
@@ -1455,7 +1475,7 @@ func main() {
 			patterns := getAuthorizedPatterns(userClaims.ID)
 			authorized := false
 			for _, p := range patterns {
-				if matched, _ := regexp.MatchString(p, containerName); matched {
+				if p.MatchString(containerName) {
 					authorized = true
 					break
 				}
@@ -1579,7 +1599,7 @@ func main() {
 			patterns := getAuthorizedPatterns(userClaims.ID)
 			authorized := false
 			for _, p := range patterns {
-				if matched, _ := regexp.MatchString(p, containerName); matched {
+				if p.MatchString(containerName) {
 					authorized = true
 					break
 				}
@@ -1638,7 +1658,7 @@ func main() {
 			patterns := getAuthorizedPatterns(userClaims.ID)
 			authorized := false
 			for _, p := range patterns {
-				if matched, _ := regexp.MatchString(p, containerName); matched {
+				if p.MatchString(containerName) {
 					authorized = true
 					break
 				}
@@ -1698,7 +1718,7 @@ func main() {
 			patterns := getAuthorizedPatterns(userClaims.ID)
 			authorized := false
 			for _, p := range patterns {
-				if matched, _ := regexp.MatchString(p, containerName); matched {
+				if p.MatchString(containerName) {
 					authorized = true
 					break
 				}
@@ -1708,137 +1728,30 @@ func main() {
 			}
 		}
 
-		// To get accurate CPU %, we need two samples.
-		// We'll take a quick 200ms sample to stay responsive.
-		s1, err := cli.ContainerStats(context.Background(), id, client.ContainerStatsOptions{Stream: false})
-		if err != nil {
-			log.Printf("ContainerStats error (sample 1): %v", err)
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch container stats"})
-		}
-		var v1 struct {
-			CPUStats struct {
-				CPUUsage struct {
-					TotalUsage uint64 `json:"total_usage"`
-				} `json:"cpu_usage"`
-				SystemUsage uint64 `json:"system_cpu_usage"`
-			} `json:"cpu_stats"`
-			Networks map[string]struct {
-				RxBytes uint64 `json:"rx_bytes"`
-				TxBytes uint64 `json:"tx_bytes"`
-			} `json:"networks"`
-			BlkioStats struct {
-				IoServiceBytesRecursive []struct {
-					Op    string `json:"op"`
-					Value uint64 `json:"value"`
-				} `json:"io_service_bytes_recursive"`
-			} `json:"blkio_stats"`
-		}
-		json.NewDecoder(s1.Body).Decode(&v1)
-		s1.Body.Close()
+		liveStatsMu.RLock()
+		cached, ok := liveStatsCache[id]
+		liveStatsMu.RUnlock()
 
-		time.Sleep(500 * time.Millisecond)
-
-		s2, err := cli.ContainerStats(context.Background(), id, client.ContainerStatsOptions{Stream: false})
-		if err != nil {
-			log.Printf("ContainerStats error (sample 2): %v", err)
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch container stats"})
+		if !ok {
+			return c.JSON(http.StatusOK, map[string]interface{}{
+				"cpu":        0,
+				"memory":     0,
+				"net_rx":     0,
+				"net_tx":     0,
+				"disk_read":  0,
+				"disk_write": 0,
+				"pids":       0,
+			})
 		}
-		defer s2.Body.Close()
-
-		var v2 struct {
-			CPUStats struct {
-				CPUUsage struct {
-					TotalUsage uint64 `json:"total_usage"`
-				} `json:"cpu_usage"`
-				SystemUsage uint64 `json:"system_cpu_usage"`
-				OnlineCPUs  uint32 `json:"online_cpus"`
-			} `json:"cpu_stats"`
-			MemoryStats struct {
-				Usage uint64            `json:"usage"`
-				Stats map[string]uint64 `json:"stats"`
-			} `json:"memory_stats"`
-			Networks map[string]struct {
-				RxBytes uint64 `json:"rx_bytes"`
-				TxBytes uint64 `json:"tx_bytes"`
-			} `json:"networks"`
-			BlkioStats struct {
-				IoServiceBytesRecursive []struct {
-					Op    string `json:"op"`
-					Value uint64 `json:"value"`
-				} `json:"io_service_bytes_recursive"`
-			} `json:"blkio_stats"`
-			PidsStats struct {
-				Current uint64 `json:"current"`
-			} `json:"pids_stats"`
-		}
-		if err := json.NewDecoder(s2.Body).Decode(&v2); err != nil {
-			log.Printf("Failed to decode container stats: %v", err)
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to parse container stats"})
-		}
-
-		cpuDelta := float64(v2.CPUStats.CPUUsage.TotalUsage) - float64(v1.CPUStats.CPUUsage.TotalUsage)
-		systemDelta := float64(v2.CPUStats.SystemUsage) - float64(v1.CPUStats.SystemUsage)
-
-		onlineCPUs := float64(v2.CPUStats.OnlineCPUs)
-		if onlineCPUs == 0 {
-			onlineCPUs = float64(runtime.NumCPU())
-		}
-
-		cpuPercent := 0.0
-		if systemDelta > 0 && cpuDelta > 0 {
-			cpuPercent = (cpuDelta / systemDelta) * onlineCPUs * 100.0
-		}
-		// cgroups v2 uses "inactive_file", cgroups v1 uses "cache".
-		// Docker recommends subtracting inactive_file for accurate working-set memory.
-		memUsed := v2.MemoryStats.Usage
-		if inactiveFile, ok := v2.MemoryStats.Stats["inactive_file"]; ok && inactiveFile < memUsed {
-			memUsed -= inactiveFile
-		} else if cache, ok := v2.MemoryStats.Stats["cache"]; ok && cache < memUsed {
-			memUsed -= cache
-		}
-
-		var rx1, tx1, r1, w1 uint64
-		for _, netIf := range v1.Networks {
-			rx1 += netIf.RxBytes
-			tx1 += netIf.TxBytes
-		}
-		for _, io := range v1.BlkioStats.IoServiceBytesRecursive {
-			switch op := strings.ToLower(io.Op); op {
-			case "read":
-				r1 += io.Value
-			case "write":
-				w1 += io.Value
-			}
-		}
-
-		var rx2, tx2, r2, w2 uint64
-		for _, netIf := range v2.Networks {
-			rx2 += netIf.RxBytes
-			tx2 += netIf.TxBytes
-		}
-		for _, io := range v2.BlkioStats.IoServiceBytesRecursive {
-			switch op := strings.ToLower(io.Op); op {
-			case "read":
-				r2 += io.Value
-			case "write":
-				w2 += io.Value
-			}
-		}
-
-		// Calculate rate per second (approx) from 500ms diff
-		rxRate := (rx2 - rx1) * 2
-		txRate := (tx2 - tx1) * 2
-		readRate := (r2 - r1) * 2
-		writeRate := (w2 - w1) * 2
 
 		return c.JSON(http.StatusOK, map[string]interface{}{
-			"cpu":        cpuPercent,
-			"memory":     memUsed,
-			"net_rx":     rxRate,
-			"net_tx":     txRate,
-			"disk_read":  readRate,
-			"disk_write": writeRate,
-			"pids":       v2.PidsStats.Current,
+			"cpu":        cached.CPU,
+			"memory":     cached.Memory,
+			"net_rx":     cached.NetRxBytes,
+			"net_tx":     cached.NetTxBytes,
+			"disk_read":  cached.DiskReadBytes,
+			"disk_write": cached.DiskWriteBytes,
+			"pids":       0, // pids not currently tracked in liveStatsCache
 		})
 	})
 
@@ -1873,7 +1786,7 @@ func main() {
 			patterns := getAuthorizedPatterns(userClaims.ID)
 			authorized := false
 			for _, p := range patterns {
-				if matched, _ := regexp.MatchString(p, containerName); matched {
+				if p.MatchString(containerName) {
 					authorized = true
 					break
 				}
@@ -2866,7 +2779,7 @@ func main() {
 			for _, p := range projects {
 				authorized := false
 				for _, pat := range patterns {
-					if matched, _ := regexp.MatchString(pat, p.Name); matched {
+					if pat.MatchString(p.Name) {
 						authorized = true
 						break
 					}
@@ -2928,7 +2841,7 @@ func main() {
 			patterns := getAuthorizedPatterns(userClaims.ID)
 			authorized := false
 			for _, p := range patterns {
-				if matched, _ := regexp.MatchString(p, project.Name); matched {
+				if p.MatchString(project.Name) {
 					authorized = true
 					break
 				}
@@ -3006,7 +2919,7 @@ func main() {
 			patterns := getAuthorizedPatterns(userClaims.ID)
 			authorized := false
 			for _, p := range patterns {
-				if matched, _ := regexp.MatchString(p, project.Name); matched {
+				if p.MatchString(project.Name) {
 					authorized = true
 					break
 				}
@@ -3043,7 +2956,7 @@ func main() {
 			patterns := getAuthorizedPatterns(userClaims.ID)
 			authorized := false
 			for _, p := range patterns {
-				if matched, _ := regexp.MatchString(p, project.Name); matched {
+				if p.MatchString(project.Name) {
 					authorized = true
 					break
 				}
@@ -3078,7 +2991,7 @@ func main() {
 			patterns := getAuthorizedPatterns(userClaims.ID)
 			authorized := false
 			for _, p := range patterns {
-				if matched, _ := regexp.MatchString(p, project.Name); matched {
+				if p.MatchString(project.Name) {
 					authorized = true
 					break
 				}
@@ -3279,7 +3192,7 @@ func main() {
 		}
 		defer ws.Close()
 
-		ticker := time.NewTicker(time.Second)
+		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
 
 		for {
@@ -3331,7 +3244,7 @@ func main() {
 					patterns := getAuthorizedPatterns(userClaims.ID)
 					authorized := false
 					for _, p := range patterns {
-						if matched, _ := regexp.MatchString(p, containerName); matched {
+						if p.MatchString(containerName) {
 							authorized = true
 							break
 						}
@@ -3380,7 +3293,7 @@ func main() {
 			patterns := getAuthorizedPatterns(userClaims.ID)
 			authorized := false
 			for _, p := range patterns {
-				if matched, _ := regexp.MatchString(p, containerName); matched {
+				if p.MatchString(containerName) {
 					authorized = true
 					break
 				}
@@ -3475,7 +3388,7 @@ func main() {
 			patterns := getAuthorizedPatterns(userClaims.ID)
 			authorized := false
 			for _, p := range patterns {
-				if matched, _ := regexp.MatchString(p, containerName); matched {
+				if p.MatchString(containerName) {
 					authorized = true
 					break
 				}
@@ -3665,6 +3578,13 @@ var (
 //
 // One-shot stats (Stream:false) are cheap: Docker computes cgroups metrics once
 // and closes the connection. The 2-second cadence keeps the UI feeling live.
+var (
+	globalContainerList   []map[string]interface{} // Will store simplified container info for broad use
+	globalContainerListMu sync.RWMutex
+	globalContainersCount int
+	globalRunningCount    int
+)
+
 func statPollLoop(cli *client.Client) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -3675,18 +3595,27 @@ func statPollLoop(cli *client.Client) {
 		if cli == nil {
 			continue
 		}
-		res, err := cli.ContainerList(context.Background(), client.ContainerListOptions{})
+		res, err := cli.ContainerList(context.Background(), client.ContainerListOptions{All: true})
 		if err != nil {
 			continue
 		}
 
 		// Build set of currently running IDs so we can prune stale cache entries.
-		running := make(map[string]bool, len(res.Items))
+		running := make(map[string]bool)
+		runCount := 0
+		totalCount := len(res.Items)
+		
 		for _, ctr := range res.Items {
 			if ctr.State == "running" {
 				running[ctr.ID] = true
+				runCount++
 			}
 		}
+
+		globalContainerListMu.Lock()
+		globalContainersCount = totalCount
+		globalRunningCount = runCount
+		globalContainerListMu.Unlock()
 
 		// Remove stale entries for stopped containers.
 		liveStatsMu.Lock()
@@ -3849,20 +3778,11 @@ func systemStatsBroadcaster(cli *client.Client) {
 	for {
 		select {
 		case <-ctrTicker.C:
-			// Refresh container counts every 10s (cheap — no Size calculation).
-			if cli != nil {
-				res, err := cli.ContainerList(context.Background(), client.ContainerListOptions{All: true})
-				if err == nil {
-					totalContainers = len(res.Items)
-					runCount := 0
-					for _, c := range res.Items {
-						if c.State == "running" {
-							runCount++
-						}
-					}
-					runningContainers = runCount
-				}
-			}
+			// Refresh container counts every 10s from global cache (no API call).
+			globalContainerListMu.RLock()
+			totalContainers = globalContainersCount
+			runningContainers = globalRunningCount
+			globalContainerListMu.RUnlock()
 		case <-ticker.C:
 			v, _ := mem.VirtualMemory()
 
@@ -3903,9 +3823,14 @@ func startStatsCollector(cli *client.Client) {
 
 	ticker := time.NewTicker(30 * time.Second)
 	go func() {
+		tickCount := 0
 		for range ticker.C {
 			collectStats(cli)
-			pruneOldStats()
+			tickCount++
+			// Run pruning every 10 ticks (10 * 30s = 5 minutes)
+			if tickCount%10 == 0 {
+				pruneOldStats()
+			}
 		}
 	}()
 }
@@ -4003,13 +3928,7 @@ func collectStats(cli *client.Client) {
 		DiskReadBytes:  int64(sysReadDelta),
 		DiskWriteBytes: int64(sysWriteDelta),
 	}
-	if LighthouseMode == "spoke" {
-		cluster.PushToHub("system_stat", sysStat)
-	} else {
-		db.GormDB.Create(&sysStat)
-	}
-
-	// Container Stats Snapshot from live streams
+	var statsToInsert []db.Stat
 	liveStatsMu.RLock()
 	for id, stats := range liveStatsCache {
 		var rxDelta, txDelta, readDelta, writeDelta uint64
@@ -4056,14 +3975,28 @@ func collectStats(cli *client.Client) {
 			DiskReadBytes:  int64(readDelta),
 			DiskWriteBytes: int64(writeDelta),
 		}
-		
-		if LighthouseMode == "spoke" {
-			cluster.PushToHub("container_stat", stat)
-		} else {
-			db.GormDB.Create(&stat)
-		}
+		statsToInsert = append(statsToInsert, stat)
 	}
 	liveStatsMu.RUnlock()
+
+	if LighthouseMode == "spoke" {
+		cluster.PushToHub("system_stat", sysStat)
+		for _, stat := range statsToInsert {
+			cluster.PushToHub("container_stat", stat)
+		}
+	} else {
+		db.GormDB.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Create(&sysStat).Error; err != nil {
+				return err
+			}
+			if len(statsToInsert) > 0 {
+				if err := tx.Create(&statsToInsert).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+	}
 }
 
 func seedAdmin() {
@@ -4100,9 +4033,10 @@ func seedAdmin() {
 }
 
 
+var validIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
 func isValidContainerID(id string) bool {
-	matched, _ := regexp.MatchString(`^[a-zA-Z0-9_-]+$`, id)
-	return matched
+	return validIDRegex.MatchString(id)
 }
 
 func cleanupStaleAlerts() {

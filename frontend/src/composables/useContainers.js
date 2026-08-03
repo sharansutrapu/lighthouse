@@ -29,7 +29,7 @@ export async function fetchContainers() {
 function startPolling() {
   if (pollInterval) return;
   fetchContainers();
-  pollInterval = setInterval(fetchContainers, 5000);
+  pollInterval = setInterval(fetchContainers, 8000);
 }
 
 function stopPolling() {

@@ -937,16 +937,10 @@ func (am *AlertManager) evaluateMetrics() {
 	for cid, current := range recentStats {
 		cName, ok := idToName[cid]
 		if !ok {
-			// Fallback: try to look up the container name by querying Docker API directly
-			if inspect, err := am.cli.ContainerInspect(am.ctx, cid, client.ContainerInspectOptions{}); err == nil {
-				cName = strings.TrimPrefix(inspect.Container.Name, "/")
-				idToName[cid] = cName
-			} else {
-				cName = cid
-			}
+			// Container no longer exists or we don't have its name.
+			// Skip its stats.
+			continue
 		}
-
-
 
 		for _, rule := range activeRules {
 			if !rule.matchesContainer(cName) {
