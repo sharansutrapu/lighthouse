@@ -7,7 +7,18 @@
           Run on-demand security scans across your containers to identify CVEs.
         </p>
       </div>
-      <div class="header-actions">
+      <div class="header-actions" style="display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; justify-content: flex-end;">
+        <div class="search-box glass" style="margin: 0; min-width: 250px;">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <input
+            type="text"
+            v-model="searchQuery"
+            placeholder="Search containers or images..."
+          />
+        </div>
         <button 
           v-if="sharedState.currentUser?.is_admin || sharedState.currentUser?.can_run_scans"
           class="page-btn primary" 
@@ -143,8 +154,21 @@ import { showToast, sharedState } from '../utils/sharedState';
 
 const { containers, loading, fetchContainers } = useContainers();
 
+const searchQuery = ref('');
+
 const sortedContainers = computed(() => {
-  return [...containers.value].sort((a, b) => {
+  let list = containers.value;
+  
+  const query = searchQuery.value.toLowerCase().trim();
+  if (query) {
+    list = list.filter(c => {
+      const name = (c.name || '').toLowerCase();
+      const image = (c.image || '').toLowerCase();
+      return name.includes(query) || image.includes(query);
+    });
+  }
+
+  return [...list].sort((a, b) => {
     if (a.is_platform && !b.is_platform) return -1;
     if (!a.is_platform && b.is_platform) return 1;
     return a.name.localeCompare(b.name);
