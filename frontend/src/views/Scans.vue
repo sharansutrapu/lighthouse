@@ -87,6 +87,9 @@
                <span class="sev-badge low" v-if="scanResults[c.id].counts.LOW > 0">
                  {{ scanResults[c.id].counts.LOW }} Low
                </span>
+               <span class="sev-badge unknown" v-if="scanResults[c.id].counts.UNKNOWN > 0">
+                 {{ scanResults[c.id].counts.UNKNOWN }} Unknown
+               </span>
                <span class="sev-badge success" v-if="scanResults[c.id].total === 0">
                  0 Vulnerabilities
                </span>
@@ -539,6 +542,7 @@ onMounted(() => {
 .sev-badge.high { background: rgba(249, 115, 22, 0.2); color: #f97316; } /* Orange */
 .sev-badge.medium { background: rgba(var(--warning-rgb), 0.2); color: var(--warning); }
 .sev-badge.low { background: rgba(var(--text-mute-rgb), 0.2); color: var(--text-main); }
+.sev-badge.unknown { background: rgba(var(--text-mute-rgb), 0.1); color: var(--text-mute); }
 .sev-badge.success { background: rgba(var(--success-rgb), 0.2); color: var(--success); }
 
 .card-footer {
@@ -583,6 +587,7 @@ onMounted(() => {
 .vuln-badge.high { background: #f97316; color: white; }
 .vuln-badge.medium { background: var(--warning); color: #1e293b; }
 .vuln-badge.low { background: var(--bg-subtle); color: var(--text-main); }
+.vuln-badge.unknown { background: var(--bg-subtle); color: var(--text-mute); border: 1px solid var(--border); }
 
 .vuln-id { font-weight: 700; color: var(--accent); text-decoration: none; }
 .vuln-id:hover { text-decoration: underline; }
