@@ -23,26 +23,14 @@
         <button 
           v-if="containers.some(c => scanResults[c.id])"
           class="page-btn glass" 
-          @click="toggleSelectAll"
-        >
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5">
-            <polyline points="9 11 12 14 22 4"></polyline>
-            <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
-          </svg>
-          {{ isAllSelected ? 'Deselect All' : 'Select All' }}
-        </button>
-
-        <button 
-          v-if="selectedScans.size > 0"
-          class="page-btn primary" 
-          @click="exportSelected"
+          @click="showExportModal = true"
         >
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
             <polyline points="7 10 12 15 17 10"></polyline>
             <line x1="12" y1="15" x2="12" y2="3"></line>
           </svg>
-          Export {{ selectedScans.size }} Selected
+          Export Scans
         </button>
 
         <button 
@@ -73,19 +61,10 @@
     <div v-else class="scans-grid">
       <article v-for="c in sortedContainers" :key="c.id" class="scan-card shadow-lg" :class="{ 'is-platform': c.is_platform }">
         <div class="card-header">
-          <div style="display: flex; align-items: center; gap: 0.5rem; overflow: hidden;">
-            <input 
-              v-if="scanResults[c.id]"
-              type="checkbox" 
-              :checked="selectedScans.has(c.id)"
-              @change="toggleSelection(c)"
-              style="cursor: pointer; transform: scale(1.2); accent-color: var(--accent); flex-shrink: 0;"
-            />
-            <h3 :title="c.name.replace(/^\//, '')">
-              {{ c.name.replace(/^\//, '') }}
-              <span v-if="c.is_platform" class="platform-badge" style="font-size: 0.6rem; padding: 0.1rem 0.3rem; margin-left: 0.3rem;">⚡ PLATFORM</span>
-            </h3>
-          </div>
+          <h3>
+            {{ c.name.replace(/^\//, '') }}
+            <span v-if="c.is_platform" class="platform-badge" style="font-size: 0.6rem; padding: 0.1rem 0.3rem; margin-left: 0.3rem;">⚡ PLATFORM</span>
+          </h3>
           <span :class="['status-badge', c.state]">{{ c.state }}</span>
         </div>
         <div class="card-body">
@@ -122,28 +101,13 @@
         </div>
 
         <div class="card-footer">
-          <div style="display: flex; gap: 0.5rem;">
-            <button 
-              class="page-btn cancel sm" 
-              v-if="scanResults[c.id]"
-              @click="viewDetails(c)"
-            >
-              Details
-            </button>
-            <button 
-              class="page-btn glass sm" 
-              v-if="scanResults[c.id]"
-              @click="exportSingle(c)"
-              title="Export as JSON"
-            >
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" style="margin-right: 0.2rem;">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                <polyline points="7 10 12 15 17 10"></polyline>
-                <line x1="12" y1="15" x2="12" y2="3"></line>
-              </svg>
-              Export
-            </button>
-          </div>
+          <button 
+            class="page-btn cancel sm" 
+            v-if="scanResults[c.id]"
+            @click="viewDetails(c)"
+          >
+            Details
+          </button>
           <button 
             v-if="sharedState.currentUser?.is_admin || sharedState.currentUser?.can_run_scans"
             class="page-btn primary sm" 
@@ -190,6 +154,55 @@
 
             <div class="modal-actions" style="margin-top: 1.5rem;">
               <button class="modal-btn cancel" @click="closeModal">Close</button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- Export Modal -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div v-if="showExportModal" class="modal-overlay" @click.self="showExportModal = false">
+          <div class="modal-content shadow-2xl" style="max-width: 500px; max-height: 85vh; overflow-y: auto;">
+            <div class="modal-header">
+              <h3>Export Scans</h3>
+            </div>
+            <p style="color: var(--text-mute); font-size: 0.9rem; margin-bottom: 1rem;">
+              Select the container scans you want to export as JSON.
+            </p>
+
+            <div style="margin-bottom: 1rem;">
+              <button class="page-btn glass sm" @click="toggleSelectAll">
+                {{ isAllSelected ? 'Deselect All' : 'Select All' }}
+              </button>
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 0.5rem; max-height: 400px; overflow-y: auto; background: var(--bg-input); padding: 1rem; border-radius: var(--radius-md); border: 1px solid var(--border);">
+              <label 
+                v-for="c in containers.filter(c => scanResults[c.id])" 
+                :key="c.id" 
+                style="display: flex; align-items: center; gap: 0.75rem; cursor: pointer; padding: 0.5rem; border-radius: var(--radius-sm); transition: background 0.2s;"
+                :style="selectedScans.has(c.id) ? 'background: rgba(var(--accent-rgb), 0.1);' : ''"
+              >
+                <input 
+                  type="checkbox" 
+                  :checked="selectedScans.has(c.id)"
+                  @change="toggleSelection(c)"
+                  style="cursor: pointer; transform: scale(1.2); accent-color: var(--accent);"
+                />
+                <span style="font-weight: 600;">{{ c.name.replace(/^\//, '') }}</span>
+                <span class="mono" style="font-size: 0.7rem; color: var(--text-mute); margin-left: auto;">
+                   {{ scanResults[c.id].total }} Vulns
+                </span>
+              </label>
+            </div>
+
+            <div class="modal-actions" style="margin-top: 1.5rem; justify-content: flex-end; display: flex; gap: 1rem;">
+              <button class="page-btn cancel" @click="showExportModal = false">Cancel</button>
+              <button class="page-btn primary" @click="exportSelected" :disabled="selectedScans.size === 0">
+                Export {{ selectedScans.size }} Selected
+              </button>
             </div>
           </div>
         </div>
@@ -284,21 +297,12 @@ const exportSelected = () => {
   
   downloadJSON(`lighthouse-scans-${new Date().toISOString().split('T')[0]}.json`, dataToExport);
   showToast('Export Successful', `Exported ${dataToExport.length} scan(s) to JSON.`, 'success');
-};
-
-const exportSingle = (c) => {
-  if (!scanResults.value[c.id]) return;
-  const dataToExport = {
-    container: c.name.replace(/^\//, ''),
-    image: c.image,
-    scan_date: scanResults.value[c.id].createdAt,
-    results: scanResults.value[c.id].data
-  };
-  downloadJSON(`lighthouse-scan-${c.name.replace(/^\//, '')}-${new Date().toISOString().split('T')[0]}.json`, dataToExport);
-  showToast('Export Successful', `Exported scan for ${c.name.replace(/^\//, '')} to JSON.`, 'success');
+  showExportModal.value = false;
+  selectedScans.value = new Set();
 };
 
 const showModal = ref(false);
+const showExportModal = ref(false);
 const activeScan = ref(null);
 const activeContainerName = ref('');
 
