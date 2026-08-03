@@ -542,7 +542,7 @@ onMounted(() => {
 .sev-badge.high { background: rgba(249, 115, 22, 0.2); color: #f97316; } /* Orange */
 .sev-badge.medium { background: rgba(var(--warning-rgb), 0.2); color: var(--warning); }
 .sev-badge.low { background: rgba(var(--text-mute-rgb), 0.2); color: var(--text-main); }
-.sev-badge.unknown { background: rgba(var(--text-mute-rgb), 0.1); color: var(--text-mute); }
+.sev-badge.unknown { background: var(--bg-subtle); color: var(--text-mute); border: 1px solid var(--border); }
 .sev-badge.success { background: rgba(var(--success-rgb), 0.2); color: var(--success); }
 
 .card-footer {
