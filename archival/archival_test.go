@@ -42,9 +42,9 @@ func TestArchiveMetrics(t *testing.T) {
 	// Insert test data
 	now := time.Now()
 	err = db.GormDB.Create(&db.Stat{
-		ContainerID:   "test_container",
-		Timestamp:     now.Add(-5 * time.Minute),
-		CPU:           50.0,
+		ContainerID: "test_container",
+		Timestamp:   now.Add(-5 * time.Minute),
+		CPU:         50.0,
 	}).Error
 	assert.NoError(t, err)
 

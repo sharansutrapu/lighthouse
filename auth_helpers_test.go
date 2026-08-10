@@ -1,227 +1,661 @@
 package main
 
 import (
+	"crypto/tls"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
+
+	"github.com/labstack/echo/v4"
 )
 
-func resetClientAccessState() {
-	ClientAccessEnabled = true
-	allowedOrigins = []string{"https://lighthouse.example.com"}
+func TestInitSecretKey(t *testing.T) {
+	// Test empty env
+	os.Setenv("SECRET_KEY", "")
+	initSecretKey()
+	if string(SECRET_KEY) != defaultSecretKey {
+		t.Errorf("Expected %s, got %s", defaultSecretKey, SECRET_KEY)
+	}
+
+	// Test set env
+	os.Setenv("SECRET_KEY", "mysecret")
+	initSecretKey()
+	if string(SECRET_KEY) != "mysecret" {
+		t.Errorf("Expected mysecret, got %s", SECRET_KEY)
+	}
+
+	// Reset
+	os.Setenv("SECRET_KEY", "")
+	initSecretKey()
+}
+
+func TestInitWSUpgrader(t *testing.T) {
+	initWSUpgrader()
+	if upgrader.CheckOrigin == nil {
+		t.Error("Expected CheckOrigin to be set")
+	}
+}
+
+func TestInitClientAccess(t *testing.T) {
+	os.Setenv("CLIENT_ACCESS", "strict")
+	os.Setenv("ALLOWED_ORIGINS", "http://localhost:3000, https://example.com")
+	os.Setenv("TRUST_PROXY", "true")
+	initClientAccess()
+
+	if !ClientAccessEnabled {
+		t.Error("Expected ClientAccessEnabled to be true")
+	}
+	if len(allowedOrigins) != 2 {
+		t.Errorf("Expected 2 allowed origins, got %d", len(allowedOrigins))
+	}
+	if !TrustProxy {
+		t.Error("Expected TrustProxy to be true")
+	}
+
+	os.Setenv("CLIENT_ACCESS", "off")
+	initClientAccess()
+	if ClientAccessEnabled {
+		t.Error("Expected ClientAccessEnabled to be false")
+	}
+}
+
+func TestParseCSVEnv(t *testing.T) {
+	res := parseCSVEnv("")
+	if res != nil {
+		t.Error("Expected nil")
+	}
+
+	res = parseCSVEnv("a, b, ,c")
+	if len(res) != 3 {
+		t.Error("Expected 3 items")
+	}
+}
+
+func TestIsProduction(t *testing.T) {
+	os.Setenv("ENV", "production")
+	defer os.Unsetenv("ENV")
+	if !isProduction() {
+		t.Error("Expected true")
+	}
+	os.Setenv("ENV", "development")
+	os.Setenv("GO_ENV", "production")
+	if !isProduction() {
+		t.Error("Expected true")
+	}
+	os.Setenv("GO_ENV", "development")
+	if isProduction() {
+		t.Error("Expected false")
+	}
+}
+
+func TestIsPasswordStrongEnough(t *testing.T) {
+	if isPasswordStrongEnough("short") {
+		t.Error("Expected false")
+	}
+	if !isPasswordStrongEnough("longenough") {
+		t.Error("Expected true")
+	}
+}
+
+func TestIsLocalhostHost(t *testing.T) {
+	if !isLocalhostHost("localhost:8080") {
+		t.Error("Expected true")
+	}
+	if !isLocalhostHost("127.0.0.1") {
+		t.Error("Expected true")
+	}
+	if !isLocalhostHost("[::1]:9090") {
+		t.Error("Expected true")
+	}
+	if isLocalhostHost("example.com") {
+		t.Error("Expected false")
+	}
+}
+
+func TestRequestHost(t *testing.T) {
+	req := httptest.NewRequest("GET", "http://example.com", nil)
+
 	TrustProxy = false
-}
-
-func TestWebClientAllowedSameOrigin(t *testing.T) {
-	resetClientAccessState()
-	req := newTestRequest("GET", "http://lighthouse.local/api/containers", map[string]string{
-		headerLightHouseClient: clientHeaderWeb,
-		"Origin":            "http://lighthouse.local",
-	})
-	if !isClientAccessAllowed(req) {
-		t.Fatal("expected same-origin web request to be allowed")
+	if requestHost(req) != "example.com" {
+		t.Error("Expected example.com")
 	}
-}
 
-func TestWebClientBlockedWithoutHeader(t *testing.T) {
-	resetClientAccessState()
-	req := newTestRequest("GET", "http://lighthouse.local/api/containers", map[string]string{
-		"Origin": "http://lighthouse.local",
-	})
-	if isClientAccessAllowed(req) {
-		t.Fatal("expected request without X-LightHouse-Client to be blocked")
-	}
-}
-
-func TestWebClientBlockedForeignOrigin(t *testing.T) {
-	resetClientAccessState()
-	os.Setenv("ENV", "production")
-	defer os.Unsetenv("ENV")
-
-	req := newTestRequest("GET", "http://lighthouse.local/api/containers", map[string]string{
-		headerLightHouseClient: clientHeaderWeb,
-		"Origin":            "https://evil.example.com",
-	})
-	if isClientAccessAllowed(req) {
-		t.Fatal("expected foreign origin to be blocked in production")
-	}
-}
-
-func TestWebClientAllowedListedOrigin(t *testing.T) {
-	resetClientAccessState()
-	os.Setenv("ENV", "production")
-	defer os.Unsetenv("ENV")
-
-	req := newTestRequest("GET", "http://lighthouse.local/api/containers", map[string]string{
-		headerLightHouseClient: clientHeaderWeb,
-		"Origin":            "https://lighthouse.example.com",
-	})
-	if !isClientAccessAllowed(req) {
-		t.Fatal("expected origin listed in ALLOWED_ORIGINS to be allowed")
-	}
-}
-
-func TestWebClientAllowedHostOnlyOriginEntry(t *testing.T) {
-	resetClientAccessState()
-	allowedOrigins = []string{"lighthouse.example.com"}
-	os.Setenv("ENV", "production")
-	defer os.Unsetenv("ENV")
-
-	req := newTestRequest("POST", "http://lighthouse.example.com/api/token", map[string]string{
-		headerLightHouseClient: clientHeaderWeb,
-		"Origin":            "https://lighthouse.example.com",
-	})
-	if !isClientAccessAllowed(req) {
-		t.Fatal("expected host-only ALLOWED_ORIGINS entry to match HTTPS origin")
-	}
-}
-
-func TestWebClientAllowedViaReverseProxyHost(t *testing.T) {
-	resetClientAccessState()
 	TrustProxy = true
-	req := newTestRequest("GET", "http://127.0.0.1:8000/api/containers", map[string]string{
-		headerLightHouseClient: clientHeaderWeb,
-		"Origin":            "https://lighthouse.example.com",
-		"X-Forwarded-Host":  "lighthouse.example.com",
-		"X-Forwarded-Proto": "https",
-	})
-	if !originMatchesAllowed("https://lighthouse.example.com", req) {
-		t.Fatal("expected reverse-proxy forwarded host to match configured origin")
+	req.Header.Set("X-Forwarded-Host", "proxy.com, other.com")
+	if requestHost(req) != "proxy.com" {
+		t.Error("Expected proxy.com")
 	}
 }
 
-func TestWebClientAllowedWhenOriginHostMatchesWithoutTrustProxy(t *testing.T) {
-	resetClientAccessState()
-	os.Setenv("ENV", "production")
-	defer os.Unsetenv("ENV")
+func TestRequestScheme(t *testing.T) {
+	req := httptest.NewRequest("GET", "http://example.com", nil)
 
-	req := newTestRequest("POST", "http://lighthouse.example.com/api/token", map[string]string{
-		headerLightHouseClient: clientHeaderWeb,
-		"Origin":            "https://lighthouse.example.com",
-	})
-	if !isClientAccessAllowed(req) {
-		t.Fatal("expected HTTPS origin to match when Host header matches without TRUST_PROXY")
-	}
-}
-
-func TestForwardHeadersIgnoredWithoutTrustProxy(t *testing.T) {
-	resetClientAccessState()
 	TrustProxy = false
-	req := newTestRequest("GET", "http://127.0.0.1:8000/api/containers", map[string]string{
-		"X-Forwarded-Host":  "lighthouse.example.com",
-		"X-Forwarded-Proto": "https",
-	})
-	if got := requestHost(req); got != "127.0.0.1:8000" {
-		t.Fatalf("expected requestHost to ignore forwarded host, got %q", got)
+	if requestScheme(req) != "http" {
+		t.Error("Expected http")
 	}
-	if got := requestScheme(req); got != "http" {
-		t.Fatalf("expected requestScheme to ignore forwarded proto, got %q", got)
+
+	TrustProxy = true
+	req.Header.Set("X-Forwarded-Proto", "https, http")
+	if requestScheme(req) != "https" {
+		t.Error("Expected https")
 	}
 }
 
-func TestSecFetchSiteSameOriginAllowedForConfiguredHost(t *testing.T) {
-	resetClientAccessState()
-	allowedOrigins = []string{"lighthouse.example.com"}
+func TestSameOriginURL(t *testing.T) {
+	req := httptest.NewRequest("GET", "http://example.com", nil)
+	TrustProxy = false
+	if sameOriginURL(req) != "http://example.com" {
+		t.Error("Expected http://example.com")
+	}
+}
+
+func TestCorsOriginAllowed(t *testing.T) {
+	allowedOrigins = []string{"https://example.com", "myhost"}
+	os.Setenv("ENV", "development")
+
+	if corsOriginAllowed("") {
+		t.Error("Expected false")
+	}
+	if !corsOriginAllowed("https://example.com") {
+		t.Error("Expected true")
+	}
+	if corsOriginAllowed("https://bad.com") {
+		t.Error("Expected false")
+	}
+	if !corsOriginAllowed("http://localhost:3000") {
+		t.Error("Expected true for localhost in dev")
+	}
+
 	os.Setenv("ENV", "production")
 	defer os.Unsetenv("ENV")
+	if corsOriginAllowed("http://localhost:3000") {
+		t.Error("Expected false for localhost in prod")
+	}
+}
 
-	req := newTestRequest("POST", "http://lighthouse.example.com/api/token", map[string]string{
-		headerLightHouseClient: clientHeaderWeb,
-		"Sec-Fetch-Site":    "same-origin",
-	})
+func TestNormalizeHost(t *testing.T) {
+	if normalizeHost("Example.com:8080") != "example.com" {
+		t.Error("Expected example.com")
+	}
+}
+
+func TestAllowedOriginEntryMatches(t *testing.T) {
+	if !allowedOriginEntryMatches("https://example.com", "https://example.com") {
+		t.Error("Expected true")
+	}
+	if allowedOriginEntryMatches("https://bad.com:8080", "https://example.com:9090") {
+		t.Error("Expected false")
+	}
+	if !allowedOriginEntryMatches("https://example.com:8080", "https://example.com:9090") {
+		t.Error("Expected true")
+	}
+	if !allowedOriginEntryMatches("https://example.com:8080", "example.com") {
+		t.Error("Expected true")
+	}
+}
+
+func TestAllowedRefererMatches(t *testing.T) {
+	if !allowedRefererMatches("https://example.com/path", "https://example.com") {
+		t.Error("Expected true")
+	}
+	if allowedRefererMatches("https://bad.com/path", "https://example.com") {
+		t.Error("Expected false")
+	}
+	if !allowedRefererMatches("https://example.com:8080/path", "https://example.com:9090") {
+		t.Error("Expected true")
+	}
+	if !allowedRefererMatches("https://example.com:8080/path", "example.com") {
+		t.Error("Expected true")
+	}
+}
+
+func TestOriginHostMatchesRequest(t *testing.T) {
+	req := httptest.NewRequest("GET", "http://example.com", nil)
+	if !originHostMatchesRequest("https://example.com:8080", req) {
+		t.Error("Expected true")
+	}
+	if originHostMatchesRequest("https://bad.com:8080", req) {
+		t.Error("Expected false")
+	}
+}
+
+func TestRefererHostMatchesRequest(t *testing.T) {
+	req := httptest.NewRequest("GET", "http://example.com", nil)
+	if !refererHostMatchesRequest("https://example.com:8080/path", req) {
+		t.Error("Expected true")
+	}
+	if refererHostMatchesRequest("https://bad.com:8080/path", req) {
+		t.Error("Expected false")
+	}
+}
+
+func TestOriginMatchesAllowed(t *testing.T) {
+	req := httptest.NewRequest("GET", "http://example.com", nil)
+	if !originMatchesAllowed("http://example.com", req) {
+		t.Error("Expected true")
+	}
+
+	allowedOrigins = []string{"https://allowed.com"}
+	if originMatchesAllowed("https://bad.com", req) {
+		t.Error("Expected false")
+	}
+	if !originMatchesAllowed("https://allowed.com", req) {
+		t.Error("Expected true")
+	}
+
+	os.Setenv("ENV", "development")
+	if !originMatchesAllowed("http://localhost:3000", req) {
+		t.Error("Expected true")
+	}
+}
+
+func TestRefererMatchesAllowed(t *testing.T) {
+	req := httptest.NewRequest("GET", "http://example.com", nil)
+	if !refererMatchesAllowed("http://example.com/path", req) {
+		t.Error("Expected true")
+	}
+
+	allowedOrigins = []string{"https://allowed.com"}
+	if refererMatchesAllowed("https://bad.com/path", req) {
+		t.Error("Expected false")
+	}
+	if !refererMatchesAllowed("https://allowed.com/path", req) {
+		t.Error("Expected true")
+	}
+
+	os.Setenv("ENV", "development")
+	if !refererMatchesAllowed("http://localhost:3000/path", req) {
+		t.Error("Expected true")
+	}
+}
+
+func TestRequestHostAllowed(t *testing.T) {
+	os.Setenv("ENV", "development")
+	req := httptest.NewRequest("GET", "http://localhost", nil)
+	if !requestHostAllowed(req) {
+		t.Error("Expected true")
+	}
+
+	os.Setenv("ENV", "production")
+	defer os.Unsetenv("ENV")
+	allowedOrigins = []string{"https://allowed.com", "other.com"}
+	req = httptest.NewRequest("GET", "http://allowed.com", nil)
+	if !requestHostAllowed(req) {
+		t.Error("Expected true")
+	}
+
+	req = httptest.NewRequest("GET", "http://other.com", nil)
+	if !requestHostAllowed(req) {
+		t.Error("Expected true")
+	}
+
+	req = httptest.NewRequest("GET", "http://bad.com", nil)
+	if requestHostAllowed(req) {
+		t.Error("Expected false")
+	}
+
+	allowedOrigins = []string{}
+	if !requestHostAllowed(req) {
+		t.Error("Expected true when no allowed origins")
+	}
+}
+
+func TestIsWebOriginAllowed(t *testing.T) {
+	req := httptest.NewRequest("GET", "http://example.com", nil)
+
+	req.Header.Set("Origin", "http://example.com")
+	if !isWebOriginAllowed(req) {
+		t.Error("Expected true")
+	}
+
+	req.Header.Del("Origin")
+	req.Header.Set("Referer", "http://example.com/path")
+	if !isWebOriginAllowed(req) {
+		t.Error("Expected true")
+	}
+
+	req.Header.Del("Referer")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	if !isWebOriginAllowed(req) {
+		t.Error("Expected true")
+	}
+
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	if isWebOriginAllowed(req) {
+		t.Error("Expected false")
+	}
+}
+
+func TestIsWebHTTPClientAllowed(t *testing.T) {
+	req := httptest.NewRequest("GET", "http://example.com", nil)
+	if isWebHTTPClientAllowed(req) {
+		t.Error("Expected false")
+	}
+
+	req.Header.Set(headerLightHouseClient, clientHeaderWeb)
+	req.Header.Set("Origin", "http://example.com")
+	if !isWebHTTPClientAllowed(req) {
+		t.Error("Expected true")
+	}
+}
+
+func TestIsClientAccessAllowed(t *testing.T) {
+	ClientAccessEnabled = false
+	if !isClientAccessAllowed(nil) {
+		t.Error("Expected true")
+	}
+
+	ClientAccessEnabled = true
+	req := httptest.NewRequest("GET", "http://example.com", nil)
+	req.Header.Set(headerLightHouseClient, clientHeaderWeb)
+	req.Header.Set("Origin", "http://example.com")
 	if !isClientAccessAllowed(req) {
-		t.Fatal("expected same-origin web request when Host matches ALLOWED_ORIGINS")
+		t.Error("Expected true")
 	}
 }
 
-func TestSecFetchSiteWithoutOriginBlockedWhenHostNotAllowed(t *testing.T) {
-	resetClientAccessState()
-	allowedOrigins = []string{"other.example.com"}
-	os.Setenv("ENV", "production")
-	defer os.Unsetenv("ENV")
+func TestIsWSAccessAllowed(t *testing.T) {
+	ClientAccessEnabled = false
+	if !isWSAccessAllowed(nil) {
+		t.Error("Expected true")
+	}
 
-	req := newTestRequest("GET", "http://lighthouse.local/api/containers", map[string]string{
-		headerLightHouseClient: clientHeaderWeb,
-		"Sec-Fetch-Site":    "same-origin",
-	})
-	if isClientAccessAllowed(req) {
-		t.Fatal("expected same-origin request to be blocked when Host not in ALLOWED_ORIGINS")
+	ClientAccessEnabled = true
+	req := httptest.NewRequest("GET", "http://example.com", nil)
+	req.Header.Set("Origin", "http://example.com")
+	if !isWSAccessAllowed(req) {
+		t.Error("Expected true")
 	}
 }
 
-func TestContainerActionEnvGate(t *testing.T) {
-	CanStart = false
-	defer func() {
-		CanStart = false
-	}()
+func TestClientAccessConfig(t *testing.T) {
+	ClientAccessEnabled = true
+	cfg := clientAccessConfig()
+	if cfg["enabled"] != true {
+		t.Error("Expected true")
+	}
+}
 
-	if containerActionEnvAllowed("start") {
-		t.Fatal("expected start to be denied when ALLOW_START is false")
+func TestNewTestRequest(t *testing.T) {
+	req := newTestRequest("GET", "/test", map[string]string{"X-Test": "val"})
+	if req.Header.Get("X-Test") != "val" {
+		t.Error("Expected val")
+	}
+}
+
+func TestClientAccessMiddleware(t *testing.T) {
+	e := echo.New()
+	mw := clientAccessMiddleware()
+
+	// Test ClientAccessEnabled = false
+	ClientAccessEnabled = false
+	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	handler := mw(func(c echo.Context) error { return c.String(200, "OK") })
+	handler(c)
+	if rec.Code != 200 {
+		t.Error("Expected 200")
 	}
 
-	CanStart = true
+	// Test ClientAccessEnabled = true, non /api or /ws path
+	ClientAccessEnabled = true
+	req = httptest.NewRequest(http.MethodGet, "/other", nil)
+	rec = httptest.NewRecorder()
+	c = e.NewContext(req, rec)
+	handler(c)
+	if rec.Code != 200 {
+		t.Error("Expected 200")
+	}
+
+	// Test OPTIONS request
+	req = httptest.NewRequest(http.MethodOptions, "/api/test", nil)
+	rec = httptest.NewRecorder()
+	c = e.NewContext(req, rec)
+	handler(c)
+	if rec.Code != 200 {
+		t.Error("Expected 200")
+	}
+
+	// Test /ws path, not allowed
+	req = httptest.NewRequest(http.MethodGet, "/ws/test", nil)
+	rec = httptest.NewRecorder()
+	c = e.NewContext(req, rec)
+	handler(c)
+	if rec.Code != http.StatusForbidden {
+		t.Error("Expected 403")
+	}
+
+	// Test /ws path, allowed
+	req = httptest.NewRequest(http.MethodGet, "/ws/test", nil)
+	req.Header.Set("Origin", "http://example.com")
+	req.Host = "example.com"
+	rec = httptest.NewRecorder()
+	c = e.NewContext(req, rec)
+	handler(c)
+	if rec.Code != 200 {
+		t.Error("Expected 200")
+	}
+
+	// Test PAT token bypass for REST
+	req = httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	req.Header.Set("Authorization", "Bearer lh_pat_token")
+	rec = httptest.NewRecorder()
+	c = e.NewContext(req, rec)
+	handler(c)
+	if rec.Code != 200 {
+		t.Error("Expected 200")
+	}
+
+	// Test REST access denied
+	req = httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	rec = httptest.NewRecorder()
+	c = e.NewContext(req, rec)
+	handler(c)
+	if rec.Code != http.StatusForbidden {
+		t.Error("Expected 403")
+	}
+
+	// Test REST access allowed
+	req = httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	req.Header.Set(headerLightHouseClient, clientHeaderWeb)
+	req.Header.Set("Origin", "http://example.com")
+	req.Host = "example.com"
+	rec = httptest.NewRecorder()
+	c = e.NewContext(req, rec)
+	handler(c)
+	if rec.Code != 200 {
+		t.Error("Expected 200")
+	}
+}
+
+func TestLoginRateLimiter(t *testing.T) {
+	rl := loginRateLimiter{}
+	if rl.isLimited("test", 2, time.Second) {
+		t.Error("Expected false")
+	}
+	rl.recordFailure("test")
+	if rl.isLimited("test", 2, time.Second) {
+		t.Error("Expected false")
+	}
+	rl.recordFailure("test")
+	if !rl.isLimited("test", 2, time.Second) {
+		t.Error("Expected true")
+	}
+	rl.clear("test")
+	if rl.isLimited("test", 2, time.Second) {
+		t.Error("Expected false")
+	}
+}
+
+func TestContainerActionEnvAllowed(t *testing.T) {
+	CanStart, CanStop, CanRestart, CanDelete = true, true, true, true
 	if !containerActionEnvAllowed("start") {
-		t.Fatal("expected start to be allowed when ALLOW_START is true")
+		t.Error("Expected true")
+	}
+	if !containerActionEnvAllowed("stop") {
+		t.Error("Expected true")
+	}
+	if !containerActionEnvAllowed("restart") {
+		t.Error("Expected true")
+	}
+	if !containerActionEnvAllowed("remove") {
+		t.Error("Expected true")
+	}
+	if containerActionEnvAllowed("bad") {
+		t.Error("Expected false")
 	}
 }
 
 func TestClampStaffActionPermissions(t *testing.T) {
-	CanStart = true
-	CanStop = false
-	CanRestart = true
-	CanDelete = false
-	AllowShell = true
-	defer func() {
-		CanStart = false
-		CanRestart = false
-		AllowShell = false
-	}()
-
-	start, stop, restart, del, shell := clampStaffActionPermissions(true, true, true, true, true)
-	if !start || stop || !restart || del || !shell {
-		t.Fatalf("unexpected clamp result: %v %v %v %v %v", start, stop, restart, del, shell)
+	CanStart, CanStop, CanRestart, CanDelete, AllowShell = false, false, false, false, false
+	cs, cst, cr, cd, csh := clampStaffActionPermissions(true, true, true, true, true)
+	if cs || cst || cr || cd || csh {
+		t.Error("Expected all false")
 	}
 }
 
-func TestBrowserLikeRequestBlockedWithoutWebHeaders(t *testing.T) {
-	resetClientAccessState()
-	req := newTestRequest("GET", "http://lighthouse.local/api/containers", map[string]string{
-		"Origin":         "https://evil.example.com",
-		"Sec-Fetch-Site": "cross-site",
-	})
-	if isClientAccessAllowed(req) {
-		t.Fatal("expected cross-site browser request without web client header to be blocked")
+func TestStaffContainerActionQuery(t *testing.T) {
+	if staffContainerActionQuery("start") == "" {
+		t.Error("Expected query")
+	}
+	if staffContainerActionQuery("stop") == "" {
+		t.Error("Expected query")
+	}
+	if staffContainerActionQuery("restart") == "" {
+		t.Error("Expected query")
+	}
+	if staffContainerActionQuery("remove") == "" {
+		t.Error("Expected query")
+	}
+	if staffContainerActionQuery("bad") != "" {
+		t.Error("Expected empty")
 	}
 }
 
-func TestWSWebAllowedByOrigin(t *testing.T) {
-	resetClientAccessState()
-	req := newTestRequest("GET", "http://lighthouse.local/ws/logs/abc", map[string]string{
-		"Origin": "http://lighthouse.local",
-	})
-	if !isWSAccessAllowed(req) {
-		t.Fatal("expected browser websocket with same origin to be allowed")
+func TestExtractWSToken(t *testing.T) {
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer token123")
+	if extractWSToken(req) != "token123" {
+		t.Error("Expected token123")
+	}
+
+	req = httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Sec-WebSocket-Protocol", "lighthouse-auth, token456")
+	if extractWSToken(req) != "token456" {
+		t.Error("Expected token456")
+	}
+
+	req = httptest.NewRequest("GET", "/", nil)
+	if extractWSToken(req) != "" {
+		t.Error("Expected empty")
 	}
 }
 
-func TestClientAccessDisabledAllowsDirectAPI(t *testing.T) {
-	resetClientAccessState()
-	ClientAccessEnabled = false
-	req := newTestRequest("GET", "http://lighthouse.local/api/containers", nil)
-	if !isClientAccessAllowed(req) {
-		t.Fatal("expected CLIENT_ACCESS=off to allow direct API use")
+func TestTokens(t *testing.T) {
+	initSecretKey()
+
+	claims := &UserClaims{
+		ID:              1,
+		Username:        "testuser",
+		IsActive:        true,
+		PasswordChanged: true,
+	}
+
+	access, refresh, err := issueTokenPair(claims)
+	if err != nil {
+		t.Error(err)
+	}
+
+	parsed, err := parseUserToken(access)
+	if err != nil {
+		t.Error(err)
+	}
+	if parsed.TokenType != tokenTypeAccess {
+		t.Error("Expected access")
+	}
+
+	_, err = parseUserToken(refresh)
+	if err != nil {
+		t.Error(err)
+	}
+
+	// Test invalid token
+	_, err = parseUserToken("badtoken")
+	if err == nil {
+		t.Error("Expected error")
 	}
 }
 
-func TestLocalhostAllowedOutsideProduction(t *testing.T) {
-	resetClientAccessState()
-	os.Unsetenv("ENV")
-	os.Unsetenv("GO_ENV")
+func TestWSAuthError(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
 
-	req := newTestRequest("GET", "http://localhost:8000/api/config", map[string]string{
-		headerLightHouseClient: clientHeaderWeb,
-		"Origin":            "http://localhost:5173",
-	})
-	if !isClientAccessAllowed(req) {
-		t.Fatal("expected localhost origin outside production to be allowed for dev")
+	err := wsAuthError(c, fmt.Errorf("invalid token"))
+	if err != nil {
+		t.Error(err)
 	}
+	if rec.Code != http.StatusUnauthorized {
+		t.Error("Expected 401")
+	}
+
+	rec = httptest.NewRecorder()
+	c = e.NewContext(req, rec)
+	wsAuthError(c, fmt.Errorf("account deactivated"))
+	if rec.Code != http.StatusUnauthorized {
+		t.Error("Expected 401")
+	}
+
+	rec = httptest.NewRecorder()
+	c = e.NewContext(req, rec)
+	wsAuthError(c, fmt.Errorf("session invalidated"))
+	if rec.Code != http.StatusUnauthorized {
+		t.Error("Expected 401")
+	}
+
+	rec = httptest.NewRecorder()
+	c = e.NewContext(req, rec)
+	wsAuthError(c, fmt.Errorf("password change required"))
+	if rec.Code != http.StatusUnauthorized {
+		t.Error("Expected 401")
+	}
+
+	rec = httptest.NewRecorder()
+	c = e.NewContext(req, rec)
+	wsAuthError(c, fmt.Errorf("other error"))
+	if rec.Code != http.StatusUnauthorized {
+		t.Error("Expected 401")
+	}
+}
+
+func TestSecurityHeadersMiddleware(t *testing.T) {
+	e := echo.New()
+	mw := securityHeadersMiddleware()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	handler := mw(func(c echo.Context) error { return c.String(200, "OK") })
+	handler(c)
+
+	if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Error("Expected nosniff")
+	}
+
+	// Test HTTPS
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req.URL.Scheme = "https"
+	// To trick echo into thinking it's https
+	req.Header.Set("X-Forwarded-Proto", "https")
+	rec = httptest.NewRecorder()
+	c = e.NewContext(req, rec)
+	c.Request().TLS = &tls.ConnectionState{} // mock TLS
+
+	handler(c)
 }

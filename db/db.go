@@ -389,4 +389,3 @@ func seedDefaults() {
 	GormDB.Model(&AlertRule{}).Where("name = ? AND event_types = ?", "Container Restart Loop", "restart").
 		Updates(map[string]interface{}{"event_types": "die", "cooldown_seconds": 60})
 }
-

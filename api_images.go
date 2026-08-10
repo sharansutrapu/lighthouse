@@ -79,7 +79,7 @@ func RegisterImageRoutes(r *echo.Group, cli *client.Client) {
 			log.Printf("ERROR: Docker ImagePrune failed: %v", err)
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		}
-		
+
 		logAudit(userClaims.ID, userClaims.Username, "PRUNE", "Images", "Success", "Pruned unused images")
 
 		return c.JSON(http.StatusOK, map[string]interface{}{

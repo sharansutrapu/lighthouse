@@ -10,7 +10,7 @@ import (
 func setupTestDB(t *testing.T) {
 	os.Setenv("DB_TYPE", "sqlite")
 	os.Setenv("DB_DSN", ":memory:")
-	
+
 	err := InitDB(":memory:")
 	if err != nil {
 		t.Fatalf("Failed to initialize test db: %v", err)
@@ -19,7 +19,7 @@ func setupTestDB(t *testing.T) {
 
 func TestInitDB(t *testing.T) {
 	setupTestDB(t)
-	
+
 	if GormDB == nil {
 		t.Fatal("Expected GormDB to be initialized")
 	}
@@ -63,7 +63,6 @@ func TestWALModeEnabled(t *testing.T) {
 	}
 	_ = maxConns
 }
-
 
 func TestUserCRUD(t *testing.T) {
 	setupTestDB(t)
@@ -110,7 +109,7 @@ func TestTeamCRUD(t *testing.T) {
 	setupTestDB(t)
 
 	team := Team{
-		Name: "Developers",
+		Name:        "Developers",
 		Description: "Dev Team",
 	}
 	if err := GormDB.Create(&team).Error; err != nil {

@@ -12,22 +12,32 @@ import (
 	"lighthouse/db"
 )
 
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+type WSConn interface {
+	ReadMessage() (int, []byte, error)
+	WriteJSON(v interface{}) error
+	WriteMessage(messageType int, data []byte) error
+	Close() error
+}
+
+var upgraderFunc = func(w http.ResponseWriter, r *http.Request) (WSConn, error) {
+	u := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+	return u.Upgrade(w, r, nil)
 }
 
 // Hub maintains the state of connected Spokes
 type Hub struct {
 	sync.RWMutex
-	Spokes          map[string]*websocket.Conn
+	Spokes          map[string]WSConn
 	SpokeContainers map[string][]map[string]interface{}
-	ExecStreams     map[string]*websocket.Conn // maps exec_id to UI websocket
+	ExecStreams     map[string]WSConn // maps exec_id to UI websocket
 }
 
 var GlobalHub = &Hub{
-	Spokes:          make(map[string]*websocket.Conn),
+	Spokes:          make(map[string]WSConn),
 	SpokeContainers: make(map[string][]map[string]interface{}),
-	ExecStreams:     make(map[string]*websocket.Conn),
+	ExecStreams:     make(map[string]WSConn),
 }
 
 // RegisterHubRoutes attaches the WebSocket endpoint
@@ -42,7 +52,7 @@ func RegisterHubRoutes(e *echo.Echo, hubToken string) {
 			return c.String(http.StatusBadRequest, "node_id required")
 		}
 
-		ws, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
+		ws, err := upgraderFunc(c.Response(), c.Request())
 		if err != nil {
 			return err
 		}

@@ -1,7 +1,6 @@
 package main
 
 import (
-
 	"fmt"
 	"log"
 	"net"
@@ -37,9 +36,9 @@ var (
 )
 
 const (
-	clientHeaderWeb       = "web"
-	headerLightHouseClient   = "X-LightHouse-Client"
-	minPasswordLength     = 8
+	clientHeaderWeb        = "web"
+	headerLightHouseClient = "X-LightHouse-Client"
+	minPasswordLength      = 8
 	maxContainerPatternLen = 256
 )
 

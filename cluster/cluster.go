@@ -10,6 +10,8 @@ import (
 	"lighthouse/db"
 )
 
+var httpClient = &http.Client{}
+
 // ProxyRequest forwards an HTTP request to a Spoke node and returns the JSON response
 func ProxyRequest(node db.Node, method, endpoint string, body io.Reader) ([]byte, error) {
 	url := strings.TrimRight(node.Address, "/") + endpoint
@@ -21,7 +23,7 @@ func ProxyRequest(node db.Node, method, endpoint string, body io.Reader) ([]byte
 	req.Header.Set("Authorization", "Bearer "+node.Token)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
+	client := httpClient
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

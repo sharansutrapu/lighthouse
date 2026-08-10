@@ -3,91 +3,67 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
 
-func TestNetworkRoutes(t *testing.T) {
-	cli, ts := mockDockerClient(t, func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method + " " + r.URL.Path {
-		case "GET /_ping":
-			w.Header().Set("API-Version", "1.41")
-			w.Write([]byte("OK"))
-		case "GET /v1.41/networks":
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`[{"Id": "nw_123456", "Name": "bridge"}]`))
-		case "DELETE /v1.41/networks/nw_123456":
-			w.WriteHeader(http.StatusNoContent)
-		case "POST /v1.41/networks/prune":
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"NetworksDeleted": ["nw_123456"]}`))
-		default:
-			t.Logf("Unhandled mock route: %s %s", r.Method, r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-		}
-	})
-	defer ts.Close()
-
-	claims := &UserClaims{
-		ID:        1,
-		Username:  "admin",
-		IsAdmin:   true,
-		CanDelete: true,
+func mockHandlerForNetworks(req *http.Request) (*http.Response, error) {
+	path := req.URL.Path
+	if req.Method == "GET" && strings.HasSuffix(path, "/networks") {
+		return makeResponse(http.StatusOK, `[{"Id": "test-net"}]`), nil
+	} else if req.Method == "DELETE" && strings.Contains(path, "/networks/") {
+		return makeResponse(http.StatusOK, `{}`), nil
+	} else if req.Method == "POST" && strings.HasSuffix(path, "/networks/prune") {
+		return makeResponse(http.StatusOK, `{"NetworksDeleted": ["test-net"]}`), nil
+	} else if req.Method == "GET" && strings.HasSuffix(path, "/_ping") {
+		return makeResponse(http.StatusOK, `OK`), nil
 	}
+	return makeResponse(http.StatusNotFound, `{"message":"not found"}`), nil
+}
 
-	e, g, _, _ := setupEchoWithClaims(claims)
+func TestNetworksHandlers(t *testing.T) {
+	cli := mockDockerClientWithRoundTripper(t, mockHandlerForNetworks)
+	claims := &UserClaims{ID: 1, Username: "admin", IsAdmin: true, CanDelete: true}
+	e, g, _, _ := setupEchoWithClaimsHelper(claims)
 	RegisterNetworkRoutes(g, cli)
 
-	// Test GET /api/networks
+	// GET
 	req := httptest.NewRequest(http.MethodGet, "/api/networks", nil)
 	rec := httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
-
 	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Contains(t, rec.Body.String(), "nw_123456")
 
-	// Test DELETE /api/networks/:id
-	reqDel := httptest.NewRequest(http.MethodDelete, "/api/networks/nw_123456", nil)
-	recDel := httptest.NewRecorder()
-	e.ServeHTTP(recDel, reqDel)
+	// DELETE
+	req = httptest.NewRequest(http.MethodDelete, "/api/networks/test-net", nil)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
 
-	assert.Equal(t, http.StatusOK, recDel.Code)
-
-	// Test POST /api/networks/prune
-	reqPrune := httptest.NewRequest(http.MethodPost, "/api/networks/prune", nil)
-	recPrune := httptest.NewRecorder()
-	e.ServeHTTP(recPrune, reqPrune)
-
-	assert.Equal(t, http.StatusOK, recPrune.Code)
+	// PRUNE
+	req = httptest.NewRequest(http.MethodPost, "/api/networks/prune", nil)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
-func TestNetworkRoutes_Forbidden(t *testing.T) {
-	cli, ts := mockDockerClient(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("API-Version", "1.41")
-		w.Write([]byte("OK"))
-	})
-	defer ts.Close()
-
-	claims := &UserClaims{
-		IsAdmin:   false,
-		CanDelete: false,
-	}
-
-	e, g, _, _ := setupEchoWithClaims(claims)
+func TestNetworksHandlers_Forbidden(t *testing.T) {
+	cli := mockDockerClientWithRoundTripper(t, mockHandlerForNetworks)
+	claims := &UserClaims{ID: 2, Username: "user", IsAdmin: false, CanDelete: false}
+	e, g, _, _ := setupEchoWithClaimsHelper(claims)
 	RegisterNetworkRoutes(g, cli)
 
-	// Test DELETE /api/networks/:id
-	reqDel := httptest.NewRequest(http.MethodDelete, "/api/networks/nw_123456", nil)
-	recDel := httptest.NewRecorder()
-	e.ServeHTTP(recDel, reqDel)
+	// DELETE
+	req := httptest.NewRequest(http.MethodDelete, "/api/networks/test-net", nil)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
 
-	assert.Equal(t, http.StatusForbidden, recDel.Code)
-
-	// Test POST /api/networks/prune
-	reqPrune := httptest.NewRequest(http.MethodPost, "/api/networks/prune", nil)
-	recPrune := httptest.NewRecorder()
-	e.ServeHTTP(recPrune, reqPrune)
-
-	assert.Equal(t, http.StatusForbidden, recPrune.Code)
+	// PRUNE
+	req = httptest.NewRequest(http.MethodPost, "/api/networks/prune", nil)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
 }
+

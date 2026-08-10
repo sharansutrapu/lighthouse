@@ -59,17 +59,17 @@ var (
 	upgrader          = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool { return true },
 	}
-	CanStart         bool
-	CanStop          bool
-	CanRestart       bool
-	CanDelete        bool
-	AllowShell       bool
-	pendingAuthCodes sync.Map
-	LighthouseMode   string
+	CanStart             bool
+	CanStop              bool
+	CanRestart           bool
+	CanDelete            bool
+	AllowShell           bool
+	pendingAuthCodes     sync.Map
+	LighthouseMode       string
 	apiContainersCache   []map[string]interface{}
 	apiContainersCacheMu sync.RWMutex
 	apiContainersCacheTS time.Time
-	NodeID           string
+	NodeID               string
 )
 
 func generateSecureCode() string {
@@ -396,7 +396,853 @@ func main() {
 	}
 
 	// Auth Endpoints
-	e.GET("/auth/google", func(c echo.Context) error {
+	e.GET("/auth/google", handleGETAuthGoogle())
+
+	e.GET("/auth/google/callback", handleGETAuthGoogleCallback())
+	e.POST("/api/token/exchange", handlePOSTApiTokenExchange())
+
+	e.POST("/api/token", handlePOSTApiToken())
+
+	e.POST("/api/token/refresh", handlePOSTApiTokenRefresh())
+
+	// Public configuration route
+	e.GET("/api/config", handleGETApiConfig())
+
+	// Restricted Group
+	r := e.Group("/api")
+	r.Use(echojwt.WithConfig(echojwt.Config{
+		NewClaimsFunc: func(c echo.Context) jwt.Claims {
+			return new(UserClaims)
+		},
+		SigningKey: SECRET_KEY,
+		Skipper: func(c echo.Context) bool {
+			auth := c.Request().Header.Get("Authorization")
+			if strings.HasPrefix(auth, "Bearer lh_pat_") {
+				tokenStr := strings.TrimPrefix(auth, "Bearer ")
+				var apiToken db.ApiToken
+				if err := db.GormDB.Where("token = ?", tokenStr).First(&apiToken).Error; err == nil {
+					db.GormDB.Model(&apiToken).Update("last_used", time.Now())
+					var u db.User
+					if err := db.GormDB.Preload("Team").First(&u, apiToken.UserID).Error; err == nil {
+						// Merge team permissions (same OR logic as login)
+						canStart := u.CanStart
+						canStop := u.CanStop
+						canRestart := u.CanRestart
+						canDelete := u.CanDelete
+						canShell := u.CanShell
+						allowedContainers := u.AllowedContainers
+						if u.Team != nil {
+							canStart = canStart || u.Team.CanStart
+							canStop = canStop || u.Team.CanStop
+							canRestart = canRestart || u.Team.CanRestart
+							canDelete = canDelete || u.Team.CanDelete
+							canShell = canShell || u.Team.CanShell
+							if u.Team.AllowedContainers != "" {
+								if allowedContainers == "" || allowedContainers == ".*" {
+									allowedContainers = u.Team.AllowedContainers
+								} else {
+									allowedContainers = allowedContainers + "," + u.Team.AllowedContainers
+								}
+							}
+						}
+						claims := &UserClaims{
+							ID:                 int(u.ID),
+							Username:           u.Username,
+							IsAdmin:            u.IsAdmin,
+							CanStart:           canStart,
+							CanStop:            canStop,
+							CanRestart:         canRestart,
+							CanDelete:          canDelete,
+							CanShell:           canShell,
+							IsRestrictedAccess: u.IsRestrictedAccess,
+							AllowedContainers:  allowedContainers,
+							IsActive:           u.IsActive,
+							PasswordChanged:    u.PasswordChanged,
+							PasswordVersion:    u.PasswordVersion,
+							TokenType:          "access",
+						}
+						mockToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+						c.Set("user", mockToken)
+						return true // Skip standard JWT validation
+					}
+				}
+			}
+			return false
+		},
+	}))
+
+	// Password change enforcement & session validation middleware
+	r.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			token := c.Get("user").(*jwt.Token)
+			claims := token.Claims.(*UserClaims)
+
+			if claims.TokenType == tokenTypeRefresh {
+				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Invalid token"})
+			}
+
+			if err := refreshClaimsFromDB(claims); err != nil {
+				switch errMsg := err.Error(); errMsg {
+				case "account deactivated":
+					return c.JSON(http.StatusForbidden, map[string]string{
+						"error": "Account deactivated. Please contact administrator.",
+						"code":  "ACCOUNT_DEACTIVATED",
+					})
+				case "session invalidated":
+					return c.JSON(http.StatusUnauthorized, map[string]string{
+						"error": "Session invalidated. Password was changed. Please re-login.",
+						"code":  "SESSION_INVALIDATED",
+					})
+				case "user not found":
+					return c.JSON(http.StatusUnauthorized, map[string]string{"error": "User not found."})
+				default:
+					// Transient DB errors or "database is locked" shouldn't log out the user
+					return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Internal server error during session validation"})
+				}
+			}
+
+			// Allow profile and password-change endpoints to proceed after active-state validation.
+			if c.Path() == "/api/user/change-password" || c.Path() == "/api/user/me" {
+				return next(c)
+			}
+
+			if !claims.PasswordChanged {
+				return c.JSON(http.StatusForbidden, map[string]string{"error": "Password change required", "code": "FORCE_PASSWORD_CHANGE"})
+			}
+
+			return next(c)
+		}
+	})
+
+	RegisterImageRoutes(r, cli)
+	RegisterVolumeRoutes(r, cli)
+	RegisterNetworkRoutes(r, cli)
+	registerApiTokenRoutes(r)
+	registerMCPRoutes(r, cli)
+
+	r.GET("/containers", handleGETContainers(cli))
+
+	r.GET("/containers/:id/inspect", handleGETContainersIdInspect(cli))
+
+	r.POST("/containers/:id/action", handlePOSTContainersIdAction(cli))
+
+	r.POST("/containers/:id/scan", handlePOSTContainersIdScan(cli))
+
+	r.GET("/images/scans", handleGETImagesScans())
+
+	r.GET("/containers/:id/logs/download", handleGETContainersIdLogsDownload(cli))
+
+	r.GET("/containers/:id/logs", handleGETContainersIdLogs(cli))
+
+	r.GET("/containers/:id/logs/count", handleGETContainersIdLogsCount(cli))
+
+	r.GET("/containers/:id/stats", handleGETContainersIdStats(cli))
+
+	r.GET("/containers/:id/stats-now", handleGETContainersIdStatsNow(cli))
+
+	r.GET("/containers/:id/history", handleGETContainersIdHistory(cli))
+
+	r.GET("/system/storage", handleGETSystemStorage())
+
+	r.GET("/system/history", handleGETSystemHistory())
+
+	r.GET("/system/stats", handleGETSystemStats())
+
+	r.GET("/system/info", handleGETSystemInfo(cli))
+
+	r.POST("/user/change-password", handlePOSTUserChangePassword())
+
+	r.GET("/user/me", handleGETUserMe())
+
+	// Admin Only Routes
+	admin := r.Group("/admin")
+	admin.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			token := c.Get("user").(*jwt.Token)
+			user := token.Claims.(*UserClaims)
+			var isAdmin bool
+			err := db.GormDB.Raw("SELECT is_admin FROM users WHERE id = ? AND is_active = 1", user.ID).Scan(&isAdmin).Error
+			if err != nil || !isAdmin {
+				return c.JSON(http.StatusForbidden, map[string]string{"error": "Admin access required"})
+			}
+			user.IsAdmin = isAdmin
+			return next(c)
+		}
+	})
+	admin.GET("/teams", handleGETTeams())
+
+	admin.POST("/teams", handlePOSTTeams())
+
+	admin.PUT("/teams/:id", handlePUTTeamsId())
+
+	admin.DELETE("/teams/:id", handleDELETETeamsId())
+
+	admin.GET("/users", handleGETUsers())
+
+	admin.PUT("/users/:id/active", handlePUTUsersIdActive())
+
+	admin.POST("/users", handlePOSTUsers())
+
+	admin.PUT("/users/:id/permissions", handlePUTUsersIdPermissions())
+
+	admin.PUT("/users/:id/password", handlePUTUsersIdPassword())
+
+	admin.DELETE("/users/:id", handleDELETEUsersId())
+
+	admin.GET("/audit", handleGETAudit())
+
+	// ── Alert Rules CRUD (admin-only, under /api/admin/alerts) ────────────────
+
+	// LIST all rules
+	admin.GET("/role_templates", handleGETRoleTemplates())
+
+	admin.POST("/role_templates", handlePOSTRoleTemplates())
+
+	admin.DELETE("/role_templates/:id", handleDELETERoleTemplatesId())
+
+	admin.GET("/alerts/rules", handleGETAlertsRules())
+
+	// GET single rule
+	admin.GET("/settings", handleGETSettings())
+
+	admin.PUT("/settings", handlePUTSettings(cli))
+
+	admin.POST("/settings/backup/test", handlePOSTSettingsBackupTest())
+
+	admin.POST("/settings/archival/test", handlePOSTSettingsArchivalTest())
+
+	admin.GET("/alerts/rules/:id", handleGETAlertsRulesId())
+
+	// CREATE rule
+	admin.POST("/alerts/rules", handlePOSTAlertsRules(alertMgr))
+
+	// GitOps API
+	r.GET("/gitops/projects", handleGETGitopsProjects())
+
+	r.POST("/gitops/projects", handlePOSTGitopsProjects())
+
+	r.PUT("/gitops/projects/:id", handlePUTGitopsProjectsId())
+
+	r.POST("/gitops/projects/:id/sync", handlePOSTGitopsProjectsIdSync())
+
+	r.DELETE("/gitops/projects/:id", handleDELETEGitopsProjectsId())
+
+	r.GET("/gitops/projects/:id/deployments", handleGETGitopsProjectsIdDeployments())
+
+	// UPDATE rule
+	admin.PUT("/alerts/rules/:id", handlePUTAlertsRulesId(alertMgr))
+
+	// DELETE rule
+	admin.DELETE("/alerts/rules/:id", handleDELETEAlertsRulesId(alertMgr))
+
+	// TOGGLE enabled/disabled without full PUT
+	admin.PUT("/alerts/rules/:id/toggle", handlePUTAlertsRulesIdToggle(alertMgr))
+
+	// BULK update channels
+	admin.POST("/alerts/rules/bulk-channels", handlePOSTAlertsRulesBulkChannels(alertMgr))
+
+	// LIST alert history
+	// DELETE all alert history
+	admin.DELETE("/alerts/history", handleDELETEAlertsHistory())
+	admin.GET("/alerts/history", handleGETAlertsHistory())
+
+	e.GET("/ws/system-stats", handleGETWsSystemStats())
+
+	e.GET("/ws/events", handleGETWsEvents(cli))
+
+	e.GET("/ws/logs/:id", handleGETWsLogsId(cli))
+
+	e.GET("/ws/shell/:id", handleGETWsShellId(cli))
+
+	// Serve Frontend (skipped in agent-only mode)
+	if serveFrontend {
+		e.Use(middleware.StaticWithConfig(middleware.StaticConfig{
+			Root:   "frontend/dist",
+			Browse: false,
+			HTML5:  true,
+			Skipper: func(c echo.Context) bool {
+				return strings.HasPrefix(c.Path(), "/api") || strings.HasPrefix(c.Path(), "/ws")
+			},
+		}))
+	}
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8000"
+	}
+	if !strings.HasPrefix(port, ":") {
+		port = ":" + port
+	}
+
+	log.Printf("LightHouse %s listening on %s\n", Version, port)
+	e.Logger.Fatal(e.Start(port))
+}
+
+// extractContainers converts the Docker client's typed container list into the
+// generic map slice expected by the rest of the API. A single json.Marshal is
+// performed on the already-typed slice and immediately decoded into []map — no
+// intermediate []byte is retained after the call returns.
+func extractContainers(res interface{}) []map[string]interface{} {
+	b, err := json.Marshal(res)
+	if err != nil {
+		return nil
+	}
+	var out []map[string]interface{}
+	if err := json.Unmarshal(b, &out); err == nil && out != nil {
+		return out
+	}
+	// Fallback: some API versions wrap the list inside a top-level object.
+	var wrapper map[string]json.RawMessage
+	if err := json.Unmarshal(b, &wrapper); err != nil {
+		return nil
+	}
+	for _, raw := range wrapper {
+		var inner []map[string]interface{}
+		if err := json.Unmarshal(raw, &inner); err == nil {
+			return inner
+		}
+	}
+	return nil
+}
+
+// systemStatsSnapshot is a zero-allocation holder for the latest host metrics.
+// Fields are updated in-place under sysStatsMu — the struct itself is never re-allocated.
+type systemStatsSnapshot struct {
+	CPU               float64 `json:"cpu"`
+	Memory            uint64  `json:"memory"`
+	TotalMemory       uint64  `json:"total_memory"`
+	Cores             int     `json:"cores"`
+	RunningContainers int     `json:"running_containers"`
+	TotalContainers   int     `json:"total_containers"`
+}
+
+var (
+	latestSystemStats *systemStatsSnapshot // pointer; nil until first tick
+	sysStatsMu        sync.RWMutex
+
+	// Live stats cache for the /api/containers endpoint and historical DB metrics
+	liveStatsCache = make(map[string]struct {
+		CPU            float64
+		Memory         int64
+		NetRxBytes     int64
+		NetTxBytes     int64
+		DiskReadBytes  int64
+		DiskWriteBytes int64
+	})
+	liveStatsMu sync.RWMutex
+
+	// Cache for container limits (avoid N+1 inspects)
+	containerLimitsCache = make(map[string]struct {
+		CPULimit float64
+		MemLimit int64
+		Fetched  time.Time
+	})
+	containerLimitsMu sync.RWMutex
+)
+
+// statPollLoop replaces the old per-container streaming goroutines with a single
+// controlled polling loop. Every 2 seconds it fetches one-shot stats for each
+// running container sequentially. This eliminates:
+//   - 23 persistent HTTP connections to the Docker daemon
+//   - 23 always-running JSON decode loops competing for liveStatsMu
+//   - Sawtooth CPU spikes from simultaneous mutex lock contention
+//
+// One-shot stats (Stream:false) are cheap: Docker computes cgroups metrics once
+// and closes the connection. The 2-second cadence keeps the UI feeling live.
+var (
+	globalContainerList   []map[string]interface{} // Will store simplified container info for broad use
+	globalContainerListMu sync.RWMutex
+	globalContainersCount int
+	globalRunningCount    int
+)
+
+func statPollLoop(cli *client.Client) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	var prevCPU = make(map[string][2]uint64) // id → [totalUsage, systemUsage]
+
+	for range ticker.C {
+		if cli == nil {
+			continue
+		}
+		res, err := cli.ContainerList(context.Background(), client.ContainerListOptions{All: true})
+		if err != nil {
+			continue
+		}
+
+		// Build set of currently running IDs so we can prune stale cache entries.
+		running := make(map[string]bool)
+		runCount := 0
+		totalCount := len(res.Items)
+
+		for _, ctr := range res.Items {
+			if ctr.State == "running" {
+				running[ctr.ID] = true
+				runCount++
+			}
+		}
+
+		globalContainerListMu.Lock()
+		globalContainersCount = totalCount
+		globalRunningCount = runCount
+		globalContainerListMu.Unlock()
+
+		// Remove stale entries for stopped containers.
+		liveStatsMu.Lock()
+		for id := range liveStatsCache {
+			if !running[id] {
+				delete(liveStatsCache, id)
+				delete(prevCPU, id)
+			}
+		}
+		liveStatsMu.Unlock()
+
+		// Poll each running container — one HTTP round-trip per container, then done.
+		for id := range running {
+			pollOneStat(cli, id, prevCPU)
+		}
+	}
+}
+
+// pollOneStat fetches a single one-shot stats snapshot for one container and
+// updates liveStatsCache. prevCPU is used to compute accurate CPU deltas across polls.
+func pollOneStat(cli *client.Client, id string, prevCPU map[string][2]uint64) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	s, err := cli.ContainerStats(ctx, id, client.ContainerStatsOptions{Stream: false})
+	if err != nil {
+		return
+	}
+	defer s.Body.Close()
+
+	var stat struct {
+		CPUStats struct {
+			CPUUsage struct {
+				TotalUsage uint64 `json:"total_usage"`
+			} `json:"cpu_usage"`
+			SystemUsage uint64 `json:"system_cpu_usage"`
+			OnlineCPUs  uint32 `json:"online_cpus"`
+		} `json:"cpu_stats"`
+		MemoryStats struct {
+			Usage uint64            `json:"usage"`
+			Stats map[string]uint64 `json:"stats"`
+		} `json:"memory_stats"`
+		Networks map[string]struct {
+			RxBytes uint64 `json:"rx_bytes"`
+			TxBytes uint64 `json:"tx_bytes"`
+		} `json:"networks"`
+		BlkioStats struct {
+			IoServiceBytesRecursive []struct {
+				Op    string `json:"op"`
+				Value uint64 `json:"value"`
+			} `json:"io_service_bytes_recursive"`
+		} `json:"blkio_stats"`
+	}
+
+	if err := json.NewDecoder(s.Body).Decode(&stat); err != nil {
+		return
+	}
+
+	// CPU %: compute delta manually across the 2-second polling interval.
+	cpuPercent := 0.0
+	curTotal := stat.CPUStats.CPUUsage.TotalUsage
+	curSystem := stat.CPUStats.SystemUsage
+
+	if prev, ok := prevCPU[id]; ok {
+		prevTotal := prev[0]
+		prevSys := prev[1]
+
+		if curSystem > prevSys && curTotal > prevTotal {
+			cpuDelta := float64(curTotal - prevTotal)
+			sysDelta := float64(curSystem - prevSys)
+			onlineCPUs := float64(stat.CPUStats.OnlineCPUs)
+			if onlineCPUs == 0 {
+				onlineCPUs = float64(runtime.NumCPU())
+			}
+			cpuPercent = (cpuDelta / sysDelta) * onlineCPUs * 100.0
+		}
+	}
+	// Store current for next tick
+	prevCPU[id] = [2]uint64{curTotal, curSystem}
+
+	// Memory: subtract inactive_file (cgroups v2) or total_inactive_file (cgroups v1) for working-set usage.
+	memUsed := stat.MemoryStats.Usage
+	if v, ok := stat.MemoryStats.Stats["inactive_file"]; ok && v < memUsed {
+		memUsed -= v
+	} else if v, ok := stat.MemoryStats.Stats["total_inactive_file"]; ok && v < memUsed {
+		memUsed -= v
+	} else if v, ok := stat.MemoryStats.Stats["cache"]; ok && v < memUsed {
+		memUsed -= v
+	}
+
+	// Network / disk totals.
+	var curRx, curTx, curRead, curWrite uint64
+	for _, netIf := range stat.Networks {
+		curRx += netIf.RxBytes
+		curTx += netIf.TxBytes
+	}
+	for _, io := range stat.BlkioStats.IoServiceBytesRecursive {
+		switch strings.ToLower(io.Op) {
+		case "read":
+			curRead += io.Value
+		case "write":
+			curWrite += io.Value
+		}
+	}
+
+	liveStatsMu.Lock()
+	liveStatsCache[id] = struct {
+		CPU            float64
+		Memory         int64
+		NetRxBytes     int64
+		NetTxBytes     int64
+		DiskReadBytes  int64
+		DiskWriteBytes int64
+	}{
+		CPU:            cpuPercent,
+		Memory:         int64(memUsed),
+		NetRxBytes:     int64(curRx),
+		NetTxBytes:     int64(curTx),
+		DiskReadBytes:  int64(curRead),
+		DiskWriteBytes: int64(curWrite),
+	}
+	liveStatsMu.Unlock()
+}
+
+func systemStatsBroadcaster(cli *client.Client) {
+	// Pre-compute core count once — it essentially never changes at runtime.
+	cores, err := cpu.Counts(true)
+	if err != nil || cores == 0 {
+		cores = runtime.NumCPU()
+	}
+
+	runningContainers := 0
+	totalContainers := 0
+
+	// Seed the very first CPU reading in the background so it's ready after 1s.
+	var latestCPU float64
+	var cpuMu sync.Mutex
+	go func() {
+		for {
+			// cpu.Percent(interval, false) blocks for `interval` while measuring.
+			// Run it in this dedicated goroutine so the ticker loop never stalls.
+			cp, _ := cpu.Percent(2*time.Second, false)
+			cpuMu.Lock()
+			if len(cp) > 0 {
+				latestCPU = cp[0]
+			}
+			cpuMu.Unlock()
+		}
+	}()
+
+	// Tick every 2 seconds — fast enough for the UI, lightweight on the CPU.
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	ctrTicker := time.NewTicker(10 * time.Second)
+	defer ctrTicker.Stop()
+
+	for {
+		select {
+		case <-ctrTicker.C:
+			// Refresh container counts every 10s from global cache (no API call).
+			globalContainerListMu.RLock()
+			totalContainers = globalContainersCount
+			runningContainers = globalRunningCount
+			globalContainerListMu.RUnlock()
+		case <-ticker.C:
+			v, _ := mem.VirtualMemory()
+
+			cpuMu.Lock()
+			cpuVal := latestCPU
+			cpuMu.Unlock()
+
+			sysStatsMu.Lock()
+			if latestSystemStats == nil {
+				// First tick: allocate once. Never reallocated after this point.
+				latestSystemStats = &systemStatsSnapshot{}
+			}
+			latestSystemStats.CPU = cpuVal
+			latestSystemStats.Memory = v.Used
+			latestSystemStats.TotalMemory = v.Total
+			latestSystemStats.Cores = cores
+			latestSystemStats.RunningContainers = runningContainers
+			latestSystemStats.TotalContainers = totalContainers
+			sysStatsMu.Unlock()
+		}
+	}
+}
+
+func getRetentionDays() int {
+	var days int
+	err := db.DB.QueryRow("SELECT metrics_retention_days FROM settings WHERE id = 1").Scan(&days)
+	if err != nil || days <= 0 {
+		return 30
+	}
+	return days
+}
+
+func startStatsCollector(cli *client.Client) {
+	go systemStatsBroadcaster(cli)
+	go statPollLoop(cli)
+	// Initial collection (runs once synchronously to seed the DB immediately)
+	collectStats(cli)
+
+	ticker := time.NewTicker(30 * time.Second)
+	go func() {
+		tickCount := 0
+		for range ticker.C {
+			collectStats(cli)
+			tickCount++
+			// Run pruning every 10 ticks (10 * 30s = 5 minutes)
+			if tickCount%10 == 0 {
+				pruneOldStats()
+			}
+		}
+	}()
+}
+
+// pruneOldStats deletes metrics older than the configured retention period.
+// Uses a Go time.Time cutoff value so it works correctly with both SQLite and PostgreSQL.
+func pruneOldStats() {
+	retentionDays := getRetentionDays()
+	cutoff := time.Now().AddDate(0, 0, -retentionDays)
+	db.GormDB.Where("timestamp < ?", cutoff).Delete(&db.Stat{})
+	db.GormDB.Where("timestamp < ?", cutoff).Delete(&db.SystemStat{})
+
+	// Prune audit logs and alert history at 3x the metrics retention window.
+	// Audit and alert history are critical records — we keep them much longer than raw metrics.
+	auditCutoff := time.Now().AddDate(0, 0, -(retentionDays * 3))
+	db.GormDB.Where("timestamp < ?", auditCutoff).Delete(&db.AuditLog{})
+	db.GormDB.Where("timestamp < ?", auditCutoff).Delete(&db.AlertHistory{})
+}
+
+var (
+	prevStats = make(map[string]struct {
+		TotalUsage  uint64
+		SystemUsage uint64
+		NetRx       uint64
+		NetTx       uint64
+		DiskRead    uint64
+		DiskWrite   uint64
+	})
+	prevStatsMu sync.Mutex
+)
+
+func collectStats(cli *client.Client) {
+	// System Stats
+	v, _ := mem.VirtualMemory()
+	// Use interval=0 to return the last measured CPU value instantly.
+	// collectStats runs every 30s — there's no need to block for 1s here.
+	// The dedicated cpu-sampling goroutine in systemStatsBroadcaster keeps the value fresh.
+	cp, _ := cpu.Percent(0, false)
+	netStats, _ := net.IOCounters(false)
+	diskStats, _ := disk.IOCounters()
+
+	var hostNetRx, hostNetTx, hostDiskRead, hostDiskWrite uint64
+	if len(netStats) > 0 {
+		hostNetRx = netStats[0].BytesRecv
+		hostNetTx = netStats[0].BytesSent
+	}
+	for _, stat := range diskStats {
+		hostDiskRead += stat.ReadBytes
+		hostDiskWrite += stat.WriteBytes
+	}
+
+	var cpVal float64
+	if len(cp) > 0 {
+		cpVal = cp[0]
+	}
+
+	var sysRxDelta, sysTxDelta, sysReadDelta, sysWriteDelta uint64
+	prevStatsMu.Lock()
+	prevHost, ok := prevStats["__HOST__"]
+	if ok {
+		if hostNetRx > prevHost.NetRx {
+			sysRxDelta = hostNetRx - prevHost.NetRx
+		}
+		if hostNetTx > prevHost.NetTx {
+			sysTxDelta = hostNetTx - prevHost.NetTx
+		}
+		if hostDiskRead > prevHost.DiskRead {
+			sysReadDelta = hostDiskRead - prevHost.DiskRead
+		}
+		if hostDiskWrite > prevHost.DiskWrite {
+			sysWriteDelta = hostDiskWrite - prevHost.DiskWrite
+		}
+	}
+	prevStats["__HOST__"] = struct {
+		TotalUsage  uint64
+		SystemUsage uint64
+		NetRx       uint64
+		NetTx       uint64
+		DiskRead    uint64
+		DiskWrite   uint64
+	}{
+		NetRx:     hostNetRx,
+		NetTx:     hostNetTx,
+		DiskRead:  hostDiskRead,
+		DiskWrite: hostDiskWrite,
+	}
+	prevStatsMu.Unlock()
+
+	sysStat := db.SystemStat{
+		CPU:            cpVal,
+		Memory:         int64(v.Used),
+		NetRxBytes:     int64(sysRxDelta),
+		NetTxBytes:     int64(sysTxDelta),
+		DiskReadBytes:  int64(sysReadDelta),
+		DiskWriteBytes: int64(sysWriteDelta),
+	}
+	var statsToInsert []db.Stat
+	liveStatsMu.RLock()
+	for id, stats := range liveStatsCache {
+		var rxDelta, txDelta, readDelta, writeDelta uint64
+
+		prevStatsMu.Lock()
+		prev, ok := prevStats[id]
+		if ok {
+			if uint64(stats.NetRxBytes) > prev.NetRx {
+				rxDelta = uint64(stats.NetRxBytes) - prev.NetRx
+			}
+			if uint64(stats.NetTxBytes) > prev.NetTx {
+				txDelta = uint64(stats.NetTxBytes) - prev.NetTx
+			}
+			if uint64(stats.DiskReadBytes) > prev.DiskRead {
+				readDelta = uint64(stats.DiskReadBytes) - prev.DiskRead
+			}
+			if uint64(stats.DiskWriteBytes) > prev.DiskWrite {
+				writeDelta = uint64(stats.DiskWriteBytes) - prev.DiskWrite
+			}
+		}
+		prevStats[id] = struct {
+			TotalUsage  uint64
+			SystemUsage uint64
+			NetRx       uint64
+			NetTx       uint64
+			DiskRead    uint64
+			DiskWrite   uint64
+		}{
+			TotalUsage:  0, // Handled continuously in stream
+			SystemUsage: 0,
+			NetRx:       uint64(stats.NetRxBytes),
+			NetTx:       uint64(stats.NetTxBytes),
+			DiskRead:    uint64(stats.DiskReadBytes),
+			DiskWrite:   uint64(stats.DiskWriteBytes),
+		}
+		prevStatsMu.Unlock()
+
+		stat := db.Stat{
+			ContainerID:    id,
+			CPU:            stats.CPU,
+			Memory:         stats.Memory,
+			NetRxBytes:     int64(rxDelta),
+			NetTxBytes:     int64(txDelta),
+			DiskReadBytes:  int64(readDelta),
+			DiskWriteBytes: int64(writeDelta),
+		}
+		statsToInsert = append(statsToInsert, stat)
+	}
+	liveStatsMu.RUnlock()
+
+	if LighthouseMode == "spoke" {
+		cluster.PushToHub("system_stat", sysStat)
+		for _, stat := range statsToInsert {
+			cluster.PushToHub("container_stat", stat)
+		}
+	} else {
+		db.GormDB.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Create(&sysStat).Error; err != nil {
+				return err
+			}
+			if len(statsToInsert) > 0 {
+				if err := tx.Create(&statsToInsert).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+	}
+}
+
+func seedAdmin() {
+	var count int64
+	db.GormDB.Model(&db.User{}).Where("username = ?", "admin").Count(&count)
+	if count == 0 {
+		const plain = "admin123"
+		log.Println("Default admin account created (username: admin, password: admin123). Change the password on first login.")
+
+		h, err := bcrypt.GenerateFromPassword([]byte(plain), bcrypt.DefaultCost)
+		if err != nil {
+			log.Fatalf("Failed to hash default admin password: %v", err)
+		}
+
+		adminUser := db.User{
+			Username:        "admin",
+			Password:        string(h),
+			IsAdmin:         true,
+			CanStart:        true,
+			CanStop:         true,
+			CanRestart:      true,
+			CanDelete:       true,
+			CanShell:        true,
+			PasswordChanged: false,
+		}
+		if err := db.GormDB.Create(&adminUser).Error; err != nil {
+			log.Fatalf("Failed to create default admin: %v", err)
+		}
+	}
+
+	db.GormDB.Model(&db.User{}).Where("is_admin = ?", true).Updates(map[string]interface{}{
+		"can_start": true, "can_stop": true, "can_restart": true, "can_delete": true, "can_shell": true,
+	})
+}
+
+var validIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+func isValidContainerID(id string) bool {
+	return validIDRegex.MatchString(id)
+}
+
+func cleanupStaleAlerts() {
+	res := db.GormDB.Model(&db.AlertHistory{}).
+		Where("delivery_status = ?", "").
+		Update("delivery_status", "Failed (Stale)")
+	if res.Error != nil {
+		log.Printf("Failed to cleanup stale alerts: %v", res.Error)
+	} else if res.RowsAffected > 0 {
+		log.Printf("Cleaned up %d stale pending alerts.", res.RowsAffected)
+	}
+}
+
+func triggerRetroactiveScans(cli *client.Client) {
+	log.Println("Starting retroactive vulnerability scan sweep...")
+	containers, err := cli.ContainerList(context.Background(), client.ContainerListOptions{All: false})
+	if err != nil {
+		log.Printf("Failed to list containers for retroactive scan: %v", err)
+		return
+	}
+
+	for _, c := range containers.Items {
+		imageName := c.Image
+		if imageName == "" {
+			continue
+		}
+
+		var count int64
+		db.GormDB.Model(&db.ImageScanResult{}).Where("image = ?", imageName).Count(&count)
+		if count == 0 {
+			log.Printf("No previous scan found for %s, executing retroactive scan...", imageName)
+			_, _ = scanner.ExecuteAndSaveScan(context.Background(), cli, imageName)
+		}
+	}
+	log.Println("Retroactive vulnerability scan sweep complete.")
+}
+
+func handleGETAuthGoogle() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		var setting db.Setting
 		db.GormDB.Select("google_client_id", "google_client_secret").First(&setting, 1)
 		clientID := setting.GoogleClientID
@@ -434,9 +1280,11 @@ func main() {
 		}
 		url := conf.AuthCodeURL(state)
 		return c.Redirect(http.StatusTemporaryRedirect, url)
-	})
+	}
+}
 
-	e.GET("/auth/google/callback", func(c echo.Context) error {
+func handleGETAuthGoogleCallback() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		stateCookie, err := c.Cookie("oauth_state")
 		if err != nil || c.QueryParam("state") != stateCookie.Value {
 			return c.Redirect(http.StatusTemporaryRedirect, "/?error="+url.QueryEscape("Invalid OAuth state. Please try again."))
@@ -626,8 +1474,11 @@ func main() {
 		}(code)
 
 		return c.Redirect(http.StatusTemporaryRedirect, fmt.Sprintf("/?code=%s", code))
-	})
-	e.POST("/api/token/exchange", func(c echo.Context) error {
+	}
+}
+
+func handlePOSTApiTokenExchange() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		code := c.FormValue("code")
 		if code == "" {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Missing code"})
@@ -637,9 +1488,11 @@ func main() {
 			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Invalid or expired code"})
 		}
 		return c.JSON(http.StatusOK, data)
-	})
+	}
+}
 
-	e.POST("/api/token", func(c echo.Context) error {
+func handlePOSTApiToken() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		ip := c.RealIP()
 		if loginRateLimit.isLimited(ip, 5, 15*time.Minute) {
 			alerts.Global.TriggerSystemAlert("system:auth_failed", fmt.Sprintf("Multiple failed login attempts detected from IP: %s", ip))
@@ -725,9 +1578,11 @@ func main() {
 			"is_admin":         user.IsAdmin,
 			"password_changed": user.PasswordChanged,
 		})
-	})
+	}
+}
 
-	e.POST("/api/token/refresh", func(c echo.Context) error {
+func handlePOSTApiTokenRefresh() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		refreshToken := strings.TrimSpace(c.FormValue("refresh_token"))
 		if refreshToken == "" {
 			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Missing refresh token"})
@@ -758,10 +1613,11 @@ func main() {
 			"is_admin":         claims.IsAdmin,
 			"password_changed": passwordChanged,
 		})
-	})
+	}
+}
 
-	// Public configuration route
-	e.GET("/api/config", func(c echo.Context) error {
+func handleGETApiConfig() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]interface{}{
 			"allow_start":   CanStart,
 			"allow_stop":    CanStop,
@@ -770,121 +1626,11 @@ func main() {
 			"allow_shell":   AllowShell,
 			"client_access": clientAccessConfig(),
 		})
-	})
+	}
+}
 
-	// Restricted Group
-	r := e.Group("/api")
-	r.Use(echojwt.WithConfig(echojwt.Config{
-		NewClaimsFunc: func(c echo.Context) jwt.Claims {
-			return new(UserClaims)
-		},
-		SigningKey: SECRET_KEY,
-		Skipper: func(c echo.Context) bool {
-			auth := c.Request().Header.Get("Authorization")
-			if strings.HasPrefix(auth, "Bearer lh_pat_") {
-				tokenStr := strings.TrimPrefix(auth, "Bearer ")
-				var apiToken db.ApiToken
-				if err := db.GormDB.Where("token = ?", tokenStr).First(&apiToken).Error; err == nil {
-					db.GormDB.Model(&apiToken).Update("last_used", time.Now())
-					var u db.User
-					if err := db.GormDB.Preload("Team").First(&u, apiToken.UserID).Error; err == nil {
-						// Merge team permissions (same OR logic as login)
-						canStart := u.CanStart
-						canStop := u.CanStop
-						canRestart := u.CanRestart
-						canDelete := u.CanDelete
-						canShell := u.CanShell
-						allowedContainers := u.AllowedContainers
-						if u.Team != nil {
-							canStart = canStart || u.Team.CanStart
-							canStop = canStop || u.Team.CanStop
-							canRestart = canRestart || u.Team.CanRestart
-							canDelete = canDelete || u.Team.CanDelete
-							canShell = canShell || u.Team.CanShell
-							if u.Team.AllowedContainers != "" {
-								if allowedContainers == "" || allowedContainers == ".*" {
-									allowedContainers = u.Team.AllowedContainers
-								} else {
-									allowedContainers = allowedContainers + "," + u.Team.AllowedContainers
-								}
-							}
-						}
-						claims := &UserClaims{
-							ID:                 int(u.ID),
-							Username:           u.Username,
-							IsAdmin:            u.IsAdmin,
-							CanStart:           canStart,
-							CanStop:            canStop,
-							CanRestart:         canRestart,
-							CanDelete:          canDelete,
-							CanShell:           canShell,
-							IsRestrictedAccess: u.IsRestrictedAccess,
-							AllowedContainers:  allowedContainers,
-							IsActive:           u.IsActive,
-							PasswordChanged:    u.PasswordChanged,
-							PasswordVersion:    u.PasswordVersion,
-							TokenType:          "access",
-						}
-						mockToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-						c.Set("user", mockToken)
-						return true // Skip standard JWT validation
-					}
-				}
-			}
-			return false
-		},
-	}))
-
-	// Password change enforcement & session validation middleware
-	r.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
-			token := c.Get("user").(*jwt.Token)
-			claims := token.Claims.(*UserClaims)
-
-			if claims.TokenType == tokenTypeRefresh {
-				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Invalid token"})
-			}
-
-			if err := refreshClaimsFromDB(claims); err != nil {
-				switch errMsg := err.Error(); errMsg {
-				case "account deactivated":
-					return c.JSON(http.StatusForbidden, map[string]string{
-						"error": "Account deactivated. Please contact administrator.",
-						"code":  "ACCOUNT_DEACTIVATED",
-					})
-				case "session invalidated":
-					return c.JSON(http.StatusUnauthorized, map[string]string{
-						"error": "Session invalidated. Password was changed. Please re-login.",
-						"code":  "SESSION_INVALIDATED",
-					})
-				case "user not found":
-					return c.JSON(http.StatusUnauthorized, map[string]string{"error": "User not found."})
-				default:
-					// Transient DB errors or "database is locked" shouldn't log out the user
-					return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Internal server error during session validation"})
-				}
-			}
-
-			// Allow profile and password-change endpoints to proceed after active-state validation.
-			if c.Path() == "/api/user/change-password" || c.Path() == "/api/user/me" {
-				return next(c)
-			}
-
-			if !claims.PasswordChanged {
-				return c.JSON(http.StatusForbidden, map[string]string{"error": "Password change required", "code": "FORCE_PASSWORD_CHANGE"})
-			}
-
-			return next(c)
-		}
-	})
-
-	RegisterImageRoutes(r, cli)
-	RegisterVolumeRoutes(r, cli)
-	RegisterNetworkRoutes(r, cli)
-	registerApiTokenRoutes(r)
-	registerMCPRoutes(r, cli)
-
-	r.GET("/containers", func(c echo.Context) error {
+func handleGETContainers(cli *client.Client) echo.HandlerFunc {
+	return func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
 		user := token.Claims.(*UserClaims)
 
@@ -896,21 +1642,21 @@ func main() {
 		apiContainersCacheMu.RLock()
 		cachedAge := time.Since(apiContainersCacheTS)
 		var baseContainers []map[string]interface{}
-		
+
 		if cachedAge < 4*time.Second && len(apiContainersCache) > 0 {
 			baseContainers = apiContainersCache
 			apiContainersCacheMu.RUnlock()
 		} else {
 			apiContainersCacheMu.RUnlock()
-			
+
 			res, err := cli.ContainerList(context.Background(), client.ContainerListOptions{All: true})
 			if err != nil {
 				log.Printf("ContainerList error: %v", err)
 				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to list containers"})
 			}
-			
+
 			baseContainers = extractContainers(res.Items)
-			
+
 			apiContainersCacheMu.Lock()
 			apiContainersCache = baseContainers
 			apiContainersCacheTS = time.Now()
@@ -1018,7 +1764,7 @@ func main() {
 				cpuLimit := 0.0
 				memLimit := int64(0)
 				needsFetch := false
-				
+
 				containerLimitsMu.RLock()
 				if limits, ok := containerLimitsCache[id]; ok && time.Since(limits.Fetched) < 5*time.Minute {
 					cpuLimit = limits.CPULimit
@@ -1103,9 +1849,11 @@ func main() {
 		wg.Wait()
 
 		return c.JSON(http.StatusOK, list)
-	})
+	}
+}
 
-	r.GET("/containers/:id/inspect", func(c echo.Context) error {
+func handleGETContainersIdInspect(cli *client.Client) echo.HandlerFunc {
+	return func(c echo.Context) error {
 		id := c.Param("id")
 		if !isValidContainerID(id) {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
@@ -1155,9 +1903,11 @@ func main() {
 		}
 
 		return c.JSON(http.StatusOK, container)
-	})
+	}
+}
 
-	r.POST("/containers/:id/action", func(c echo.Context) error {
+func handlePOSTContainersIdAction(cli *client.Client) echo.HandlerFunc {
+	return func(c echo.Context) error {
 		id := c.Param("id")
 		if !isValidContainerID(id) {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
@@ -1313,9 +2063,11 @@ func main() {
 
 		logAudit(userClaims.ID, userClaims.Username, action, id, "Success", "Action executed successfully.")
 		return c.NoContent(http.StatusOK)
-	})
+	}
+}
 
-	r.POST("/containers/:id/scan", func(c echo.Context) error {
+func handlePOSTContainersIdScan(cli *client.Client) echo.HandlerFunc {
+	return func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
 		userClaims := token.Claims.(*UserClaims)
 		if !userClaims.IsAdmin && !userClaims.CanRunScans {
@@ -1375,9 +2127,11 @@ func main() {
 
 		logAudit(userClaims.ID, userClaims.Username, "SCAN", "Container:"+id, "Success", fmt.Sprintf("Triggered vulnerability scan for container %s (image: %s)", id, imageParam))
 		return c.JSON(http.StatusOK, map[string]string{"status": "scanning", "message": "Scan started in background"})
-	})
+	}
+}
 
-	r.GET("/images/scans", func(c echo.Context) error {
+func handleGETImagesScans() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		imageName := c.QueryParam("image")
 		if imageName == "" {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "image required"})
@@ -1387,9 +2141,11 @@ func main() {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "No scan results found"})
 		}
 		return c.JSON(http.StatusOK, result)
-	})
+	}
+}
 
-	r.GET("/containers/:id/logs/download", func(c echo.Context) error {
+func handleGETContainersIdLogsDownload(cli *client.Client) echo.HandlerFunc {
+	return func(c echo.Context) error {
 		id := c.Param("id")
 		if !isValidContainerID(id) {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
@@ -1446,9 +2202,11 @@ func main() {
 
 		_, err = io.Copy(c.Response().Writer, out)
 		return err
-	})
+	}
+}
 
-	r.GET("/containers/:id/logs", func(c echo.Context) error {
+func handleGETContainersIdLogs(cli *client.Client) echo.HandlerFunc {
+	return func(c echo.Context) error {
 		id := c.Param("id")
 		if !isValidContainerID(id) {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
@@ -1572,9 +2330,11 @@ func main() {
 
 		log.Printf("[API] Found %d lines for %s (until: %s)", len(logs), id, untilStr)
 		return c.JSON(http.StatusOK, logs)
-	})
+	}
+}
 
-	r.GET("/containers/:id/logs/count", func(c echo.Context) error {
+func handleGETContainersIdLogsCount(cli *client.Client) echo.HandlerFunc {
+	return func(c echo.Context) error {
 		id := c.Param("id")
 		if !isValidContainerID(id) {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
@@ -1631,9 +2391,11 @@ func main() {
 
 		count := strings.Count(output.String(), "\n")
 		return c.JSON(http.StatusOK, map[string]int{"total": count})
-	})
+	}
+}
 
-	r.GET("/containers/:id/stats", func(c echo.Context) error {
+func handleGETContainersIdStats(cli *client.Client) echo.HandlerFunc {
+	return func(c echo.Context) error {
 		id := c.Param("id")
 		if !isValidContainerID(id) {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
@@ -1691,9 +2453,11 @@ func main() {
 			c.Response().Flush()
 		}
 		return nil
-	})
+	}
+}
 
-	r.GET("/containers/:id/stats-now", func(c echo.Context) error {
+func handleGETContainersIdStatsNow(cli *client.Client) echo.HandlerFunc {
+	return func(c echo.Context) error {
 		id := c.Param("id")
 		if !isValidContainerID(id) {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
@@ -1753,9 +2517,11 @@ func main() {
 			"disk_write": cached.DiskWriteBytes,
 			"pids":       0, // pids not currently tracked in liveStatsCache
 		})
-	})
+	}
+}
 
-	r.GET("/containers/:id/history", func(c echo.Context) error {
+func handleGETContainersIdHistory(cli *client.Client) echo.HandlerFunc {
+	return func(c echo.Context) error {
 		id := c.Param("id")
 		if !isValidContainerID(id) {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
@@ -1827,9 +2593,11 @@ func main() {
 			})
 		}
 		return c.JSON(http.StatusOK, results)
-	})
+	}
+}
 
-	r.GET("/system/storage", func(c echo.Context) error {
+func handleGETSystemStorage() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		var stat syscall.Statfs_t
 		err := syscall.Statfs("/", &stat)
 		if err != nil {
@@ -1845,9 +2613,11 @@ func main() {
 			"total_bytes": totalSize,
 			"used_bytes":  usedSize,
 		})
-	})
+	}
+}
 
-	r.GET("/system/history", func(c echo.Context) error {
+func handleGETSystemHistory() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		duration := c.QueryParam("duration")
 		from := c.QueryParam("from")
 		to := c.QueryParam("to")
@@ -1889,18 +2659,22 @@ func main() {
 			})
 		}
 		return c.JSON(http.StatusOK, history)
-	})
+	}
+}
 
-	r.GET("/system/stats", func(c echo.Context) error {
+func handleGETSystemStats() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		sysStatsMu.RLock()
 		defer sysStatsMu.RUnlock()
 		if latestSystemStats == nil {
 			return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "Stats not ready"})
 		}
 		return c.JSON(http.StatusOK, latestSystemStats)
-	})
+	}
+}
 
-	r.GET("/system/info", func(c echo.Context) error {
+func handleGETSystemInfo(cli *client.Client) echo.HandlerFunc {
+	return func(c echo.Context) error {
 		dockerVer := "Unknown"
 		if v, err := cli.ServerVersion(context.Background(), client.ServerVersionOptions{}); err == nil {
 			dockerVer = v.Version
@@ -1921,9 +2695,11 @@ func main() {
 			"docker_version":  dockerVer,
 			"compose_version": composeVer,
 		})
-	})
+	}
+}
 
-	r.POST("/user/change-password", func(c echo.Context) error {
+func handlePOSTUserChangePassword() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
 		userClaims := token.Claims.(*UserClaims)
 		newPassword := c.FormValue("password")
@@ -1962,9 +2738,11 @@ func main() {
 
 		log.Printf("Password successfully updated for user %d", user.ID)
 		return c.NoContent(http.StatusOK)
-	})
+	}
+}
 
-	r.GET("/user/me", func(c echo.Context) error {
+func handleGETUserMe() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
 		claims := token.Claims.(*UserClaims)
 		var dbUser db.User
@@ -2001,32 +2779,21 @@ func main() {
 		}
 
 		return c.JSON(http.StatusOK, response)
-	})
+	}
+}
 
-	// Admin Only Routes
-	admin := r.Group("/admin")
-	admin.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
-			token := c.Get("user").(*jwt.Token)
-			user := token.Claims.(*UserClaims)
-			var isAdmin bool
-			err := db.GormDB.Raw("SELECT is_admin FROM users WHERE id = ? AND is_active = 1", user.ID).Scan(&isAdmin).Error
-			if err != nil || !isAdmin {
-				return c.JSON(http.StatusForbidden, map[string]string{"error": "Admin access required"})
-			}
-			user.IsAdmin = isAdmin
-			return next(c)
-		}
-	})
-	admin.GET("/teams", func(c echo.Context) error {
+func handleGETTeams() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		var teams []db.Team
 		if err := db.GormDB.Find(&teams).Error; err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch teams"})
 		}
 		return c.JSON(http.StatusOK, teams)
-	})
+	}
+}
 
-	admin.POST("/teams", func(c echo.Context) error {
+func handlePOSTTeams() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		name := c.FormValue("name")
 		description := c.FormValue("description")
 		allowedContainers := c.FormValue("allowed_containers")
@@ -2069,12 +2836,15 @@ func main() {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Failed to create team, maybe name already exists"})
 		}
 		return c.NoContent(http.StatusCreated)
-	})
+	}
+}
 
-	admin.PUT("/teams/:id", func(c echo.Context) error {
-		id := c.Param("id")
-		if !isValidContainerID(id) {
-			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+func handlePUTTeamsId() echo.HandlerFunc {
+	return func(c echo.Context) error {
+		idParam := c.Param("id")
+		id, err := strconv.Atoi(idParam)
+		if err != nil || id <= 0 {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid team ID format"})
 		}
 		name := c.FormValue("name")
 		description := c.FormValue("description")
@@ -2114,18 +2884,23 @@ func main() {
 
 		db.GormDB.Model(&db.Team{}).Where("id = ?", id).Updates(updates)
 		return c.NoContent(http.StatusOK)
-	})
+	}
+}
 
-	admin.DELETE("/teams/:id", func(c echo.Context) error {
-		id := c.Param("id")
-		if !isValidContainerID(id) {
-			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+func handleDELETETeamsId() echo.HandlerFunc {
+	return func(c echo.Context) error {
+		idParam := c.Param("id")
+		id, err := strconv.Atoi(idParam)
+		if err != nil || id <= 0 {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid team ID format"})
 		}
 		db.GormDB.Where("id = ?", id).Delete(&db.Team{})
 		return c.NoContent(http.StatusOK)
-	})
+	}
+}
 
-	admin.GET("/users", func(c echo.Context) error {
+func handleGETUsers() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		page, _ := strconv.Atoi(c.QueryParam("page"))
 		if page < 1 {
 			page = 1
@@ -2170,9 +2945,11 @@ func main() {
 			"page":  page,
 			"pages": (int(total) + limit - 1) / limit,
 		})
-	})
+	}
+}
 
-	admin.PUT("/users/:id/active", func(c echo.Context) error {
+func handlePUTUsersIdActive() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		id := c.Param("id")
 		if !isValidContainerID(id) {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
@@ -2189,9 +2966,11 @@ func main() {
 		logAudit(claims.ID, claims.Username, "UPDATE_USER_STATUS", "User:"+id, "Success", "Administrator changed user status to: "+status)
 
 		return c.NoContent(http.StatusOK)
-	})
+	}
+}
 
-	admin.POST("/users", func(c echo.Context) error {
+func handlePOSTUsers() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		authMethod := c.FormValue("authMethod")
 		roleTemplateID := c.FormValue("role_template_id")
 
@@ -2322,7 +3101,7 @@ func main() {
 </html>`, inviteURL, inviteURL, inviteURL)
 
 				msg := []byte(fmt.Sprintf("To: %s\r\nSubject: You've been invited to LightHouse\r\nMIME-version: 1.0;\r\nContent-Type: text/html; charset=\"UTF-8\";\r\n\r\n%s", email, body))
-				err = smtp.SendMail(fmt.Sprintf("%s:%d", smtpHost, smtpPort), auth, smtpUser, []string{email}, msg)
+				err := smtp.SendMail(fmt.Sprintf("%s:%d", smtpHost, smtpPort), auth, smtpUser, []string{email}, msg)
 				if err != nil {
 					log.Printf("Failed to send invite email: %v", err)
 				}
@@ -2336,12 +3115,15 @@ func main() {
 		default:
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid auth method"})
 		}
-	})
+	}
+}
 
-	admin.PUT("/users/:id/permissions", func(c echo.Context) error {
+func handlePUTUsersIdPermissions() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		id := c.Param("id")
-		if !isValidContainerID(id) {
-			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+		uid, err := strconv.Atoi(id)
+		if err != nil || uid <= 0 {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid user ID format"})
 		}
 		canStart, canStop, canRestart, canDelete, canShell := clampStaffActionPermissions(
 			c.FormValue("can_start") == "true",
@@ -2381,9 +3163,11 @@ func main() {
 		logAudit(claims.ID, claims.Username, "UPDATE_USER_PERMISSIONS", "User:"+id, "Success", "Administrator updated user permissions")
 
 		return c.NoContent(http.StatusOK)
-	})
+	}
+}
 
-	admin.PUT("/users/:id/password", func(c echo.Context) error {
+func handlePUTUsersIdPassword() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		id := c.Param("id")
 		if !isValidContainerID(id) {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
@@ -2409,9 +3193,11 @@ func main() {
 		logAudit(claims.ID, claims.Username, "RESET_PASSWORD", "User:"+id, "Success", "Administrator reset user password")
 
 		return c.NoContent(http.StatusOK)
-	})
+	}
+}
 
-	admin.DELETE("/users/:id", func(c echo.Context) error {
+func handleDELETEUsersId() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		id := c.Param("id")
 		if !isValidContainerID(id) {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
@@ -2430,9 +3216,11 @@ func main() {
 		logAudit(claims.ID, claims.Username, "DELETE_USER", "User:"+id, "Success", "Administrator deleted user")
 
 		return c.JSON(http.StatusOK, map[string]string{"message": "deleted"})
-	})
+	}
+}
 
-	admin.GET("/audit", func(c echo.Context) error {
+func handleGETAudit() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		from := c.QueryParam("from")
 		to := c.QueryParam("to")
 
@@ -2458,12 +3246,11 @@ func main() {
 			})
 		}
 		return c.JSON(http.StatusOK, logsList)
-	})
+	}
+}
 
-	// ── Alert Rules CRUD (admin-only, under /api/admin/alerts) ────────────────
-
-	// LIST all rules
-	admin.GET("/role_templates", func(c echo.Context) error {
+func handleGETRoleTemplates() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		var templates []db.RoleTemplate
 		db.GormDB.Find(&templates)
 
@@ -2482,9 +3269,11 @@ func main() {
 			})
 		}
 		return c.JSON(http.StatusOK, res)
-	})
+	}
+}
 
-	admin.POST("/role_templates", func(c echo.Context) error {
+func handlePOSTRoleTemplates() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		var rt db.RoleTemplate
 		if err := c.Bind(&rt); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid payload"})
@@ -2496,25 +3285,31 @@ func main() {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to create role template"})
 		}
 		return c.NoContent(http.StatusCreated)
-	})
+	}
+}
 
-	admin.DELETE("/role_templates/:id", func(c echo.Context) error {
-		id := c.Param("id")
-		if !isValidContainerID(id) {
-			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
+func handleDELETERoleTemplatesId() echo.HandlerFunc {
+	return func(c echo.Context) error {
+		idParam := c.Param("id")
+		id, err := strconv.Atoi(idParam)
+		if err != nil || id <= 0 {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid role template ID format"})
 		}
 		db.GormDB.Delete(&db.RoleTemplate{}, id)
 		return c.NoContent(http.StatusOK)
-	})
+	}
+}
 
-	admin.GET("/alerts/rules", func(c echo.Context) error {
+func handleGETAlertsRules() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		var rules []alerts.AlertRule
 		db.GormDB.Order("id DESC").Find(&rules)
 		return c.JSON(http.StatusOK, rules)
-	})
+	}
+}
 
-	// GET single rule
-	admin.GET("/settings", func(c echo.Context) error {
+func handleGETSettings() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		var settings db.Setting
 		db.GormDB.FirstOrCreate(&settings, db.Setting{ID: 1})
 
@@ -2559,9 +3354,11 @@ func main() {
 			"scheduled_scan_enabled": settings.ScheduledScanEnabled,
 			"scheduled_scan_cron":    settings.ScheduledScanCron,
 		})
-	})
+	}
+}
 
-	admin.PUT("/settings", func(c echo.Context) error {
+func handlePUTSettings(cli *client.Client) echo.HandlerFunc {
+	return func(c echo.Context) error {
 		var payload struct {
 			MetricsRetentionDays int    `json:"metrics_retention_days"`
 			SmtpHost             string `json:"smtp_host"`
@@ -2673,9 +3470,11 @@ func main() {
 		}
 
 		return c.NoContent(http.StatusOK)
-	})
+	}
+}
 
-	admin.POST("/settings/backup/test", func(c echo.Context) error {
+func handlePOSTSettingsBackupTest() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		var s db.Setting
 		db.GormDB.First(&s, 1)
 
@@ -2684,9 +3483,11 @@ func main() {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Backup failed. Check server logs for details."})
 		}
 		return c.JSON(http.StatusOK, map[string]string{"message": "Backup successful"})
-	})
+	}
+}
 
-	admin.POST("/settings/archival/test", func(c echo.Context) error {
+func handlePOSTSettingsArchivalTest() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		var s db.Setting
 		db.GormDB.First(&s, 1)
 
@@ -2695,9 +3496,11 @@ func main() {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Archival failed. Check server logs for details."})
 		}
 		return c.JSON(http.StatusOK, map[string]string{"message": "Archival successful"})
-	})
+	}
+}
 
-	admin.GET("/alerts/rules/:id", func(c echo.Context) error {
+func handleGETAlertsRulesId() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		id := c.Param("id")
 		if !isValidContainerID(id) {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
@@ -2707,10 +3510,11 @@ func main() {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "Rule not found"})
 		}
 		return c.JSON(http.StatusOK, r)
-	})
+	}
+}
 
-	// CREATE rule
-	admin.POST("/alerts/rules", func(c echo.Context) error {
+func handlePOSTAlertsRules(alertMgr *alerts.AlertManager) echo.HandlerFunc {
+	return func(c echo.Context) error {
 		name := strings.TrimSpace(c.FormValue("name"))
 		if name == "" {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "name is required"})
@@ -2760,10 +3564,11 @@ func main() {
 
 		alertMgr.ReloadRules()
 		return c.JSON(http.StatusCreated, map[string]interface{}{"id": r.ID})
-	})
+	}
+}
 
-	// GitOps API
-	r.GET("/gitops/projects", func(c echo.Context) error {
+func handleGETGitopsProjects() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		var projects []db.GitProject
 		if err := db.GormDB.Find(&projects).Error; err != nil {
 			log.Printf("Failed to fetch GitOps projects: %v", err)
@@ -2792,9 +3597,11 @@ func main() {
 		}
 
 		return c.JSON(http.StatusOK, projects)
-	})
+	}
+}
 
-	r.POST("/gitops/projects", func(c echo.Context) error {
+func handlePOSTGitopsProjects() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
 		userClaims := token.Claims.(*UserClaims)
 		if !userClaims.IsAdmin && !userClaims.CanCreateDeployments {
@@ -2819,9 +3626,11 @@ func main() {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to create project"})
 		}
 		return c.JSON(http.StatusOK, project)
-	})
+	}
+}
 
-	r.PUT("/gitops/projects/:id", func(c echo.Context) error {
+func handlePUTGitopsProjectsId() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
 		userClaims := token.Claims.(*UserClaims)
 		if !userClaims.IsAdmin && !userClaims.CanEditDeployments {
@@ -2875,7 +3684,7 @@ func main() {
 			"status": "pending", // Trigger a redeploy
 			"name":   updateData.Name,
 		}
-		
+
 		if updateData.RepoURL != "" {
 			updates["repo_url"] = updateData.RepoURL
 		}
@@ -2897,9 +3706,11 @@ func main() {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to update project"})
 		}
 		return c.JSON(http.StatusOK, project)
-	})
+	}
+}
 
-	r.POST("/gitops/projects/:id/sync", func(c echo.Context) error {
+func handlePOSTGitopsProjectsIdSync() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
 		userClaims := token.Claims.(*UserClaims)
 		if !userClaims.IsAdmin && !userClaims.CanEditDeployments {
@@ -2934,9 +3745,11 @@ func main() {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to trigger sync"})
 		}
 		return c.JSON(http.StatusOK, map[string]string{"message": "Sync triggered"})
-	})
+	}
+}
 
-	r.DELETE("/gitops/projects/:id", func(c echo.Context) error {
+func handleDELETEGitopsProjectsId() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
 		userClaims := token.Claims.(*UserClaims)
 		if !userClaims.IsAdmin && !userClaims.CanDeleteDeployments {
@@ -2971,9 +3784,11 @@ func main() {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to delete project"})
 		}
 		return c.JSON(http.StatusOK, map[string]string{"status": "deleted"})
-	})
+	}
+}
 
-	r.GET("/gitops/projects/:id/deployments", func(c echo.Context) error {
+func handleGETGitopsProjectsIdDeployments() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
 		userClaims := token.Claims.(*UserClaims)
 
@@ -3007,10 +3822,11 @@ func main() {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch deployments"})
 		}
 		return c.JSON(http.StatusOK, deployments)
-	})
+	}
+}
 
-	// UPDATE rule
-	admin.PUT("/alerts/rules/:id", func(c echo.Context) error {
+func handlePUTAlertsRulesId(alertMgr *alerts.AlertManager) echo.HandlerFunc {
+	return func(c echo.Context) error {
 		id := c.Param("id")
 		if !isValidContainerID(id) {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
@@ -3083,10 +3899,11 @@ func main() {
 
 		alertMgr.ReloadRules()
 		return c.NoContent(http.StatusOK)
-	})
+	}
+}
 
-	// DELETE rule
-	admin.DELETE("/alerts/rules/:id", func(c echo.Context) error {
+func handleDELETEAlertsRulesId(alertMgr *alerts.AlertManager) echo.HandlerFunc {
+	return func(c echo.Context) error {
 		id := c.Param("id")
 		if !isValidContainerID(id) {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
@@ -3099,10 +3916,11 @@ func main() {
 
 		alertMgr.ReloadRules()
 		return c.NoContent(http.StatusOK)
-	})
+	}
+}
 
-	// TOGGLE enabled/disabled without full PUT
-	admin.PUT("/alerts/rules/:id/toggle", func(c echo.Context) error {
+func handlePUTAlertsRulesIdToggle(alertMgr *alerts.AlertManager) echo.HandlerFunc {
+	return func(c echo.Context) error {
 		id := c.Param("id")
 		if !isValidContainerID(id) {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
@@ -3111,10 +3929,11 @@ func main() {
 		db.GormDB.Model(&alerts.AlertRule{}).Where("id = ?", id).Update("enabled", enabled)
 		alertMgr.ReloadRules()
 		return c.NoContent(http.StatusOK)
-	})
+	}
+}
 
-	// BULK update channels
-	admin.POST("/alerts/rules/bulk-channels", func(c echo.Context) error {
+func handlePOSTAlertsRulesBulkChannels(alertMgr *alerts.AlertManager) echo.HandlerFunc {
+	return func(c echo.Context) error {
 		var payload struct {
 			RuleIDs              []int `json:"rule_ids"`
 			EnableSlack          bool  `json:"enable_slack"`
@@ -3139,7 +3958,7 @@ func main() {
 				"enable_generic_webhook": payload.EnableGenericWebhook,
 				"enable_email":           payload.EnableEmail,
 			}).Error
-			
+
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Database update failed"})
 		}
@@ -3150,18 +3969,21 @@ func main() {
 
 		alertMgr.ReloadRules()
 		return c.NoContent(http.StatusOK)
-	})
+	}
+}
 
-	// LIST alert history
-	// DELETE all alert history
-	admin.DELETE("/alerts/history", func(c echo.Context) error {
+func handleDELETEAlertsHistory() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		if err := db.GormDB.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&db.AlertHistory{}).Error; err != nil {
 			log.Printf("[API] Failed to clear alert history: %v", err)
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to clear history"})
 		}
 		return c.NoContent(http.StatusOK)
-	})
-	admin.GET("/alerts/history", func(c echo.Context) error {
+	}
+}
+
+func handleGETAlertsHistory() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		limitStr := c.QueryParam("limit")
 		limit := 100
 		if v, err := strconv.Atoi(limitStr); err == nil && v > 0 && v <= 500 {
@@ -3177,9 +3999,11 @@ func main() {
 		var history []db.AlertHistory
 		query.Order("timestamp DESC").Limit(limit).Find(&history)
 		return c.JSON(http.StatusOK, history)
-	})
+	}
+}
 
-	e.GET("/ws/system-stats", func(c echo.Context) error {
+func handleGETWsSystemStats() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		_, err := authenticateWS(c)
 		if err != nil {
 			return wsAuthError(c, err)
@@ -3211,9 +4035,11 @@ func main() {
 				return nil
 			}
 		}
-	})
+	}
+}
 
-	e.GET("/ws/events", func(c echo.Context) error {
+func handleGETWsEvents(cli *client.Client) echo.HandlerFunc {
+	return func(c echo.Context) error {
 		userClaims, err := authenticateWS(c)
 		if err != nil {
 			return wsAuthError(c, err)
@@ -3263,9 +4089,11 @@ func main() {
 				return nil
 			}
 		}
-	})
+	}
+}
 
-	e.GET("/ws/logs/:id", func(c echo.Context) error {
+func handleGETWsLogsId(cli *client.Client) echo.HandlerFunc {
+	return func(c echo.Context) error {
 		id := c.Param("id")
 		if !isValidContainerID(id) {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
@@ -3346,9 +4174,11 @@ func main() {
 			}
 		}
 		return nil
-	})
+	}
+}
 
-	e.GET("/ws/shell/:id", func(c echo.Context) error {
+func handleGETWsShellId(cli *client.Client) echo.HandlerFunc {
+	return func(c echo.Context) error {
 		id := c.Param("id")
 		if !isValidContainerID(id) {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid container ID format"})
@@ -3480,596 +4310,5 @@ func main() {
 
 		<-errChan
 		return nil
-	})
-
-	// Serve Frontend (skipped in agent-only mode)
-	if serveFrontend {
-		e.Use(middleware.StaticWithConfig(middleware.StaticConfig{
-			Root:   "frontend/dist",
-			Browse: false,
-			HTML5:  true,
-			Skipper: func(c echo.Context) bool {
-				return strings.HasPrefix(c.Path(), "/api") || strings.HasPrefix(c.Path(), "/ws")
-			},
-		}))
 	}
-
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8000"
-	}
-	if !strings.HasPrefix(port, ":") {
-		port = ":" + port
-	}
-
-	log.Printf("LightHouse %s listening on %s\n", Version, port)
-	e.Logger.Fatal(e.Start(port))
-}
-
-// extractContainers converts the Docker client's typed container list into the
-// generic map slice expected by the rest of the API. A single json.Marshal is
-// performed on the already-typed slice and immediately decoded into []map — no
-// intermediate []byte is retained after the call returns.
-func extractContainers(res interface{}) []map[string]interface{} {
-	b, err := json.Marshal(res)
-	if err != nil {
-		return nil
-	}
-	var out []map[string]interface{}
-	if err := json.Unmarshal(b, &out); err == nil && out != nil {
-		return out
-	}
-	// Fallback: some API versions wrap the list inside a top-level object.
-	var wrapper map[string]json.RawMessage
-	if err := json.Unmarshal(b, &wrapper); err != nil {
-		return nil
-	}
-	for _, raw := range wrapper {
-		var inner []map[string]interface{}
-		if err := json.Unmarshal(raw, &inner); err == nil {
-			return inner
-		}
-	}
-	return nil
-}
-
-// systemStatsSnapshot is a zero-allocation holder for the latest host metrics.
-// Fields are updated in-place under sysStatsMu — the struct itself is never re-allocated.
-type systemStatsSnapshot struct {
-	CPU               float64 `json:"cpu"`
-	Memory            uint64  `json:"memory"`
-	TotalMemory       uint64  `json:"total_memory"`
-	Cores             int     `json:"cores"`
-	RunningContainers int     `json:"running_containers"`
-	TotalContainers   int     `json:"total_containers"`
-}
-
-var (
-	latestSystemStats    *systemStatsSnapshot // pointer; nil until first tick
-	sysStatsMu           sync.RWMutex
-
-	// Live stats cache for the /api/containers endpoint and historical DB metrics
-	liveStatsCache = make(map[string]struct {
-		CPU            float64
-		Memory         int64
-		NetRxBytes     int64
-		NetTxBytes     int64
-		DiskReadBytes  int64
-		DiskWriteBytes int64
-	})
-	liveStatsMu sync.RWMutex
-
-
-	// Cache for container limits (avoid N+1 inspects)
-	containerLimitsCache = make(map[string]struct {
-		CPULimit float64
-		MemLimit int64
-		Fetched  time.Time
-	})
-	containerLimitsMu sync.RWMutex
-)
-
-// statPollLoop replaces the old per-container streaming goroutines with a single
-// controlled polling loop. Every 2 seconds it fetches one-shot stats for each
-// running container sequentially. This eliminates:
-//  - 23 persistent HTTP connections to the Docker daemon
-//  - 23 always-running JSON decode loops competing for liveStatsMu
-//  - Sawtooth CPU spikes from simultaneous mutex lock contention
-//
-// One-shot stats (Stream:false) are cheap: Docker computes cgroups metrics once
-// and closes the connection. The 2-second cadence keeps the UI feeling live.
-var (
-	globalContainerList   []map[string]interface{} // Will store simplified container info for broad use
-	globalContainerListMu sync.RWMutex
-	globalContainersCount int
-	globalRunningCount    int
-)
-
-func statPollLoop(cli *client.Client) {
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	var prevCPU = make(map[string][2]uint64) // id → [totalUsage, systemUsage]
-
-	for range ticker.C {
-		if cli == nil {
-			continue
-		}
-		res, err := cli.ContainerList(context.Background(), client.ContainerListOptions{All: true})
-		if err != nil {
-			continue
-		}
-
-		// Build set of currently running IDs so we can prune stale cache entries.
-		running := make(map[string]bool)
-		runCount := 0
-		totalCount := len(res.Items)
-		
-		for _, ctr := range res.Items {
-			if ctr.State == "running" {
-				running[ctr.ID] = true
-				runCount++
-			}
-		}
-
-		globalContainerListMu.Lock()
-		globalContainersCount = totalCount
-		globalRunningCount = runCount
-		globalContainerListMu.Unlock()
-
-		// Remove stale entries for stopped containers.
-		liveStatsMu.Lock()
-		for id := range liveStatsCache {
-			if !running[id] {
-				delete(liveStatsCache, id)
-				delete(prevCPU, id)
-			}
-		}
-		liveStatsMu.Unlock()
-
-		// Poll each running container — one HTTP round-trip per container, then done.
-		for id := range running {
-			pollOneStat(cli, id, prevCPU)
-		}
-	}
-}
-
-// pollOneStat fetches a single one-shot stats snapshot for one container and
-// updates liveStatsCache. prevCPU is used to compute accurate CPU deltas across polls.
-func pollOneStat(cli *client.Client, id string, prevCPU map[string][2]uint64) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	s, err := cli.ContainerStats(ctx, id, client.ContainerStatsOptions{Stream: false})
-	if err != nil {
-		return
-	}
-	defer s.Body.Close()
-
-	var stat struct {
-		CPUStats struct {
-			CPUUsage struct {
-				TotalUsage uint64 `json:"total_usage"`
-			} `json:"cpu_usage"`
-			SystemUsage uint64 `json:"system_cpu_usage"`
-			OnlineCPUs  uint32 `json:"online_cpus"`
-		} `json:"cpu_stats"`
-		MemoryStats struct {
-			Usage uint64            `json:"usage"`
-			Stats map[string]uint64 `json:"stats"`
-		} `json:"memory_stats"`
-		Networks map[string]struct {
-			RxBytes uint64 `json:"rx_bytes"`
-			TxBytes uint64 `json:"tx_bytes"`
-		} `json:"networks"`
-		BlkioStats struct {
-			IoServiceBytesRecursive []struct {
-				Op    string `json:"op"`
-				Value uint64 `json:"value"`
-			} `json:"io_service_bytes_recursive"`
-		} `json:"blkio_stats"`
-	}
-
-	if err := json.NewDecoder(s.Body).Decode(&stat); err != nil {
-		return
-	}
-
-	// CPU %: compute delta manually across the 2-second polling interval.
-	cpuPercent := 0.0
-	curTotal := stat.CPUStats.CPUUsage.TotalUsage
-	curSystem := stat.CPUStats.SystemUsage
-	
-	if prev, ok := prevCPU[id]; ok {
-		prevTotal := prev[0]
-		prevSys := prev[1]
-		
-		if curSystem > prevSys && curTotal > prevTotal {
-			cpuDelta := float64(curTotal - prevTotal)
-			sysDelta := float64(curSystem - prevSys)
-			onlineCPUs := float64(stat.CPUStats.OnlineCPUs)
-			if onlineCPUs == 0 {
-				onlineCPUs = float64(runtime.NumCPU())
-			}
-			cpuPercent = (cpuDelta / sysDelta) * onlineCPUs * 100.0
-		}
-	}
-	// Store current for next tick
-	prevCPU[id] = [2]uint64{curTotal, curSystem}
-
-	// Memory: subtract inactive_file (cgroups v2) or total_inactive_file (cgroups v1) for working-set usage.
-	memUsed := stat.MemoryStats.Usage
-	if v, ok := stat.MemoryStats.Stats["inactive_file"]; ok && v < memUsed {
-		memUsed -= v
-	} else if v, ok := stat.MemoryStats.Stats["total_inactive_file"]; ok && v < memUsed {
-		memUsed -= v
-	} else if v, ok := stat.MemoryStats.Stats["cache"]; ok && v < memUsed {
-		memUsed -= v
-	}
-
-	// Network / disk totals.
-	var curRx, curTx, curRead, curWrite uint64
-	for _, netIf := range stat.Networks {
-		curRx += netIf.RxBytes
-		curTx += netIf.TxBytes
-	}
-	for _, io := range stat.BlkioStats.IoServiceBytesRecursive {
-		switch strings.ToLower(io.Op) {
-		case "read":
-			curRead += io.Value
-		case "write":
-			curWrite += io.Value
-		}
-	}
-
-	liveStatsMu.Lock()
-	liveStatsCache[id] = struct {
-		CPU            float64
-		Memory         int64
-		NetRxBytes     int64
-		NetTxBytes     int64
-		DiskReadBytes  int64
-		DiskWriteBytes int64
-	}{
-		CPU:            cpuPercent,
-		Memory:         int64(memUsed),
-		NetRxBytes:     int64(curRx),
-		NetTxBytes:     int64(curTx),
-		DiskReadBytes:  int64(curRead),
-		DiskWriteBytes: int64(curWrite),
-	}
-	liveStatsMu.Unlock()
-}
-
-
-
-func systemStatsBroadcaster(cli *client.Client) {
-	// Pre-compute core count once — it essentially never changes at runtime.
-	cores, err := cpu.Counts(true)
-	if err != nil || cores == 0 {
-		cores = runtime.NumCPU()
-	}
-
-	runningContainers := 0
-	totalContainers := 0
-
-	// Seed the very first CPU reading in the background so it's ready after 1s.
-	var latestCPU float64
-	var cpuMu sync.Mutex
-	go func() {
-		for {
-			// cpu.Percent(interval, false) blocks for `interval` while measuring.
-			// Run it in this dedicated goroutine so the ticker loop never stalls.
-			cp, _ := cpu.Percent(2*time.Second, false)
-			cpuMu.Lock()
-			if len(cp) > 0 {
-				latestCPU = cp[0]
-			}
-			cpuMu.Unlock()
-		}
-	}()
-
-	// Tick every 2 seconds — fast enough for the UI, lightweight on the CPU.
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	ctrTicker := time.NewTicker(10 * time.Second)
-	defer ctrTicker.Stop()
-
-	for {
-		select {
-		case <-ctrTicker.C:
-			// Refresh container counts every 10s from global cache (no API call).
-			globalContainerListMu.RLock()
-			totalContainers = globalContainersCount
-			runningContainers = globalRunningCount
-			globalContainerListMu.RUnlock()
-		case <-ticker.C:
-			v, _ := mem.VirtualMemory()
-
-			cpuMu.Lock()
-			cpuVal := latestCPU
-			cpuMu.Unlock()
-
-			sysStatsMu.Lock()
-			if latestSystemStats == nil {
-				// First tick: allocate once. Never reallocated after this point.
-				latestSystemStats = &systemStatsSnapshot{}
-			}
-			latestSystemStats.CPU = cpuVal
-			latestSystemStats.Memory = v.Used
-			latestSystemStats.TotalMemory = v.Total
-			latestSystemStats.Cores = cores
-			latestSystemStats.RunningContainers = runningContainers
-			latestSystemStats.TotalContainers = totalContainers
-			sysStatsMu.Unlock()
-		}
-	}
-}
-
-func getRetentionDays() int {
-	var days int
-	err := db.DB.QueryRow("SELECT metrics_retention_days FROM settings WHERE id = 1").Scan(&days)
-	if err != nil || days <= 0 {
-		return 30
-	}
-	return days
-}
-
-func startStatsCollector(cli *client.Client) {
-	go systemStatsBroadcaster(cli)
-	go statPollLoop(cli)
-	// Initial collection (runs once synchronously to seed the DB immediately)
-	collectStats(cli)
-
-	ticker := time.NewTicker(30 * time.Second)
-	go func() {
-		tickCount := 0
-		for range ticker.C {
-			collectStats(cli)
-			tickCount++
-			// Run pruning every 10 ticks (10 * 30s = 5 minutes)
-			if tickCount%10 == 0 {
-				pruneOldStats()
-			}
-		}
-	}()
-}
-
-// pruneOldStats deletes metrics older than the configured retention period.
-// Uses a Go time.Time cutoff value so it works correctly with both SQLite and PostgreSQL.
-func pruneOldStats() {
-	retentionDays := getRetentionDays()
-	cutoff := time.Now().AddDate(0, 0, -retentionDays)
-	db.GormDB.Where("timestamp < ?", cutoff).Delete(&db.Stat{})
-	db.GormDB.Where("timestamp < ?", cutoff).Delete(&db.SystemStat{})
-
-	// Prune audit logs and alert history at 3x the metrics retention window.
-	// Audit and alert history are critical records — we keep them much longer than raw metrics.
-	auditCutoff := time.Now().AddDate(0, 0, -(retentionDays * 3))
-	db.GormDB.Where("timestamp < ?", auditCutoff).Delete(&db.AuditLog{})
-	db.GormDB.Where("timestamp < ?", auditCutoff).Delete(&db.AlertHistory{})
-}
-
-
-var (
-	prevStats = make(map[string]struct {
-		TotalUsage  uint64
-		SystemUsage uint64
-		NetRx       uint64
-		NetTx       uint64
-		DiskRead    uint64
-		DiskWrite   uint64
-	})
-	prevStatsMu sync.Mutex
-)
-
-func collectStats(cli *client.Client) {
-	// System Stats
-	v, _ := mem.VirtualMemory()
-	// Use interval=0 to return the last measured CPU value instantly.
-	// collectStats runs every 30s — there's no need to block for 1s here.
-	// The dedicated cpu-sampling goroutine in systemStatsBroadcaster keeps the value fresh.
-	cp, _ := cpu.Percent(0, false)
-	netStats, _ := net.IOCounters(false)
-	diskStats, _ := disk.IOCounters()
-
-	var hostNetRx, hostNetTx, hostDiskRead, hostDiskWrite uint64
-	if len(netStats) > 0 {
-		hostNetRx = netStats[0].BytesRecv
-		hostNetTx = netStats[0].BytesSent
-	}
-	for _, stat := range diskStats {
-		hostDiskRead += stat.ReadBytes
-		hostDiskWrite += stat.WriteBytes
-	}
-
-	var cpVal float64
-	if len(cp) > 0 {
-		cpVal = cp[0]
-	}
-
-	var sysRxDelta, sysTxDelta, sysReadDelta, sysWriteDelta uint64
-	prevStatsMu.Lock()
-	prevHost, ok := prevStats["__HOST__"]
-	if ok {
-		if hostNetRx > prevHost.NetRx {
-			sysRxDelta = hostNetRx - prevHost.NetRx
-		}
-		if hostNetTx > prevHost.NetTx {
-			sysTxDelta = hostNetTx - prevHost.NetTx
-		}
-		if hostDiskRead > prevHost.DiskRead {
-			sysReadDelta = hostDiskRead - prevHost.DiskRead
-		}
-		if hostDiskWrite > prevHost.DiskWrite {
-			sysWriteDelta = hostDiskWrite - prevHost.DiskWrite
-		}
-	}
-	prevStats["__HOST__"] = struct {
-		TotalUsage  uint64
-		SystemUsage uint64
-		NetRx       uint64
-		NetTx       uint64
-		DiskRead    uint64
-		DiskWrite   uint64
-	}{
-		NetRx:     hostNetRx,
-		NetTx:     hostNetTx,
-		DiskRead:  hostDiskRead,
-		DiskWrite: hostDiskWrite,
-	}
-	prevStatsMu.Unlock()
-
-	sysStat := db.SystemStat{
-		CPU:            cpVal,
-		Memory:         int64(v.Used),
-		NetRxBytes:     int64(sysRxDelta),
-		NetTxBytes:     int64(sysTxDelta),
-		DiskReadBytes:  int64(sysReadDelta),
-		DiskWriteBytes: int64(sysWriteDelta),
-	}
-	var statsToInsert []db.Stat
-	liveStatsMu.RLock()
-	for id, stats := range liveStatsCache {
-		var rxDelta, txDelta, readDelta, writeDelta uint64
-
-		prevStatsMu.Lock()
-		prev, ok := prevStats[id]
-		if ok {
-			if uint64(stats.NetRxBytes) > prev.NetRx {
-				rxDelta = uint64(stats.NetRxBytes) - prev.NetRx
-			}
-			if uint64(stats.NetTxBytes) > prev.NetTx {
-				txDelta = uint64(stats.NetTxBytes) - prev.NetTx
-			}
-			if uint64(stats.DiskReadBytes) > prev.DiskRead {
-				readDelta = uint64(stats.DiskReadBytes) - prev.DiskRead
-			}
-			if uint64(stats.DiskWriteBytes) > prev.DiskWrite {
-				writeDelta = uint64(stats.DiskWriteBytes) - prev.DiskWrite
-			}
-		}
-		prevStats[id] = struct {
-			TotalUsage  uint64
-			SystemUsage uint64
-			NetRx       uint64
-			NetTx       uint64
-			DiskRead    uint64
-			DiskWrite   uint64
-		}{
-			TotalUsage:  0, // Handled continuously in stream
-			SystemUsage: 0,
-			NetRx:       uint64(stats.NetRxBytes),
-			NetTx:       uint64(stats.NetTxBytes),
-			DiskRead:    uint64(stats.DiskReadBytes),
-			DiskWrite:   uint64(stats.DiskWriteBytes),
-		}
-		prevStatsMu.Unlock()
-
-		stat := db.Stat{
-			ContainerID:    id,
-			CPU:            stats.CPU,
-			Memory:         stats.Memory,
-			NetRxBytes:     int64(rxDelta),
-			NetTxBytes:     int64(txDelta),
-			DiskReadBytes:  int64(readDelta),
-			DiskWriteBytes: int64(writeDelta),
-		}
-		statsToInsert = append(statsToInsert, stat)
-	}
-	liveStatsMu.RUnlock()
-
-	if LighthouseMode == "spoke" {
-		cluster.PushToHub("system_stat", sysStat)
-		for _, stat := range statsToInsert {
-			cluster.PushToHub("container_stat", stat)
-		}
-	} else {
-		db.GormDB.Transaction(func(tx *gorm.DB) error {
-			if err := tx.Create(&sysStat).Error; err != nil {
-				return err
-			}
-			if len(statsToInsert) > 0 {
-				if err := tx.Create(&statsToInsert).Error; err != nil {
-					return err
-				}
-			}
-			return nil
-		})
-	}
-}
-
-func seedAdmin() {
-	var count int64
-	db.GormDB.Model(&db.User{}).Where("username = ?", "admin").Count(&count)
-	if count == 0 {
-		const plain = "admin123"
-		log.Println("Default admin account created (username: admin, password: admin123). Change the password on first login.")
-
-		h, err := bcrypt.GenerateFromPassword([]byte(plain), bcrypt.DefaultCost)
-		if err != nil {
-			log.Fatalf("Failed to hash default admin password: %v", err)
-		}
-
-		adminUser := db.User{
-			Username:        "admin",
-			Password:        string(h),
-			IsAdmin:         true,
-			CanStart:        true,
-			CanStop:         true,
-			CanRestart:      true,
-			CanDelete:       true,
-			CanShell:        true,
-			PasswordChanged: false,
-		}
-		if err := db.GormDB.Create(&adminUser).Error; err != nil {
-			log.Fatalf("Failed to create default admin: %v", err)
-		}
-	}
-
-	db.GormDB.Model(&db.User{}).Where("is_admin = ?", true).Updates(map[string]interface{}{
-		"can_start": true, "can_stop": true, "can_restart": true, "can_delete": true, "can_shell": true,
-	})
-}
-
-
-var validIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
-
-func isValidContainerID(id string) bool {
-	return validIDRegex.MatchString(id)
-}
-
-func cleanupStaleAlerts() {
-	res := db.GormDB.Model(&db.AlertHistory{}).
-		Where("delivery_status = ?", "").
-		Update("delivery_status", "Failed (Stale)")
-	if res.Error != nil {
-		log.Printf("Failed to cleanup stale alerts: %v", res.Error)
-	} else if res.RowsAffected > 0 {
-		log.Printf("Cleaned up %d stale pending alerts.", res.RowsAffected)
-	}
-}
-
-func triggerRetroactiveScans(cli *client.Client) {
-	log.Println("Starting retroactive vulnerability scan sweep...")
-	containers, err := cli.ContainerList(context.Background(), client.ContainerListOptions{All: false})
-	if err != nil {
-		log.Printf("Failed to list containers for retroactive scan: %v", err)
-		return
-	}
-
-	for _, c := range containers.Items {
-		imageName := c.Image
-		if imageName == "" {
-			continue
-		}
-		
-		var count int64
-		db.GormDB.Model(&db.ImageScanResult{}).Where("image = ?", imageName).Count(&count)
-		if count == 0 {
-			log.Printf("No previous scan found for %s, executing retroactive scan...", imageName)
-			_, _ = scanner.ExecuteAndSaveScan(context.Background(), cli, imageName)
-		}
-	}
-	log.Println("Retroactive vulnerability scan sweep complete.")
 }

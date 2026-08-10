@@ -17,25 +17,25 @@ type AlertRule struct {
 	ContainerPattern string `json:"container_pattern"`
 	// EventTypes is a comma-separated list of Docker daemon event actions to
 	// watch.  Supported values: "die", "oom", "health_status".
-	EventTypes      string `json:"event_types"`
+	EventTypes string `json:"event_types"`
 	// LogPattern is a Go regular expression that is matched against every log
 	// line produced by a targeted container (e.g. "(?i)error|exception|fatal").
 	// An empty string disables log scanning for this rule.
-	LogPattern      string `json:"log_pattern"`
-	Enabled         bool   `json:"enabled"`
+	LogPattern string `json:"log_pattern"`
+	Enabled    bool   `json:"enabled"`
 	// CooldownSeconds is the minimum number of seconds that must elapse between
 	// two consecutive notifications for the same rule+container, preventing alert storms.
-	CooldownSeconds int    `json:"cooldown_seconds"`
-	EnableSlack            bool    `json:"enable_slack"`
-	EnableMSTeams          bool    `json:"enable_msteams"`
-	EnableGChat            bool    `json:"enable_gchat"`
-	EnableGenericWebhook   bool    `json:"enable_generic_webhook"`
-	EnableEmail     bool   `json:"enable_email"`
-	EmailAddress    string `json:"email_address"`
-	MetricCPUThreshold  float64    `json:"metric_cpu_threshold"`
-	MetricMemThreshold  int64      `json:"metric_mem_threshold"`     // MB
-	MetricStorageThreshold int64   `json:"metric_storage_threshold"` // percent (0-100)
-	CreatedAt       *time.Time `json:"created_at,omitempty"`
+	CooldownSeconds        int        `json:"cooldown_seconds"`
+	EnableSlack            bool       `json:"enable_slack"`
+	EnableMSTeams          bool       `json:"enable_msteams"`
+	EnableGChat            bool       `json:"enable_gchat"`
+	EnableGenericWebhook   bool       `json:"enable_generic_webhook"`
+	EnableEmail            bool       `json:"enable_email"`
+	EmailAddress           string     `json:"email_address"`
+	MetricCPUThreshold     float64    `json:"metric_cpu_threshold"`
+	MetricMemThreshold     int64      `json:"metric_mem_threshold"`     // MB
+	MetricStorageThreshold int64      `json:"metric_storage_threshold"` // percent (0-100)
+	CreatedAt              *time.Time `json:"created_at,omitempty"`
 
 	// compiledContainerRe and compiledLogRe are compiled once at rule-load time
 	// and reused for every match call. This eliminates the overhead of
@@ -66,7 +66,7 @@ type NotificationPayload struct {
 	RuleName      string `json:"rule_name"`
 	ContainerName string `json:"container_name"`
 	// Type is either "event" (Docker lifecycle) or "log" (pattern match).
-	Type      string `json:"type"`
+	Type string `json:"type"`
 	// Details carries the raw Docker event action or the matching log line.
 	Details   string `json:"details"`
 	Timestamp string `json:"timestamp"`

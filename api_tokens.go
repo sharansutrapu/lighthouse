@@ -17,8 +17,8 @@ func generateApiTokenString() string {
 	return "lh_pat_" + hex.EncodeToString(b)
 }
 
-func registerApiTokenRoutes(r *echo.Group) {
-	r.GET("/tokens", func(c echo.Context) error {
+func handleGETTokens() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
 		claims := token.Claims.(*UserClaims)
 
@@ -33,7 +33,7 @@ func registerApiTokenRoutes(r *echo.Group) {
 			CreatedAt time.Time `json:"created_at"`
 			LastUsed  time.Time `json:"last_used"`
 		}
-		
+
 		var res []tokenResponse
 		for _, t := range tokens {
 			res = append(res, tokenResponse{
@@ -48,9 +48,11 @@ func registerApiTokenRoutes(r *echo.Group) {
 		}
 
 		return c.JSON(http.StatusOK, res)
-	})
+	}
+}
 
-	r.POST("/tokens", func(c echo.Context) error {
+func handlePOSTTokens() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
 		claims := token.Claims.(*UserClaims)
 
@@ -65,9 +67,9 @@ func registerApiTokenRoutes(r *echo.Group) {
 		}
 
 		apiToken := db.ApiToken{
-			UserID:   uint(claims.ID),
-			Name:     req.Name,
-			Token:    generateApiTokenString(),
+			UserID: uint(claims.ID),
+			Name:   req.Name,
+			Token:  generateApiTokenString(),
 		}
 
 		if err := db.GormDB.Create(&apiToken).Error; err != nil {
@@ -75,9 +77,11 @@ func registerApiTokenRoutes(r *echo.Group) {
 		}
 
 		return c.JSON(http.StatusOK, apiToken)
-	})
+	}
+}
 
-	r.DELETE("/tokens/:id", func(c echo.Context) error {
+func handleDELETETokensId() echo.HandlerFunc {
+	return func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
 		claims := token.Claims.(*UserClaims)
 		id := c.Param("id")
@@ -87,5 +91,11 @@ func registerApiTokenRoutes(r *echo.Group) {
 		}
 
 		return c.JSON(http.StatusOK, map[string]string{"message": "Token deleted"})
-	})
+	}
+}
+
+func registerApiTokenRoutes(r *echo.Group) {
+	r.GET("/tokens", handleGETTokens())
+	r.POST("/tokens", handlePOSTTokens())
+	r.DELETE("/tokens/:id", handleDELETETokensId())
 }

@@ -12,6 +12,8 @@ import (
 	"github.com/moby/moby/client"
 )
 
+var execCommandContext = exec.CommandContext
+
 var scanSem = make(chan struct{}, 2) // Limit to 2 concurrent trivy scans
 
 // ScanImageFunc runs aquasec/trivy against the given docker image name using the local docker binary.
@@ -29,8 +31,8 @@ var ScanImageFunc = func(ctx context.Context, cli *client.Client, imageName stri
 	execCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(execCtx, "docker", "run", "--rm", 
-		"-v", "/var/run/docker.sock:/var/run/docker.sock", 
+	cmd := execCommandContext(execCtx, "docker", "run", "--rm",
+		"-v", "/var/run/docker.sock:/var/run/docker.sock",
 		"aquasec/trivy:latest", "image", "-f", "json", "--quiet", "--timeout", "5m", imageName)
 
 	var stdout bytes.Buffer

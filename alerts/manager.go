@@ -56,7 +56,7 @@ type AlertManager struct {
 	downState   map[string]bool
 
 	// tailsMu guards the activeTails map.
-	tailsMu    sync.Mutex
+	tailsMu     sync.Mutex
 	activeTails map[string]context.CancelFunc // containerID → cancel
 
 	// debounceMu guards groupedDebounce
@@ -89,16 +89,16 @@ var Global *AlertManager
 func NewAlertManager(cli *client.Client) *AlertManager {
 	ctx, cancel := context.WithCancel(context.Background())
 	Global = &AlertManager{
-		cli:           cli,
-		rules:         make(map[int64]*AlertRule),
-		lastTriggered: make(map[string]time.Time),
-		startedAt:     make(map[string]time.Time),
-		activeScans:   make(map[string]time.Time),
-		downState:     make(map[string]bool),
-		activeTails:   make(map[string]context.CancelFunc),
+		cli:             cli,
+		rules:           make(map[int64]*AlertRule),
+		lastTriggered:   make(map[string]time.Time),
+		startedAt:       make(map[string]time.Time),
+		activeScans:     make(map[string]time.Time),
+		downState:       make(map[string]bool),
+		activeTails:     make(map[string]context.CancelFunc),
 		groupedDebounce: make(map[string]*ContainerDebounceGroup),
-		ctx:           ctx,
-		cancel:        cancel,
+		ctx:             ctx,
+		cancel:          cancel,
 	}
 	return Global
 }
@@ -141,22 +141,22 @@ func (am *AlertManager) ReloadRules() {
 	newRules := make(map[int64]*AlertRule)
 	for _, dbR := range dbRules {
 		r := &AlertRule{
-			ID:               int64(dbR.ID),
-			Name:             dbR.Name,
-			ContainerPattern: dbR.ContainerPattern,
-			EventTypes:       dbR.EventTypes,
-			LogPattern:       dbR.LogPattern,
-			Enabled:          dbR.Enabled,
-			CooldownSeconds:  dbR.CooldownSeconds,
-			EnableSlack:      dbR.EnableSlack,
-			EnableMSTeams:    dbR.EnableMSTeams,
-			EnableGChat:      dbR.EnableGChat,
-			EnableGenericWebhook: dbR.EnableGenericWebhook,
-			EnableEmail:      dbR.EnableEmail,
-			EmailAddress:     dbR.EmailAddress,
-			MetricCPUThreshold:      dbR.MetricCpuThreshold,
-			MetricMemThreshold:      dbR.MetricMemThreshold,
-			MetricStorageThreshold:  dbR.MetricStorageThreshold,
+			ID:                     int64(dbR.ID),
+			Name:                   dbR.Name,
+			ContainerPattern:       dbR.ContainerPattern,
+			EventTypes:             dbR.EventTypes,
+			LogPattern:             dbR.LogPattern,
+			Enabled:                dbR.Enabled,
+			CooldownSeconds:        dbR.CooldownSeconds,
+			EnableSlack:            dbR.EnableSlack,
+			EnableMSTeams:          dbR.EnableMSTeams,
+			EnableGChat:            dbR.EnableGChat,
+			EnableGenericWebhook:   dbR.EnableGenericWebhook,
+			EnableEmail:            dbR.EnableEmail,
+			EmailAddress:           dbR.EmailAddress,
+			MetricCPUThreshold:     dbR.MetricCpuThreshold,
+			MetricMemThreshold:     dbR.MetricMemThreshold,
+			MetricStorageThreshold: dbR.MetricStorageThreshold,
 		}
 		// Compile regex patterns once at load time so hot-paths
 		// (per-event, per-log-line) don't recompile them repeatedly.
@@ -321,7 +321,7 @@ func (am *AlertManager) processContainerEvent(msg events.Message) { //nolint:goc
 		am.startedAtMu.Lock()
 		am.startedAt[containerName] = time.Now()
 		am.startedAtMu.Unlock()
-		
+
 		// Check for auto-scan
 		go func() {
 			var settings db.Setting
@@ -338,7 +338,7 @@ func (am *AlertManager) processContainerEvent(msg events.Message) { //nolint:goc
 						am.scanThrottleMu.Unlock()
 
 						log.Printf("[Alerts] Auto-scanning image %s for started container %s", img, containerName)
-						// The scanner has built-in deduplication for recent scans (1h cache), 
+						// The scanner has built-in deduplication for recent scans (1h cache),
 						// but we'll fire it off here.
 						_, _ = scanner.ExecuteAndSaveScan(context.Background(), am.cli, img)
 					}
@@ -587,6 +587,8 @@ func (am *AlertManager) evaluateLogLine(containerName, line string) {
 
 // ─── Trigger & Cooldown ───────────────────────────────────────────────────────
 
+var groupingWindow = 30 * time.Second
+
 // triggerAlert enqueues an alert into the container's 30-second grouping
 // window. The per-rule cooldown is evaluated at the time the window fires
 // (delivery), not at the time the alert triggers. This ensures:
@@ -603,8 +605,8 @@ func (am *AlertManager) triggerAlert(rule *AlertRule, containerName, alertType, 
 		}
 		am.groupedDebounce[containerName] = group
 
-		// 30-second grouping window. After it fires we evaluate cooldowns and deliver.
-		group.Timer = time.AfterFunc(30*time.Second, func() {
+		// Grouping window. After it fires we evaluate cooldowns and deliver.
+		group.Timer = time.AfterFunc(groupingWindow, func() {
 			am.debounceMu.Lock()
 			g, exists := am.groupedDebounce[containerName]
 			if !exists {
@@ -679,7 +681,7 @@ func (am *AlertManager) deliverGroup(containerName string, triggers []TriggeredR
 
 		// Aggregate info for digest payload
 		ruleNames = append(ruleNames, tr.Rule.Name)
-		
+
 		enrichedDetails := tr.Details
 		if tr.Count > 1 {
 			enrichedDetails = fmt.Sprintf("%s (x%d occurrences)", tr.Details, tr.Count)
@@ -687,10 +689,18 @@ func (am *AlertManager) deliverGroup(containerName string, triggers []TriggeredR
 		combinedDetails.WriteString(fmt.Sprintf("[%s] %s\n", tr.Rule.Name, enrichedDetails))
 
 		// OR delivery methods
-		if tr.Rule.EnableSlack { sendSlack = true }
-		if tr.Rule.EnableMSTeams { sendMSTeams = true }
-		if tr.Rule.EnableGChat { sendGChat = true }
-		if tr.Rule.EnableGenericWebhook { sendWebhook = true }
+		if tr.Rule.EnableSlack {
+			sendSlack = true
+		}
+		if tr.Rule.EnableMSTeams {
+			sendMSTeams = true
+		}
+		if tr.Rule.EnableGChat {
+			sendGChat = true
+		}
+		if tr.Rule.EnableGenericWebhook {
+			sendWebhook = true
+		}
 		if tr.Rule.EnableEmail && tr.Rule.EmailAddress != "" {
 			sendEmail = true
 			emailSet[tr.Rule.EmailAddress] = true
@@ -714,20 +724,38 @@ func (am *AlertManager) deliverGroup(containerName string, triggers []TriggeredR
 	gchatURLs := make(map[string]bool)
 	genericURLs := make(map[string]bool)
 
-	if sendSlack && setting.SlackWebhookUrl != "" { slackURLs[setting.SlackWebhookUrl] = true }
-	if sendMSTeams && setting.MSTeamsWebhookUrl != "" { msteamsURLs[setting.MSTeamsWebhookUrl] = true }
-	if sendGChat && setting.GChatWebhookUrl != "" { gchatURLs[setting.GChatWebhookUrl] = true }
-	if sendWebhook && setting.GenericWebhookUrl != "" { genericURLs[setting.GenericWebhookUrl] = true }
+	if sendSlack && setting.SlackWebhookUrl != "" {
+		slackURLs[setting.SlackWebhookUrl] = true
+	}
+	if sendMSTeams && setting.MSTeamsWebhookUrl != "" {
+		msteamsURLs[setting.MSTeamsWebhookUrl] = true
+	}
+	if sendGChat && setting.GChatWebhookUrl != "" {
+		gchatURLs[setting.GChatWebhookUrl] = true
+	}
+	if sendWebhook && setting.GenericWebhookUrl != "" {
+		genericURLs[setting.GenericWebhookUrl] = true
+	}
 
 	for _, team := range teams {
 		if team.AllowedContainers != "" {
 			matched, err := regexp.MatchString(team.AllowedContainers, containerName)
 			if err == nil && matched {
-				if sendSlack && team.SlackWebhookUrl != "" { slackURLs[team.SlackWebhookUrl] = true }
-				if sendMSTeams && team.MSTeamsWebhookUrl != "" { msteamsURLs[team.MSTeamsWebhookUrl] = true }
-				if sendGChat && team.GChatWebhookUrl != "" { gchatURLs[team.GChatWebhookUrl] = true }
-				if sendWebhook && team.GenericWebhookUrl != "" { genericURLs[team.GenericWebhookUrl] = true }
-				if sendEmail && team.AlertsEmailAddress != "" { emailSet[team.AlertsEmailAddress] = true }
+				if sendSlack && team.SlackWebhookUrl != "" {
+					slackURLs[team.SlackWebhookUrl] = true
+				}
+				if sendMSTeams && team.MSTeamsWebhookUrl != "" {
+					msteamsURLs[team.MSTeamsWebhookUrl] = true
+				}
+				if sendGChat && team.GChatWebhookUrl != "" {
+					gchatURLs[team.GChatWebhookUrl] = true
+				}
+				if sendWebhook && team.GenericWebhookUrl != "" {
+					genericURLs[team.GenericWebhookUrl] = true
+				}
+				if sendEmail && team.AlertsEmailAddress != "" {
+					emailSet[team.AlertsEmailAddress] = true
+				}
 			}
 		}
 	}
@@ -816,7 +844,7 @@ func (am *AlertManager) deliverGroup(containerName string, triggers []TriggeredR
 					channelsMu.Unlock()
 
 					err := DeliverEmail(setting.SmtpHost, setting.SmtpPort, setting.SmtpUser, setting.SmtpPass, toAddr, ccAddrs, digestPayload)
-					
+
 					channelsMu.Lock()
 					if err != nil {
 						log.Printf("[Alerts] Email delivery failed for digest: %v", err)
@@ -905,7 +933,6 @@ func (am *AlertManager) evaluateMetrics() {
 		log.Printf("[Alerts] evaluateMetrics: failed to query recent stats: %v", err)
 		return
 	}
-
 
 	recentStats := make(map[string]db.Stat)
 	seen := make(map[string]bool)
@@ -1009,7 +1036,7 @@ func (am *AlertManager) evaluateStorageMetrics(activeRules []*AlertRule) {
 	}
 
 	// Get disk usage for root partition.
-	usage, err := disk.Usage("/")
+	usage, err := diskUsage("/")
 	if err != nil {
 		log.Printf("[Alerts] evaluateStorageMetrics: failed to get disk usage: %v", err)
 		return
@@ -1017,7 +1044,7 @@ func (am *AlertManager) evaluateStorageMetrics(activeRules []*AlertRule) {
 	diskPercent := usage.UsedPercent // already a percentage 0-100
 
 	// Also check system memory usage as a percentage.
-	vmStat, err := mem.VirtualMemory()
+	vmStat, err := memVirtualMemory()
 	if err != nil {
 		log.Printf("[Alerts] evaluateStorageMetrics: failed to get memory: %v", err)
 		return
@@ -1039,3 +1066,9 @@ func (am *AlertManager) evaluateStorageMetrics(activeRules []*AlertRule) {
 		}
 	}
 }
+
+// Variables for mocking in tests
+var (
+	diskUsage        = disk.Usage
+	memVirtualMemory = mem.VirtualMemory
+)

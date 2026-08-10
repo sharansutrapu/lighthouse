@@ -1,10 +1,10 @@
 package alerts
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -12,11 +12,19 @@ import (
 	"lighthouse/scanner"
 
 	"context"
-	"github.com/moby/moby/client"
-	"github.com/moby/moby/api/types/events"
 	"github.com/glebarez/sqlite"
+	"github.com/moby/moby/api/types/events"
+	"github.com/moby/moby/client"
 	"gorm.io/gorm"
 )
+
+type mockTransport struct {
+	fn func(req *http.Request) (*http.Response, error)
+}
+
+func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return m.fn(req)
+}
 
 func setupTestManager(t *testing.T) *AlertManager {
 	// Initialize a fresh in-memory SQLite for DB dependencies
@@ -25,7 +33,7 @@ func setupTestManager(t *testing.T) *AlertManager {
 	if err != nil {
 		t.Fatalf("Failed to open DB: %v", err)
 	}
-	db.GormDB.AutoMigrate(&db.AlertRule{}, &db.AlertHistory{}, &db.Setting{})
+	db.GormDB.AutoMigrate(&db.AlertRule{}, &db.AlertHistory{}, &db.Setting{}, &db.ImageScanResult{})
 	db.GormDB.Create(&db.Setting{ID: 1}) // Needed for deliverAlert
 
 	am := NewAlertManager(nil)
@@ -115,19 +123,26 @@ func TestCooldownPerContainerIsolation(t *testing.T) {
 
 func TestWebhookDelivery(t *testing.T) {
 	received := false
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		received = true
-		body, _ := io.ReadAll(r.Body)
-		var payload NotificationPayload
-		if err := json.Unmarshal(body, &payload); err != nil {
-			t.Errorf("Failed to parse payload: %v", err)
-		}
-		if payload.RuleName != "Test Webhook Rule" {
-			t.Errorf("Expected rule name 'Test Webhook Rule', got %s", payload.RuleName)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
+	origTransport := httpClient.Transport
+	httpClient.Transport = &dockerMockTransport{
+		roundTripFunc: func(req *http.Request) (*http.Response, error) {
+			received = true
+			body, _ := io.ReadAll(req.Body)
+			var payload NotificationPayload
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Errorf("Failed to parse payload: %v", err)
+			}
+			if payload.RuleName != "Test Webhook Rule" {
+				t.Errorf("Expected rule name 'Test Webhook Rule', got %s", payload.RuleName)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewBuffer(nil)),
+				Header:     make(http.Header),
+			}, nil
+		},
+	}
+	defer func() { httpClient.Transport = origTransport }()
 
 	payload := NotificationPayload{
 		RuleName:      "Test Webhook Rule",
@@ -140,7 +155,7 @@ func TestWebhookDelivery(t *testing.T) {
 	SkipSSRFCheck = true
 	defer func() { SkipSSRFCheck = false }()
 
-	configJSON := `{"url":"` + ts.URL + `"}`
+	configJSON := `{"url":"http://dummy"}`
 	err := DeliverNotification("generic_webhook", configJSON, payload)
 	if err != nil {
 		t.Fatalf("DeliverNotification failed: %v", err)
@@ -189,7 +204,7 @@ func TestEvaluateLogLine(t *testing.T) {
 
 	// Should not match container pattern
 	am.evaluateLogLine("other-app", "This is an ERROR line")
-	
+
 	// Should not match log pattern
 	am.evaluateLogLine("test-app", "This is an INFO line")
 

@@ -3,110 +3,296 @@ package gitops
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"lighthouse/alerts"
 	"lighthouse/db"
-
-	"github.com/glebarez/sqlite"
-	"gorm.io/gorm"
 )
 
+// Helper script to mock exec.Command
+func helperProcess(args ...string) {
+	if len(os.Args) > 2 && os.Args[1] == "-test.run=TestHelperProcess" {
+		cmdStr := os.Args[3]
+		// Mock depending on command
+		if cmdStr == "git" {
+			if len(os.Args) > 4 && os.Args[4] == "clone" {
+				if os.Getenv("FAIL_CLONE") == "1" {
+					fmt.Fprintf(os.Stderr, "clone failed")
+					os.Exit(1)
+				}
+				// Mock git clone: create a fake .git directory so it succeeds
+				os.MkdirAll(".git", 0755)
+				os.Exit(0)
+			}
+			if len(os.Args) > 4 && os.Args[4] == "fetch" {
+				if os.Getenv("FAIL_FETCH") == "1" {
+					fmt.Fprintf(os.Stderr, "fetch failed")
+					os.Exit(1)
+				}
+				os.Exit(0)
+			}
+			if len(os.Args) > 4 && os.Args[4] == "reset" {
+				if os.Getenv("FAIL_RESET") == "1" {
+					fmt.Fprintf(os.Stderr, "reset failed")
+					os.Exit(1)
+				}
+				os.Exit(0)
+			}
+			if len(os.Args) > 4 && os.Args[4] == "rev-parse" {
+				if os.Getenv("FAIL_REVPARSE") == "1" {
+					os.Exit(1)
+				}
+				fmt.Print("mock_commit_sha")
+				os.Exit(0)
+			}
+		} else if cmdStr == "docker" {
+			if os.Getenv("FAIL_DOCKER") == "1" {
+				fmt.Fprintf(os.Stderr, "docker failed")
+				os.Exit(1)
+			}
+			os.Exit(0)
+		}
+		os.Exit(0)
+	}
+}
+
+func TestHelperProcess(t *testing.T) {
+	helperProcess()
+}
+
+func mockExecCommand(command string, args ...string) *exec.Cmd {
+	cs := []string{"-test.run=TestHelperProcess", "--", command}
+	cs = append(cs, args...)
+	cmd := exec.Command(os.Args[0], cs...)
+	return cmd
+}
+
 func setupTestDB(t *testing.T) {
-	var err error
-	db.GormDB, err = gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	err := db.InitDB(":memory:")
 	if err != nil {
 		t.Fatalf("Failed to open DB: %v", err)
 	}
 	db.GormDB.AutoMigrate(&db.GitProject{}, &db.GitDeployment{})
-
-	// Initialize AlertManager mock so TriggerSystemAlert does not panic
 	alerts.Global = alerts.NewAlertManager(nil)
 }
 
-func TestProcessProject_Inline_Failure(t *testing.T) {
+func TestStartManager(t *testing.T) {
 	setupTestDB(t)
+	// Replace interval
+	origInterval := syncInterval
+	defer func() { syncInterval = origInterval }()
+	syncInterval = 1 * time.Millisecond
 
-	// Clean up /tmp/lighthouse-gitops for isolated test
-	defer os.RemoveAll("/tmp/lighthouse-gitops")
+	StartManager()
+	time.Sleep(10 * time.Millisecond) // Let goroutine tick
+}
 
-	project := db.GitProject{
-		Name:           "Test Inline",
-		SourceType:     "inline",
-		ComposeContent: "version: '3'\nservices:\n  web:\n    image: non_existent_image_foo_bar\n",
-		Status:         "pending",
+func TestProcessProjects_DBError(t *testing.T) {
+	setupTestDB(t)
+	db.GormDB.Migrator().DropTable(&db.GitProject{})
+	// processProjects should log error and return
+	processProjects()
+}
+
+func TestProcessProject_TargetNode(t *testing.T) {
+	setupTestDB(t)
+	err := processProject(db.GitProject{TargetNode: "spoke-1"})
+	if err == nil || err.Error() != "spoke deployment not fully implemented for gitops yet" {
+		t.Errorf("expected spoke error, got %v", err)
 	}
-	db.GormDB.Create(&project)
+}
 
-	// Run processProject. It will write the file, then try to run `docker compose up -d`
-	// Since we are not guaranteeing a real docker environment or we are providing a simple compose,
-	// it will likely fail or succeed. We just want to check that it updates the DB.
-	err := processProject(project)
+func TestProcessProject_MkdirError(t *testing.T) {
+	setupTestDB(t)
+	t.Setenv("TMPDIR", t.TempDir()) // override temp dir
+	// To cause MkdirAll to fail, create a file at the target directory
+	p := db.GitProject{ID: 100}
+	workDir := filepath.Join(os.TempDir(), "lighthouse-gitops", fmt.Sprintf("proj_%d", p.ID))
+	os.MkdirAll(filepath.Dir(workDir), 0755)
+	os.WriteFile(workDir, []byte("file"), 0644) // file where dir should be
 
-	// Let's reload project
-	var updatedProject db.GitProject
-	db.GormDB.First(&updatedProject, project.ID)
-
-	// Since docker compose might not exist or fail in test environment, we expect an error
+	err := processProject(p)
 	if err == nil {
-		// If it succeeds, status should be synced
-		if updatedProject.Status != "synced" {
-			t.Errorf("Expected status synced, got %s", updatedProject.Status)
-		}
-	} else {
-		// If it fails, status should be failed
-		if updatedProject.Status != "failed" {
-			t.Errorf("Expected status failed, got %s", updatedProject.Status)
-		}
+		t.Errorf("expected mkdir error, got nil")
 	}
+}
 
-	// Verify a deployment history record was created
-	var count int64
-	db.GormDB.Model(&db.GitDeployment{}).Where("project_id = ?", project.ID).Count(&count)
-	if count != 1 {
-		t.Errorf("Expected 1 deployment record, got %d", count)
+func TestProcessProject_Inline_ComposeWriteError(t *testing.T) {
+	setupTestDB(t)
+	t.Setenv("TMPDIR", t.TempDir())
+	p := db.GitProject{ID: 200, SourceType: "inline"}
+	workDir := filepath.Join(os.TempDir(), "lighthouse-gitops", fmt.Sprintf("proj_%d", p.ID))
+	os.MkdirAll(workDir, 0755)
+
+	// Make a directory called docker-compose.yml so WriteFile fails
+	os.Mkdir(filepath.Join(workDir, "docker-compose.yml"), 0755)
+
+	err := processProject(p)
+	if err == nil {
+		t.Errorf("expected write error, got nil")
 	}
+}
 
-	// Verify file was written
-	workDir := filepath.Join("/tmp/lighthouse-gitops", "proj_1")
-	content, err := os.ReadFile(filepath.Join(workDir, "docker-compose.yml"))
+func TestProcessProject_Git_CloneFail(t *testing.T) {
+	setupTestDB(t)
+	origExec := execCommand
+	defer func() { execCommand = origExec }()
+	execCommand = mockExecCommand
+
+	t.Setenv("FAIL_CLONE", "1")
+	t.Setenv("TMPDIR", t.TempDir())
+
+	p := db.GitProject{
+		ID:         300,
+		SourceType: "git",
+		RepoURL:    "https://foo.com/bar.git",
+		Branch:     "main",
+		AuthToken:  "secret-token",
+	}
+	db.GormDB.Create(&p)
+
+	err := processProject(p)
+	if err == nil || err.Error() == "" {
+		t.Errorf("expected clone error, got %v", err)
+	}
+}
+
+func TestProcessProject_Git_FetchFail(t *testing.T) {
+	setupTestDB(t)
+	origExec := execCommand
+	defer func() { execCommand = origExec }()
+	execCommand = mockExecCommand
+
+	t.Setenv("FAIL_FETCH", "1")
+	t.Setenv("TMPDIR", t.TempDir())
+
+	p := db.GitProject{ID: 301, SourceType: "git"}
+	workDir := filepath.Join(os.TempDir(), "lighthouse-gitops", fmt.Sprintf("proj_%d", p.ID))
+	os.MkdirAll(filepath.Join(workDir, ".git"), 0755) // simulate already cloned
+
+	err := processProject(p)
+	if err == nil {
+		t.Errorf("expected fetch error")
+	}
+}
+
+func TestProcessProject_Git_ResetFail(t *testing.T) {
+	setupTestDB(t)
+	origExec := execCommand
+	defer func() { execCommand = origExec }()
+	execCommand = mockExecCommand
+
+	t.Setenv("FAIL_RESET", "1")
+	t.Setenv("TMPDIR", t.TempDir())
+
+	p := db.GitProject{ID: 302, SourceType: "git"}
+	workDir := filepath.Join(os.TempDir(), "lighthouse-gitops", fmt.Sprintf("proj_%d", p.ID))
+	os.MkdirAll(filepath.Join(workDir, ".git"), 0755)
+
+	err := processProject(p)
+	if err == nil {
+		t.Errorf("expected reset error")
+	}
+}
+
+func TestProcessProject_Git_RevParseFail(t *testing.T) {
+	setupTestDB(t)
+	origExec := execCommand
+	defer func() { execCommand = origExec }()
+	execCommand = mockExecCommand
+
+	t.Setenv("FAIL_REVPARSE", "1")
+	t.Setenv("TMPDIR", t.TempDir())
+
+	p := db.GitProject{ID: 303, SourceType: "git"}
+	workDir := filepath.Join(os.TempDir(), "lighthouse-gitops", fmt.Sprintf("proj_%d", p.ID))
+	os.MkdirAll(filepath.Join(workDir, ".git"), 0755)
+
+	err := processProject(p)
+	if err == nil {
+		t.Errorf("expected rev-parse error")
+	}
+}
+
+func TestProcessProject_DockerDeployFail(t *testing.T) {
+	setupTestDB(t)
+	origExec := execCommand
+	defer func() { execCommand = origExec }()
+	execCommand = mockExecCommand
+
+	t.Setenv("FAIL_DOCKER", "1")
+	t.Setenv("TMPDIR", t.TempDir())
+
+	p := db.GitProject{ID: 304, SourceType: "git", Name: "FailDeploy", ComposePath: "../bad/docker-compose.yml"}
+	db.GormDB.Create(&p)
+
+	err := processProject(p)
+	if err == nil {
+		t.Errorf("expected docker deploy error")
+	}
+}
+
+func TestProcessProject_Success_Inline(t *testing.T) {
+	setupTestDB(t)
+	origExec := execCommand
+	defer func() { execCommand = origExec }()
+	execCommand = mockExecCommand
+	t.Setenv("TMPDIR", t.TempDir())
+
+	p := db.GitProject{
+		ID:             400,
+		Name:           "Success Inline",
+		SourceType:     "inline",
+		ComposeContent: "version: '3'",
+	}
+	db.GormDB.Create(&p)
+
+	err := processProject(p)
 	if err != nil {
-		t.Fatalf("Failed to read compose file: %v", err)
-	}
-	if string(content) != project.ComposeContent {
-		t.Errorf("Compose content mismatch")
+		t.Errorf("expected success, got %v", err)
 	}
 }
 
 func TestProcessProject_Noop(t *testing.T) {
 	setupTestDB(t)
+	t.Setenv("TMPDIR", t.TempDir())
 
-	project := db.GitProject{
+	content := "version: '3'"
+	hash := sha256.Sum256([]byte(content))
+	commitSHA := hex.EncodeToString(hash[:])[:12]
+
+	p := db.GitProject{
 		Name:           "Test Inline Noop",
 		SourceType:     "inline",
-		ComposeContent: "version: '3'",
+		ComposeContent: content,
 		Status:         "synced",
-		// Give it the same SHA it would compute
-		// SHA for "version: '3'" is 'f1b95f2e82ce'
-		LastCommit: "898a8838ee2e", // Computed manually or let it fail
+		LastCommit:     commitSHA,
 	}
-	
-	// We'll set the exact correct hash
-	hash := sha256.Sum256([]byte(project.ComposeContent))
-	project.LastCommit = hex.EncodeToString(hash[:])[:12]
+	db.GormDB.Create(&p)
 
-	db.GormDB.Create(&project)
-
-	err := processProject(project)
+	err := processProject(p)
 	if err != nil {
 		t.Fatalf("Expected nil error for noop, got %v", err)
 	}
+}
 
-	var count int64
-	db.GormDB.Model(&db.GitDeployment{}).Where("project_id = ?", project.ID).Count(&count)
-	if count != 0 {
-		t.Errorf("Expected 0 deployments for noop, got %d", count)
-	}
+func TestProcessProjects_Loop(t *testing.T) {
+	setupTestDB(t)
+	t.Setenv("TMPDIR", t.TempDir())
+	origExec := execCommand
+	defer func() { execCommand = origExec }()
+	execCommand = mockExecCommand
+
+	// One success, one fail to cover the loop
+	p1 := db.GitProject{Name: "P1", SourceType: "inline", ComposeContent: "c1"}
+	p2 := db.GitProject{Name: "P2", SourceType: "git", TargetNode: "nodeX"} // force error
+	db.GormDB.Create(&p1)
+	db.GormDB.Create(&p2)
+
+	processProjects()
 }

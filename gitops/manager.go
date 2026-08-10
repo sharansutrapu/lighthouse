@@ -15,11 +15,16 @@ import (
 	"lighthouse/db"
 )
 
+var (
+	execCommand  = exec.Command
+	syncInterval = 30 * time.Second
+)
+
 // StartManager starts the GitOps background worker
 func StartManager() {
 	go func() {
 		for {
-			time.Sleep(30 * time.Second) // Poll every 30s
+			time.Sleep(syncInterval) // Poll every 30s
 			processProjects()
 		}
 	}()
@@ -52,7 +57,7 @@ func processProject(p db.GitProject) error {
 		return fmt.Errorf("spoke deployment not fully implemented for gitops yet")
 	}
 
-	workDir := filepath.Join("/tmp/lighthouse-gitops", fmt.Sprintf("proj_%d", p.ID))
+	workDir := filepath.Join(os.TempDir(), "lighthouse-gitops", fmt.Sprintf("proj_%d", p.ID))
 	err := os.MkdirAll(workDir, 0755)
 	if err != nil {
 		return err
@@ -64,7 +69,7 @@ func processProject(p db.GitProject) error {
 		// Inline Compose deployment
 		composeFile := "docker-compose.yml"
 		composePath := filepath.Join(workDir, composeFile)
-		
+
 		err := os.WriteFile(composePath, []byte(p.ComposeContent), 0644)
 		if err != nil {
 			return fmt.Errorf("failed to write inline compose file: %v", err)
@@ -73,7 +78,7 @@ func processProject(p db.GitProject) error {
 		// Compute hash as pseudo-commit SHA
 		hash := sha256.Sum256([]byte(p.ComposeContent))
 		commitSHA = hex.EncodeToString(hash[:])[:12]
-		
+
 	} else {
 		// Git deployment
 		// Build a sanitized URL for logging (no credentials in it).
@@ -97,20 +102,20 @@ func processProject(p db.GitProject) error {
 		}
 
 		if _, err := os.Stat(filepath.Join(workDir, ".git")); os.IsNotExist(err) {
-			cmd := exec.Command("git", "clone", "-b", p.Branch, "--", p.RepoURL, ".")
+			cmd := execCommand("git", "clone", "-b", p.Branch, "--", p.RepoURL, ".")
 			cmd.Dir = workDir
 			cmd.Env = env
 			if out, err := cmd.CombinedOutput(); err != nil {
 				return fmt.Errorf("clone failed for %s: %s", sanitizedURL, string(out))
 			}
 		} else {
-			cmd := exec.Command("git", "fetch", "origin", p.Branch)
+			cmd := execCommand("git", "fetch", "origin", p.Branch)
 			cmd.Dir = workDir
 			cmd.Env = env
 			if out, err := cmd.CombinedOutput(); err != nil {
 				return fmt.Errorf("fetch failed for %s: %s", sanitizedURL, string(out))
 			}
-			cmd = exec.Command("git", "reset", "--hard", "origin/"+p.Branch)
+			cmd = execCommand("git", "reset", "--hard", "origin/"+p.Branch)
 			cmd.Dir = workDir
 			cmd.Env = env
 			if out, err := cmd.CombinedOutput(); err != nil {
@@ -118,7 +123,7 @@ func processProject(p db.GitProject) error {
 			}
 		}
 
-		cmd := exec.Command("git", "rev-parse", "HEAD")
+		cmd := execCommand("git", "rev-parse", "HEAD")
 		cmd.Dir = workDir
 		out, err := cmd.Output()
 		if err != nil {
@@ -148,7 +153,7 @@ func processProject(p db.GitProject) error {
 		composeFile = "docker-compose.yml"
 	}
 
-	deployCmd := exec.Command("docker", "compose", "-f", composeFile, "up", "-d")
+	deployCmd := execCommand("docker", "compose", "-f", composeFile, "up", "-d")
 	deployCmd.Dir = composeDir
 	deployOut, deployErr := deployCmd.CombinedOutput()
 

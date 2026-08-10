@@ -64,7 +64,7 @@ func RunScheduledScans(cli *client.Client) {
 		if imageName == "" {
 			continue
 		}
-		
+
 		_, _ = ExecuteAndSaveScan(context.Background(), cli, imageName)
 	}
 	log.Println("[Scanner] Scheduled vulnerability scan sweep complete.")
@@ -78,7 +78,7 @@ func ExecuteAndSaveScan(ctx context.Context, cli *client.Client, imageName strin
 	}
 
 	b, _ := json.Marshal(res)
-	
+
 	err = db.GormDB.Create(&db.ImageScanResult{
 		Image:  imageName,
 		Result: string(b),

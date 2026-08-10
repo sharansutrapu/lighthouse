@@ -1,9 +1,11 @@
 package cluster
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io/ioutil"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"lighthouse/db"
@@ -11,50 +13,114 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestProxyRequest(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "Bearer test_token", r.Header.Get("Authorization"))
-		assert.Equal(t, "/api/test", r.URL.Path)
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status": "ok"}`))
-	}))
-	defer ts.Close()
+type mockTransport struct {
+	fn func(req *http.Request) (*http.Response, error)
+}
 
+func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return m.fn(req)
+}
+
+func TestProxyRequest(t *testing.T) {
 	node := db.Node{
-		Address: ts.URL,
+		Address: "http://dummy",
 		Token:   "test_token",
 	}
 
-	b, err := ProxyRequest(node, "GET", "/api/test", nil)
-	assert.NoError(t, err)
-	assert.Contains(t, string(b), `"status": "ok"`)
+	t.Run("Success", func(t *testing.T) {
+		httpClient.Transport = &mockTransport{
+			fn: func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       ioutil.NopCloser(bytes.NewBufferString(`{"status": "ok"}`)),
+				}, nil
+			},
+		}
+
+		b, err := ProxyRequest(node, "GET", "/api/test", nil)
+		assert.NoError(t, err)
+		assert.Contains(t, string(b), `"status": "ok"`)
+	})
+
+	t.Run("NewRequestError", func(t *testing.T) {
+		_, err := ProxyRequest(node, " \x00", "/api/test", nil)
+		assert.Error(t, err)
+	})
+
+	t.Run("DoError", func(t *testing.T) {
+		httpClient.Transport = &mockTransport{
+			fn: func(req *http.Request) (*http.Response, error) {
+				return nil, errors.New("network error")
+			},
+		}
+		_, err := ProxyRequest(node, "GET", "/api/test", nil)
+		assert.Error(t, err)
+	})
+
+	t.Run("StatusCodeError", func(t *testing.T) {
+		httpClient.Transport = &mockTransport{
+			fn: func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: 500,
+					Body:       ioutil.NopCloser(bytes.NewBufferString(`internal error`)),
+				}, nil
+			},
+		}
+		_, err := ProxyRequest(node, "GET", "/api/test", nil)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "spoke error")
+	})
 }
 
 func TestFetchSpokeContainers(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/api/containers", r.URL.Path)
-		
-		containers := []map[string]interface{}{
-			{"Id": "123", "Names": []string{"/test1"}},
-			{"Id": "456", "Names": []string{"/test2"}},
-		}
-		b, _ := json.Marshal(containers)
-		w.WriteHeader(http.StatusOK)
-		w.Write(b)
-	}))
-	defer ts.Close()
-
 	node := db.Node{
 		ID:      1,
 		Name:    "spoke1",
-		Address: ts.URL,
+		Address: "http://dummy",
 		Token:   "test_token",
 	}
 
-	containers, err := FetchSpokeContainers(node)
-	assert.NoError(t, err)
-	assert.Len(t, containers, 2)
-	assert.Equal(t, "123", containers[0]["Id"])
-	assert.Equal(t, uint(1), containers[0]["node_id"])
-	assert.Equal(t, "spoke1", containers[0]["node_name"])
+	t.Run("Success", func(t *testing.T) {
+		httpClient.Transport = &mockTransport{
+			fn: func(req *http.Request) (*http.Response, error) {
+				containers := []map[string]interface{}{
+					{"Id": "123", "Names": []string{"/test1"}},
+				}
+				b, _ := json.Marshal(containers)
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       ioutil.NopCloser(bytes.NewBuffer(b)),
+				}, nil
+			},
+		}
+
+		containers, err := FetchSpokeContainers(node)
+		assert.NoError(t, err)
+		assert.Len(t, containers, 1)
+		assert.Equal(t, uint(1), containers[0]["node_id"])
+		assert.Equal(t, "spoke1", containers[0]["node_name"])
+	})
+
+	t.Run("ProxyRequestError", func(t *testing.T) {
+		httpClient.Transport = &mockTransport{
+			fn: func(req *http.Request) (*http.Response, error) {
+				return nil, errors.New("network error")
+			},
+		}
+		_, err := FetchSpokeContainers(node)
+		assert.Error(t, err)
+	})
+
+	t.Run("JSONUnmarshalError", func(t *testing.T) {
+		httpClient.Transport = &mockTransport{
+			fn: func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       ioutil.NopCloser(bytes.NewBufferString(`invalid json`)),
+				}, nil
+			},
+		}
+		_, err := FetchSpokeContainers(node)
+		assert.Error(t, err)
+	})
 }

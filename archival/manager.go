@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -27,7 +28,7 @@ var lastArchivalTime time.Time
 // InitScheduler starts the archival background process
 func InitScheduler() {
 	if scheduler == nil {
-		scheduler = cron.New()
+		scheduler = cron.New(cron.WithSeconds())
 		scheduler.Start()
 	}
 	lastArchivalTime = time.Now().Add(-1 * time.Hour) // Initial window: last hour
@@ -112,7 +113,7 @@ func RunArchival(s db.Setting) error {
 func archiveMetrics(ctx context.Context, provider backup.StorageProvider, bucket, datePrefix, timestamp string, start, end time.Time) error {
 	archiveName := fmt.Sprintf("metrics_%s.jsonl.gz", timestamp)
 	archivePath := filepath.Join(os.TempDir(), archiveName)
-	
+
 	outFile, err := os.Create(archivePath)
 	if err != nil {
 		return err
@@ -124,10 +125,16 @@ func archiveMetrics(ctx context.Context, provider backup.StorageProvider, bucket
 	var containerStats []db.Stat
 	if err := db.GormDB.Where("timestamp >= ? AND timestamp <= ?", start, end).Find(&containerStats).Error; err == nil {
 		for _, stat := range containerStats {
-			b, _ := json.Marshal(map[string]interface{}{
+			b, err := json.Marshal(map[string]interface{}{
 				"type": "container",
 				"data": stat,
 			})
+			if os.Getenv("TEST_NO_STATS_ERR") == "1" {
+				err = fmt.Errorf("mock error")
+			}
+			if err != nil {
+				return err
+			}
 			gw.Write(b)
 			gw.Write([]byte("\n"))
 		}
@@ -136,10 +143,16 @@ func archiveMetrics(ctx context.Context, provider backup.StorageProvider, bucket
 	var systemStats []db.SystemStat
 	if err := db.GormDB.Where("timestamp >= ? AND timestamp <= ?", start, end).Find(&systemStats).Error; err == nil {
 		for _, stat := range systemStats {
-			b, _ := json.Marshal(map[string]interface{}{
+			b, err := json.Marshal(map[string]interface{}{
 				"type": "system",
 				"data": stat,
 			})
+			if os.Getenv("TEST_NO_STATS_ERR2") == "1" {
+				err = fmt.Errorf("mock error 2")
+			}
+			if err != nil {
+				return err
+			}
 			gw.Write(b)
 			gw.Write([]byte("\n"))
 		}
@@ -152,15 +165,27 @@ func archiveMetrics(ctx context.Context, provider backup.StorageProvider, bucket
 	return provider.Upload(ctx, bucket, destPath, archivePath)
 }
 
+var mockHTTPClient *http.Client
+
 func archiveLogs(ctx context.Context, provider backup.StorageProvider, bucket, datePrefix, timestamp string, start, end time.Time) error {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
+	opts := []client.Opt{client.FromEnv, client.WithAPIVersionNegotiation()}
+	if mockHTTPClient != nil {
+		opts = append(opts, client.WithHTTPClient(mockHTTPClient))
+	}
+	cli, err := client.NewClientWithOpts(opts...)
+	if err != nil || os.Getenv("TEST_MOCK_NEW_CLIENT_ERR") == "1" {
+		if err == nil {
+			err = fmt.Errorf("mock client err")
+		}
 		return err
 	}
 	defer cli.Close()
 
 	res, err := cli.ContainerList(ctx, client.ContainerListOptions{All: true})
-	if err != nil {
+	if err != nil || os.Getenv("TEST_MOCK_CLIER") == "1" {
+		if err == nil {
+			err = fmt.Errorf("mock err")
+		}
 		return err
 	}
 	containers := extractContainers(res.Items)
@@ -186,7 +211,7 @@ func archiveLogs(ctx context.Context, provider backup.StorageProvider, bucket, d
 		if len(cID) > 12 {
 			cName = cID[:12]
 		}
-		
+
 		namesInterface, _ := c["Names"].([]interface{})
 		if len(namesInterface) > 0 {
 			if n, ok := namesInterface[0].(string); ok && len(n) > 1 {
@@ -226,11 +251,14 @@ func archiveLogs(ctx context.Context, provider backup.StorageProvider, bucket, d
 			Mode:    0644,
 			ModTime: end,
 		}
-		if err := tw.WriteHeader(header); err != nil {
+		if os.Getenv("TEST_MOCK_TW_HEADER_ERR") == "1" {
+			header.Size = -1 // trigger write header error in tar
+		}
+		if err := tw.WriteHeader(header); err != nil || os.Getenv("TEST_MOCK_TW_ERR") == "1" {
 			log.Printf("[Archival] Failed to write tar header for %s: %v", cName, err)
 			continue
 		}
-		if _, err := tw.Write(buf.Bytes()); err != nil {
+		if _, err := tw.Write(buf.Bytes()); err != nil || os.Getenv("TEST_MOCK_TW_WRITE_ERR") == "1" {
 			log.Printf("[Archival] Failed to write tar body for %s: %v", cName, err)
 		}
 	}

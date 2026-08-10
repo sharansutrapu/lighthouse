@@ -10,15 +10,23 @@ import (
 )
 
 func RegisterVolumeRoutes(r *echo.Group, cli *client.Client) {
-	r.GET("/volumes", func(c echo.Context) error {
+	r.GET("/volumes", handleGETVolumes(cli))
+	r.DELETE("/volumes/:name", handleDELETEVolumesName(cli))
+	r.POST("/volumes/prune", handlePOSTVolumesPrune(cli))
+}
+
+func handleGETVolumes(cli *client.Client) echo.HandlerFunc {
+	return func(c echo.Context) error {
 		volumes, err := cli.VolumeList(context.Background(), client.VolumeListOptions{})
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		}
 		return c.JSON(http.StatusOK, volumes)
-	})
+	}
+}
 
-	r.DELETE("/volumes/:name", func(c echo.Context) error {
+func handleDELETEVolumesName(cli *client.Client) echo.HandlerFunc {
+	return func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
 		userClaims := token.Claims.(*UserClaims)
 		if !userClaims.IsAdmin && !userClaims.CanDelete {
@@ -34,9 +42,11 @@ func RegisterVolumeRoutes(r *echo.Group, cli *client.Client) {
 		logAudit(userClaims.ID, userClaims.Username, "DELETE", "Volume:"+name, "Success", "Deleted volume")
 
 		return c.JSON(http.StatusOK, map[string]string{"message": "Volume deleted successfully"})
-	})
+	}
+}
 
-	r.POST("/volumes/prune", func(c echo.Context) error {
+func handlePOSTVolumesPrune(cli *client.Client) echo.HandlerFunc {
+	return func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
 		userClaims := token.Claims.(*UserClaims)
 		if !userClaims.IsAdmin && !userClaims.CanDelete {
@@ -69,12 +79,12 @@ func RegisterVolumeRoutes(r *echo.Group, cli *client.Client) {
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		}
-		
+
 		logAudit(userClaims.ID, userClaims.Username, "PRUNE", "Volumes", "Success", "Pruned unused volumes")
 
 		return c.JSON(http.StatusOK, map[string]interface{}{
 			"Report":  res,
 			"Warning": warning,
 		})
-	})
+	}
 }

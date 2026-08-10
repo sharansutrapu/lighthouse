@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"io"
 	"net"
 	"net/http"
 	"net/smtp"
@@ -13,6 +14,23 @@ import (
 	"strings"
 	"time"
 )
+
+var (
+	jsonMarshal   = json.Marshal
+	netLookupHost = net.LookupHost
+	smtpNewClient = func(conn net.Conn, host string) (smtpClient, error) {
+		return smtp.NewClient(conn, host)
+	}
+)
+
+type smtpClient interface {
+	Auth(a smtp.Auth) error
+	Mail(from string) error
+	Rcpt(to string) error
+	Data() (io.WriteCloser, error)
+	Close() error
+	Quit() error
+}
 
 // ─── Slack / Discord wire types ───────────────────────────────────────────────
 
@@ -118,15 +136,15 @@ func sendSlackWebhook(url string, p NotificationPayload) error {
 		Title: title,
 		Fields: []slackField{
 			{Title: "*Container*", Value: fmt.Sprintf("`%s`", p.ContainerName), Short: true},
-			{Title: "*Type*",      Value: fmt.Sprintf("`%s`", p.Type),          Short: true},
-			{Title: "*Details*",   Value: fmt.Sprintf("```\n%s\n```", details), Short: false},
+			{Title: "*Type*", Value: fmt.Sprintf("`%s`", p.Type), Short: true},
+			{Title: "*Details*", Value: fmt.Sprintf("```\n%s\n```", details), Short: false},
 		},
 		Footer: "LightHouse Alerting Engine",
 		Ts:     time.Now().Unix(),
 	}
 
 	sp := slackPayload{Attachments: []slackAttachment{attachment}}
-	body, err := json.Marshal(sp)
+	body, err := jsonMarshal(sp)
 	if err != nil {
 		return fmt.Errorf("alerts/delivery: failed to marshal Slack payload: %w", err)
 	}
@@ -172,7 +190,7 @@ func sendMSTeamsWebhook(url string, p NotificationPayload) error {
 		}},
 	}
 
-	body, err := json.Marshal(payload)
+	body, err := jsonMarshal(payload)
 	if err != nil {
 		return fmt.Errorf("alerts/delivery: failed to marshal MS Teams payload: %w", err)
 	}
@@ -203,7 +221,7 @@ func sendGChatWebhook(url string, p NotificationPayload) error {
 		"text": text,
 	}
 
-	body, err := json.Marshal(payload)
+	body, err := jsonMarshal(payload)
 	if err != nil {
 		return fmt.Errorf("alerts/delivery: failed to marshal GChat payload: %w", err)
 	}
@@ -214,7 +232,7 @@ func sendGChatWebhook(url string, p NotificationPayload) error {
 // POSTs it to the configured URL.  This is the lowest-common-denominator
 // adapter suitable for any HTTP webhook receiver.
 func sendGenericWebhook(url string, p NotificationPayload) error {
-	body, err := json.Marshal(p)
+	body, err := jsonMarshal(p)
 	if err != nil {
 		return fmt.Errorf("alerts/delivery: failed to marshal generic payload: %w", err)
 	}
@@ -260,7 +278,7 @@ func isAllowedWebhookURL(rawURL string) bool {
 	}
 
 	// Resolve hostname and check all resulting IPs (prevents DNS rebinding)
-	addrs, err := net.LookupHost(host)
+	addrs, err := netLookupHost(host)
 	if err != nil {
 		// If we can't resolve, block it to be safe
 		return false
@@ -281,7 +299,7 @@ var SkipSSRFCheck bool
 
 // postJSON sends a JSON-encoded body to url via HTTP POST and returns an error
 // if the response status code is outside the 2xx range.
-func postJSON(url string, body []byte) error {
+var postJSONFunc = func(url string, body []byte) error {
 	if !SkipSSRFCheck && !isAllowedWebhookURL(url) {
 		return fmt.Errorf("alerts/delivery: webhook URL is not allowed (SSRF protection)")
 	}
@@ -304,6 +322,11 @@ func postJSON(url string, body []byte) error {
 	return nil
 }
 
+// postJSON calls the postJSONFunc variable which can be mocked in tests
+func postJSON(url string, body []byte) error {
+	return postJSONFunc(url, body)
+}
+
 // DeliverEmail sends an email via the provided SMTP configuration, supporting CC addresses.
 func DeliverEmail(host string, port int, user, pass, to string, cc []string, p NotificationPayload) error {
 	addr := fmt.Sprintf("%s:%d", host, port)
@@ -318,7 +341,7 @@ func DeliverEmail(host string, port int, user, pass, to string, cc []string, p N
 	}
 
 	subject := fmt.Sprintf("Subject: [LightHouse] %s Alert - %s\r\n", p.Type, p.ContainerName)
-	
+
 	htmlBody := fmt.Sprintf(`
 	<html>
 	<head>
@@ -360,13 +383,13 @@ func DeliverEmail(host string, port int, user, pass, to string, cc []string, p N
 		"Content-Type: text/html; charset=\"UTF-8\";\r\n\r\n"
 
 	msg := []byte(headers + htmlBody)
-	
+
 	var allRecipients []string
 	if to != "" {
 		allRecipients = append(allRecipients, to)
 	}
 	allRecipients = append(allRecipients, cc...)
-	
+
 	if len(allRecipients) == 0 {
 		return fmt.Errorf("alerts/delivery: no recipients for email")
 	}
@@ -376,11 +399,11 @@ func DeliverEmail(host string, port int, user, pass, to string, cc []string, p N
 		tlsconfig := &tls.Config{
 			ServerName: host,
 		}
-		conn, err := tls.Dial("tcp", addr, tlsconfig)
+		conn, err := tlsDial("tcp", addr, tlsconfig)
 		if err != nil {
 			return fmt.Errorf("alerts/delivery: TLS dial failed: %w", err)
 		}
-		client, err := smtp.NewClient(conn, host)
+		client, err := smtpNewClient(conn, host)
 		if err != nil {
 			return fmt.Errorf("alerts/delivery: SMTP client creation failed: %w", err)
 		}
@@ -414,5 +437,11 @@ func DeliverEmail(host string, port int, user, pass, to string, cc []string, p N
 	}
 
 	// Standard SMTP / STARTTLS for port 587, 25, etc.
-	return smtp.SendMail(addr, auth, from, allRecipients, msg)
+	return smtpSendMail(addr, auth, from, allRecipients, msg)
 }
+
+// Variables for mocking in tests
+var (
+	smtpSendMail = smtp.SendMail
+	tlsDial      = tls.Dial
+)

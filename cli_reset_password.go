@@ -60,4 +60,3 @@ func runResetPasswordCLI(args []string) error {
 	fmt.Printf("Password reset for %q. Existing sessions are invalidated.\n", username)
 	return nil
 }
-

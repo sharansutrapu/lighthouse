@@ -69,7 +69,7 @@ func RegisterNetworkRoutes(r *echo.Group, cli *client.Client) {
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		}
-		
+
 		logAudit(userClaims.ID, userClaims.Username, "PRUNE", "Networks", "Success", "Pruned unused networks")
 
 		return c.JSON(http.StatusOK, map[string]interface{}{
