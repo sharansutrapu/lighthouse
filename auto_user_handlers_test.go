@@ -100,6 +100,43 @@ func TestHandleGETUsers(t *testing.T) {
 	assert.Len(t, users, 2)
 }
 
+func TestHandleGETUsers_TeamMergedPermissionsAndDBError(t *testing.T) {
+	t.Run("happy path: team permissions are OR-merged into the user response", func(t *testing.T) {
+		assert.NoError(t, db.InitDB(":memory:"))
+		team := db.Team{Name: "merge-team", CanStart: true, CanShell: true}
+		db.GormDB.Create(&team)
+		db.GormDB.Create(&db.User{Username: "teamuser", Email: "teamuser@example.com", TeamID: &team.ID})
+
+		e := echo.New()
+		req := httptest.NewRequest(http.MethodGet, "/users", nil)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		assert.NoError(t, handleGETUsers()(c))
+		assert.Equal(t, http.StatusOK, rec.Code)
+
+		var res map[string]interface{}
+		assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &res))
+		users := res["users"].([]interface{})
+		assert.Len(t, users, 1)
+		u := users[0].(map[string]interface{})
+		assert.Equal(t, true, u["can_start"])
+		assert.Equal(t, true, u["can_shell"])
+		assert.Equal(t, true, u["is_restricted_access"])
+	})
+
+	t.Run("infra failure: DB query error returns 500", func(t *testing.T) {
+		assert.NoError(t, db.InitDB(":memory:"))
+		db.GormDB.Migrator().DropTable(&db.User{})
+
+		e := echo.New()
+		req := httptest.NewRequest(http.MethodGet, "/users", nil)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		assert.NoError(t, handleGETUsers()(c))
+		assert.Equal(t, http.StatusInternalServerError, rec.Code)
+	})
+}
+
 func TestHandlePUTUsersIdActive(t *testing.T) {
 	err := db.InitDB(":memory:")
 	assert.NoError(t, err)

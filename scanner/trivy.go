@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"strings"
 	"time"
 
+	"github.com/distribution/reference"
 	"github.com/moby/moby/client"
 )
 
@@ -16,9 +18,32 @@ var execCommandContext = exec.CommandContext
 
 var scanSem = make(chan struct{}, 2) // Limit to 2 concurrent trivy scans
 
+// ValidateImageName rejects image references that could be interpreted as
+// extra command-line flags by trivy or docker when passed as a bare argv
+// element (e.g. "--server=http://internal" or "-v"), or that otherwise don't
+// match Docker's own reference grammar (registry[:port]/path[:tag][@digest]).
+// Delegating to distribution/reference — the same parser Docker itself uses —
+// is stricter and more correct than a hand-rolled regex (it correctly accepts
+// things like "registry.local:5000/team/app:latest" while still rejecting
+// anything with a leading "-", whitespace, or shell metacharacters, none of
+// which are valid in any reference component).
+func ValidateImageName(name string) error {
+	if name == "" || strings.HasPrefix(name, "-") {
+		return fmt.Errorf("invalid image reference: %q", name)
+	}
+	if _, err := reference.Parse(name); err != nil {
+		return fmt.Errorf("invalid image reference %q: %w", name, err)
+	}
+	return nil
+}
+
 // ScanImageFunc runs aquasec/trivy against the given docker image name using the local docker binary.
 // This requires the host to have docker installed and accessible.
 var ScanImageFunc = func(ctx context.Context, cli *client.Client, imageName string) (map[string]interface{}, error) {
+	if err := ValidateImageName(imageName); err != nil {
+		return nil, err
+	}
+
 	log.Printf("Queuing trivy scan for image: %s", imageName)
 
 	// Acquire semaphore to limit concurrency
@@ -31,9 +56,10 @@ var ScanImageFunc = func(ctx context.Context, cli *client.Client, imageName stri
 	execCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
+	// "--" terminates flag parsing so imageName can never be read as a trivy/docker option.
 	cmd := execCommandContext(execCtx, "docker", "run", "--rm",
 		"-v", "/var/run/docker.sock:/var/run/docker.sock",
-		"aquasec/trivy:latest", "image", "-f", "json", "--quiet", "--timeout", "5m", imageName)
+		"aquasec/trivy:latest", "image", "-f", "json", "--quiet", "--timeout", "5m", "--", imageName)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

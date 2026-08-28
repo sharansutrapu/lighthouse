@@ -9,12 +9,15 @@ import (
 	"github.com/moby/moby/client"
 )
 
+// RegisterVolumeRoutes wires up the /api/volumes endpoints: listing,
+// deleting, and pruning Docker volumes.
 func RegisterVolumeRoutes(r *echo.Group, cli *client.Client) {
 	r.GET("/volumes", handleGETVolumes(cli))
 	r.DELETE("/volumes/:name", handleDELETEVolumesName(cli))
 	r.POST("/volumes/prune", handlePOSTVolumesPrune(cli))
 }
 
+// handleGETVolumes lists all Docker volumes.
 func handleGETVolumes(cli *client.Client) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		volumes, err := cli.VolumeList(context.Background(), client.VolumeListOptions{})
@@ -25,6 +28,8 @@ func handleGETVolumes(cli *client.Client) echo.HandlerFunc {
 	}
 }
 
+// handleDELETEVolumesName force-removes one named volume. Requires admin or
+// the can_delete permission.
 func handleDELETEVolumesName(cli *client.Client) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
@@ -45,6 +50,7 @@ func handleDELETEVolumesName(cli *client.Client) echo.HandlerFunc {
 	}
 }
 
+// handlePOSTVolumesPrune removes all volumes not referenced by any container.
 func handlePOSTVolumesPrune(cli *client.Client) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)

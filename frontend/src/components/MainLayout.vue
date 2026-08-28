@@ -521,6 +521,11 @@
 </template>
 
 <script setup>
+// App shell used by every authenticated page: sidebar navigation, top bar
+// (user menu, theme toggle, live system-stats badge), the mandatory
+// first-login password-change modal, and the MCP config modal. Also owns the
+// system-stats WebSocket and periodic session-validity check shared by every
+// child route.
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import {
@@ -564,6 +569,7 @@ const themeToggleLabel = computed(() =>
   sharedState.theme === "dark" ? "Switch to light mode" : "Switch to dark mode",
 );
 
+// getStatColor maps a CPU/memory percentage to a semantic color threshold.
 const getStatColor = (val) => {
   const v = parseFloat(val);
   if (v > 80) return "var(--error)";
@@ -571,10 +577,12 @@ const getStatColor = (val) => {
   return "var(--accent)";
 };
 
+// toggleDashboardSidebar shows/hides the mobile navigation drawer.
 const toggleDashboardSidebar = () => {
   isMobileMenuOpen.value = !isMobileMenuOpen.value;
 };
 
+// logout clears the stored session and returns to the login page.
 const logout = () => {
   secureStorage.removeItem("token");
   secureStorage.removeItem("user");
@@ -584,6 +592,8 @@ const logout = () => {
   router.push("/login");
 };
 
+// openPasswordModal resets the change-password form and shows it (from the
+// user menu — as opposed to the mandatory forced version shown after first login).
 const openPasswordModal = () => {
   newPassword.value = "";
   confirmPassword.value = "";
@@ -593,6 +603,8 @@ const openPasswordModal = () => {
   showUserMenu.value = false;
 };
 
+// updatePassword submits the change-password form; the current password is
+// only required for a voluntary change, not the mandatory forced one.
 const updatePassword = async () => {
   if (newPassword.value.length < 8) {
     passwordError.value = "Password must be at least 8 characters";
@@ -635,6 +647,7 @@ const updatePassword = async () => {
   }
 };
 
+// handleGlobalClick closes the user menu on any click outside it.
 const handleGlobalClick = () => {
   showUserMenu.value = false;
 };
@@ -647,6 +660,11 @@ watch(
   },
 );
 
+// initializeLayoutData starts the system-stats WebSocket (auto-reconnecting
+// every 3s on drop) and a 60-second session-validity poll that redirects to
+// /login the moment the backend reports the session is no longer valid
+// (e.g. account deactivated). Skipped entirely while a forced password
+// change is pending.
 const initializeLayoutData = async () => {
   if (sharedState.forcePasswordChange) return;
 
@@ -713,6 +731,7 @@ onMounted(async () => {
   window.addEventListener("offline", handleOffline);
 });
 
+// handleOnline/handleOffline surface the browser's network status via toast.
 const handleOnline = () => {
   showToast(
     "Back Online",

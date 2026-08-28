@@ -1,3 +1,6 @@
+// Package archival periodically compresses and uploads aging metrics/log data
+// to cold cloud storage (S3, GCS, Azure Blob), keeping the local SQLite/Postgres
+// database small while preserving history for long-term retention.
 package archival
 
 import (
@@ -110,6 +113,10 @@ func RunArchival(s db.Setting) error {
 	return nil
 }
 
+// archiveMetrics compresses container and system stat rows from [start, end]
+// into a gzipped JSONL file and uploads it to the configured cloud bucket
+// under metrics/<datePrefix>/. Rows are not deleted from the local DB here —
+// pruning is handled separately by the regular retention job.
 func archiveMetrics(ctx context.Context, provider backup.StorageProvider, bucket, datePrefix, timestamp string, start, end time.Time) error {
 	archiveName := fmt.Sprintf("metrics_%s.jsonl.gz", timestamp)
 	archivePath := filepath.Join(os.TempDir(), archiveName)
@@ -165,8 +172,13 @@ func archiveMetrics(ctx context.Context, provider backup.StorageProvider, bucket
 	return provider.Upload(ctx, bucket, destPath, archivePath)
 }
 
+// mockHTTPClient lets tests substitute a fake Docker daemon HTTP client;
+// nil in production, in which case the real local Docker socket is used.
 var mockHTTPClient *http.Client
 
+// archiveLogs fetches full stdout/stderr history for every running container
+// via the Docker daemon, tars and gzips it, and uploads the archive to
+// logs/<datePrefix>/ in the configured cloud bucket.
 func archiveLogs(ctx context.Context, provider backup.StorageProvider, bucket, datePrefix, timestamp string, start, end time.Time) error {
 	opts := []client.Opt{client.FromEnv, client.WithAPIVersionNegotiation()}
 	if mockHTTPClient != nil {
@@ -272,6 +284,8 @@ func archiveLogs(ctx context.Context, provider backup.StorageProvider, bucket, d
 	return provider.Upload(ctx, bucket, destPath, archivePath)
 }
 
+// extractContainers normalizes a Docker SDK container-list response into a
+// slice of plain maps, tolerating whatever concrete shape the SDK returns.
 func extractContainers(res interface{}) []map[string]interface{} {
 	b, _ := json.Marshal(res)
 	var m interface{}

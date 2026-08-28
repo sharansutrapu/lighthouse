@@ -272,6 +272,10 @@
 </template>
 
 <script setup>
+// Reusable sortable/searchable/filterable container list table, shared by
+// the Dashboard and Containers views. All data and actions (start/stop/
+// restart/remove/logs/shell) come from the shared useContainers() composable
+// — this component only applies its own search/state-filter narrowing on top.
 import { computed } from 'vue';
 import { useContainers } from '../composables/useContainers';
 import AppIcon from './AppIcon.vue';
@@ -303,6 +307,9 @@ const {
   formatBytes, formatDate,
 } = useContainers();
 
+// displayContainers applies this table instance's own search query and
+// running/stopped filter on top of the shared container list, with the
+// LightHouse platform container always pinned first.
 const displayContainers = computed(() => {
   let list = containers.value || [];
   if (props.searchQuery) {

@@ -246,6 +246,8 @@
 </template>
 
 <script setup>
+// Audit-log table with text search and a date-range filter (with quick
+// presets: today/yesterday/7d/30d). Embedded in both Admin.vue and Audit.vue.
 import { ref, computed, onMounted } from "vue";
 import { showToast } from "../utils/sharedState";
 import { apiFetch } from "../utils/apiFetch";
@@ -289,6 +291,8 @@ const filteredLogs = computed(() => {
   );
 });
 
+// getActionClass maps an audit action string to a semantic color class
+// (destructive/creation/update/neutral) for the badge.
 const getActionClass = (action) => {
   const a = action.toLowerCase();
   if (a.includes("delete") || a.includes("stop")) return "action-danger";
@@ -297,6 +301,7 @@ const getActionClass = (action) => {
   return "action-default";
 };
 
+// fetchAuditLogs loads audit entries, optionally scoped to the active date range.
 const fetchAuditLogs = async () => {
   loadingLogs.value = true;
   try {
@@ -320,6 +325,7 @@ const fetchAuditLogs = async () => {
   }
 };
 
+// setPreset fills dateRange with a quick preset (today/yesterday/7d/30d).
 const setPreset = (type) => {
   const now = new Date();
   const today = now.toISOString().split("T")[0];
@@ -349,11 +355,13 @@ const setPreset = (type) => {
   }
 };
 
+// applyDateRange closes the date-picker modal and re-fetches with the chosen range.
 const applyDateRange = () => {
   showDateModal.value = false;
   fetchAuditLogs();
 };
 
+// resetFilters clears the date range and reloads the unfiltered log list.
 const resetFilters = () => {
   dateRange.value = { from: "", to: "" };
   fetchAuditLogs();

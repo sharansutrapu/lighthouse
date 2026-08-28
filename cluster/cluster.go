@@ -1,3 +1,8 @@
+// Package cluster implements LightHouse's optional Hub & Spoke clustering mode:
+// a central Hub aggregates container data and dispatches commands over
+// WebSocket to remote Spoke agents, each of which talks to its own local
+// Docker daemon. This lets a single dashboard manage containers across many
+// physically separate hosts.
 package cluster
 
 import (

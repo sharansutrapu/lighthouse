@@ -5,6 +5,10 @@ import router from './router';
 import { sharedState } from './utils/sharedState';
 import { secureStorage } from './utils/storage';
 
+// Application entry point: patches the global fetch() once to auto-logout on
+// an expired/invalid session or a deactivated account, then mounts the app.
+
+// forceLogout clears the stored session and sends the user back to /login.
 const forceLogout = () => {
   secureStorage.removeItem('token');
   secureStorage.removeItem('user');
@@ -17,6 +21,10 @@ const forceLogout = () => {
   }
 };
 
+// Monkey-patch window.fetch exactly once so every API call in the app
+// (regardless of which component made it) automatically triggers a logout on
+// a 401 (expired/invalid session) or a 403 flagged ACCOUNT_DEACTIVATED,
+// without every call site needing its own error-handling boilerplate.
 if (!window.__lighthouseFetchPatched) {
   const originalFetch = window.fetch.bind(window);
 

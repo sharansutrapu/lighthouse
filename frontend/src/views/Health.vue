@@ -234,6 +234,10 @@
 </template>
 
 <script setup>
+// System health page (admin-only): historical host CPU/memory/network/disk
+// charts over a selectable or custom date range, plus disk usage and Docker
+// engine version info. Range/custom-dates round-trip through the URL query
+// string like Logs.vue's stream selection.
 import AppIcon from "../components/AppIcon.vue";
 import { showToast } from "../utils/sharedState";
 import { ref, onMounted, onUnmounted, watch, computed } from "vue";
@@ -298,6 +302,8 @@ const today = new Date().toISOString().split("T")[0];
 
 const history = ref([]);
 
+// handleFilterChange reacts to the range dropdown: a real range refetches
+// immediately, while "custom" opens the date-picker modal first.
 const handleFilterChange = () => {
   if (activeFilter.value === 'custom') {
     showCustomModal.value = true;
@@ -306,6 +312,8 @@ const handleFilterChange = () => {
   }
 };
 
+// availableHours reports how much history is actually on hand (oldest to
+// newest sample), used to detect a shorter-than-requested range (isPartialData).
 const availableHours = computed(() => {
   if (history.value.length === 0) return 0;
   const timestamps = history.value.map(h => new Date(h.timestamp).getTime());
@@ -320,6 +328,7 @@ const isPartialData = computed(() => {
   return availableHours.value < (activeFilter.value * 0.95);
 });
 
+// formatDuration renders an hour count as a compact "Xm"/"Xh"/"Xd" string.
 const formatDuration = (hours) => {
   if (hours < 1) return `${Math.round(hours * 60)}m`;
   if (hours < 24) return `${hours.toFixed(1)}h`;
@@ -383,6 +392,7 @@ const avgDisk = computed(() => {
   return `${(r / (1024 * 1024)).toFixed(1)} / ${(w / (1024 * 1024)).toFixed(1)} MB/s`;
 });
 
+// applyCustomRange commits the picked custom start/end dates as the active filter.
 const applyCustomRange = () => {
   if (!tempStart.value || !tempEnd.value) {
     modalError.value = "Select both dates";
@@ -396,6 +406,7 @@ const applyCustomRange = () => {
   updateUrl();
 };
 
+// syncStateFromUrl reads the range/start/end query params into local state.
 const syncStateFromUrl = () => {
   const { range, start, end } = route.query;
   if (range) {
@@ -405,6 +416,7 @@ const syncStateFromUrl = () => {
   if (end) customEnd.value = end;
 };
 
+// updateUrl writes the active filter/custom range back into the URL query string.
 const updateUrl = () => {
   const query = { ...route.query };
   query.range = activeFilter.value;
@@ -476,6 +488,8 @@ watch(
   },
 );
 
+// fetchData loads history, disk usage, and system info in parallel for the
+// active date range.
 const fetchData = async () => {
   try {
     let endpoint = "/api/system/history";
@@ -519,6 +533,9 @@ const fetchData = async () => {
   }
 };
 
+// updateCharts re-buckets the fetched history into 60 evenly-spaced time
+// bins spanning the active range, so the charts render consistently
+// regardless of how sparse the underlying samples are.
 const updateCharts = () => {
   const now = new Date();
   let rangeHours = activeFilter.value;

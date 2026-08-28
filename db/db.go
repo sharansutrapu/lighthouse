@@ -1,3 +1,7 @@
+// Package db defines the GORM data model for LightHouse (users, teams, role
+// templates, containers stats, audit logs, alert rules, settings, API tokens,
+// GitOps projects, etc.) and owns database initialization/migration for both
+// the SQLite (standalone) and PostgreSQL (hub/spoke) deployment modes.
 package db
 
 import (
@@ -12,9 +16,15 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+// GormDB is the process-wide GORM handle used for all ORM queries.
+// DB is the underlying *sql.DB, used for the handful of call sites that need
+// raw SQL (e.g. reading a single scalar column without the ORM's overhead).
 var GormDB *gorm.DB
 var DB *sql.DB
 
+// User is a LightHouse account: local-password or Google-OAuth login,
+// per-user action permissions (can_*), container visibility, and optional
+// Team membership whose permissions are OR'd in on top of the user's own.
 type User struct {
 	ID                   uint       `gorm:"primaryKey" json:"id"`
 	Username             string     `gorm:"uniqueIndex" json:"username"`
@@ -44,6 +54,8 @@ type User struct {
 	Team                 *Team      `gorm:"foreignKey:TeamID;constraint:OnDelete:SET NULL;" json:"team"`
 }
 
+// Team groups users under a shared set of permissions, container-visibility
+// pattern, and alert notification routing (webhooks/email).
 type Team struct {
 	ID                   uint      `gorm:"primaryKey" json:"id"`
 	Name                 string    `gorm:"uniqueIndex;not null" json:"name"`
@@ -69,6 +81,7 @@ type Team struct {
 	UpdatedAt            time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 }
 
+// Stat is one periodic CPU/memory/network/disk sample for a single container.
 type Stat struct {
 	ID             uint      `gorm:"primaryKey" json:"id"`
 	NodeID         string    `gorm:"index" json:"node_id"`
@@ -82,6 +95,8 @@ type Stat struct {
 	Timestamp      time.Time `gorm:"index:idx_stats_container_time;autoCreateTime" json:"timestamp"`
 }
 
+// SystemStat is one periodic CPU/memory/network/disk sample for the host
+// machine as a whole (as opposed to a single container, see Stat).
 type SystemStat struct {
 	ID             uint      `gorm:"primaryKey" json:"id"`
 	NodeID         string    `gorm:"index" json:"node_id"`
@@ -94,6 +109,8 @@ type SystemStat struct {
 	Timestamp      time.Time `gorm:"index;autoCreateTime" json:"timestamp"`
 }
 
+// AuditLog is a permanent record of one sensitive action (login, container
+// start/stop, settings change, etc.), written by logAudit in package main.
 type AuditLog struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	NodeID    string    `gorm:"index" json:"node_id"`
@@ -107,6 +124,9 @@ type AuditLog struct {
 	Timestamp time.Time `gorm:"index;autoCreateTime" json:"timestamp"`
 }
 
+// RoleTemplate is a reusable permission preset an administrator can apply
+// when creating a new local/invited user, instead of setting every can_*
+// flag by hand each time.
 type RoleTemplate struct {
 	ID                   uint   `gorm:"primaryKey" json:"id"`
 	Name                 string `gorm:"uniqueIndex;not null" json:"name"`
@@ -124,6 +144,11 @@ type RoleTemplate struct {
 	AllowedContainers    string `gorm:"default:'.*'" json:"allowed_containers"`
 }
 
+// Setting is the single-row (ID=1) table of global application configuration:
+// SMTP, Google OAuth, cloud backup/archival credentials, and scan scheduling.
+// Secret-bearing fields are masked ("********") in API responses — see
+// docs/SECURITY.md — but stored here in plaintext since the app must be able
+// to use them to make outbound calls.
 type Setting struct {
 	ID                   uint   `gorm:"primaryKey" json:"id"`
 	MetricsRetentionDays int    `gorm:"default:30" json:"metrics_retention_days"`
@@ -163,6 +188,9 @@ type Setting struct {
 	ScheduledScanCron    string `json:"scheduled_scan_cron"`
 }
 
+// AlertRule defines when the alerting engine (package alerts) should fire: a
+// container-name pattern, optional Docker event types / log regex / metric
+// thresholds to match, a per-rule cooldown, and which channels to notify.
 type AlertRule struct {
 	ID                     uint      `gorm:"primaryKey" json:"id"`
 	Name                   string    `gorm:"not null;uniqueIndex" json:"name"`
@@ -183,6 +211,7 @@ type AlertRule struct {
 	CreatedAt              time.Time `gorm:"autoCreateTime" json:"created_at"`
 }
 
+// AlertHistory is a permanent record of one fired alert and its delivery outcome.
 type AlertHistory struct {
 	ID              uint       `gorm:"primaryKey" json:"id"`
 	NodeID          string     `gorm:"index" json:"node_id"`
@@ -197,6 +226,7 @@ type AlertHistory struct {
 	AlertRule       *AlertRule `gorm:"foreignKey:RuleID;constraint:OnDelete:SET NULL;" json:"-"`
 }
 
+// Node represents a registered remote node in hub/spoke clustering mode.
 type Node struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	Name      string    `gorm:"uniqueIndex" json:"name"`
@@ -205,6 +235,8 @@ type Node struct {
 	CreatedAt time.Time `gorm:"autoCreateTime" json:"created_at"`
 }
 
+// ImageScanResult caches the most recent Trivy vulnerability scan output for
+// a given image, so repeated views don't require re-running the scanner.
 type ImageScanResult struct {
 	ID        int       `json:"id" gorm:"primaryKey"`
 	Image     string    `json:"image" gorm:"index"`
@@ -212,6 +244,9 @@ type ImageScanResult struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// GitProject is one GitOps-managed deployment: either tracking a Git
+// repository/branch/compose-path, or inline compose YAML pasted directly,
+// optionally targeted at a remote Spoke node.
 type GitProject struct {
 	ID             int       `json:"id" gorm:"primaryKey"`
 	Name           string    `json:"name"`
@@ -228,6 +263,8 @@ type GitProject struct {
 	UpdatedAt      time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 }
 
+// GitDeployment is a historical record of one GitOps sync/deploy attempt for
+// a GitProject, including the resulting docker-compose output.
 type GitDeployment struct {
 	ID        int       `json:"id" gorm:"primaryKey"`
 	ProjectID int       `json:"project_id"`
@@ -237,6 +274,9 @@ type GitDeployment struct {
 	CreatedAt time.Time `gorm:"autoCreateTime" json:"created_at"`
 }
 
+// ApiToken is a long-lived personal access token (`lh_pat_...`). Only a
+// SHA-256 hash of the token is ever stored in Token — the plaintext is shown
+// once at creation time and is not recoverable afterward.
 type ApiToken struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	UserID    uint      `gorm:"index" json:"user_id"`
@@ -249,6 +289,10 @@ type ApiToken struct {
 // OnAuditLogged can be set to be called whenever an audit log is created.
 var OnAuditLogged func(action, resource, status, details string)
 
+// InitDB opens the database connection (SQLite by default, or PostgreSQL if
+// DB_TYPE=postgres / DB_DSN is set), tunes connection-pool and SQLite pragma
+// settings for the deployment mode, runs GORM auto-migration for every model,
+// and seeds default settings/role templates/alert rules on first run.
 func InitDB(dataSourceName string) error {
 	var err error
 
@@ -332,6 +376,10 @@ func InitDB(dataSourceName string) error {
 	return nil
 }
 
+// seedDefaults inserts the baseline Setting row, default RoleTemplates, and
+// the standard library of AlertRules on a fresh database, plus a couple of
+// one-time hotfix updates for rules created with now-corrected default values
+// in older LightHouse versions.
 func seedDefaults() {
 	// Settings
 	var count int64

@@ -215,6 +215,11 @@
 </template>
 
 <script setup>
+// Team CRUD panel: create/edit/delete teams, their permission grants,
+// container-visibility pattern, and alert routing (webhooks/email). Webhook
+// fields arrive from the API already masked as "********" when previously
+// set (see docs/SECURITY.md) — leaving them untouched on save preserves the
+// real stored value server-side.
 import { ref, computed, onMounted } from "vue";
 import { showToast } from "../utils/sharedState";
 import { apiFetch } from "../utils/apiFetch";
@@ -254,6 +259,7 @@ const defaultTeam = {
 const activeTeam = ref({ ...defaultTeam });
 const teamToDelete = ref(null);
 
+// fetchTeams loads the team list.
 const fetchTeams = async () => {
   try {
     const res = await apiFetch("/api/admin/teams", {
@@ -268,6 +274,8 @@ const fetchTeams = async () => {
   }
 };
 
+// fetchRoleTemplates loads the available permission presets for the
+// "apply a role template" dropdown.
 const roleTemplates = ref([]);
 const fetchRoleTemplates = async () => {
   try {
@@ -282,6 +290,8 @@ const fetchRoleTemplates = async () => {
   }
 };
 
+// fetchContainers loads currently-running containers, used to suggest names
+// for the allowed_containers pattern builder.
 const runningContainers = ref([]);
 const fetchContainers = async () => {
   try {
@@ -297,6 +307,8 @@ const fetchContainers = async () => {
   }
 };
 
+// appendContainer adds one container name to the allowed_containers pattern,
+// replacing the default match-all (".*") or de-duplicating against existing entries.
 const appendContainer = (name) => {
   let current = activeTeam.value.allowed_containers || "";
   if (current === ".*" || current === "") {
@@ -343,23 +355,28 @@ const permissionModules = [
   }
 ];
 
+// openCreateModal opens the form pre-filled with defaults for a new team.
 const openCreateModal = () => {
   isEditing.value = false;
   activeTeam.value = { ...defaultTeam };
   showModal.value = true;
 };
 
+// openEditModal opens the form pre-filled with an existing team's data.
 const openEditModal = (team) => {
   isEditing.value = true;
   activeTeam.value = { ...team };
   showModal.value = true;
 };
 
+// openDeleteConfirm stages a team for the delete-confirmation modal.
 const openDeleteConfirm = (team) => {
   teamToDelete.value = team;
   showDeleteModal.value = true;
 };
 
+// closeModal hides both the edit and delete-confirmation modals and resets
+// their staged state.
 const closeModal = () => {
   showModal.value = false;
   showDeleteModal.value = false;
@@ -367,6 +384,8 @@ const closeModal = () => {
   teamToDelete.value = null;
 };
 
+// saveTeam creates or updates a team (POST vs PUT based on isEditing),
+// serializing all permission flags and alert-routing fields as form data.
 const saveTeam = async () => {
   const isUpdate = isEditing.value;
   const url = isUpdate ? `/api/admin/teams/${activeTeam.value.id}` : "/api/admin/teams";
@@ -415,6 +434,7 @@ const saveTeam = async () => {
   }
 };
 
+// confirmDelete deletes the staged team.
 const confirmDelete = async () => {
   if (!teamToDelete.value) return;
   try {

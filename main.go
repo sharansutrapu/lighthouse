@@ -1,3 +1,11 @@
+// Package main implements the LightHouse server: a Docker management dashboard
+// with a Go/Echo REST + WebSocket API and an embedded Vue 3 single-page app.
+//
+// It covers user authentication (JWT + API tokens + Google OAuth), role-based
+// access control, live container inspection/control, real-time log and shell
+// streaming over WebSockets, system metrics collection, and wiring for the
+// alerts, backup, archival, GitOps, scanner and cluster (hub/spoke) subsystems
+// that live in their own packages under this module.
 package main
 
 import (
@@ -23,11 +31,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+	"golang.org/x/sync/singleflight"
 
 	"lighthouse/alerts"
 	"lighthouse/archival"
@@ -70,8 +80,12 @@ var (
 	apiContainersCacheMu sync.RWMutex
 	apiContainersCacheTS time.Time
 	NodeID               string
+	containerListGroup   singleflight.Group
 )
 
+// generateSecureCode returns a random 64-character hex string, used for
+// one-off secrets such as OAuth state values. Panics if the OS CSPRNG fails,
+// since continuing with a weak/predictable value would be unsafe.
 func generateSecureCode() string {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
@@ -80,6 +94,8 @@ func generateSecureCode() string {
 	return hex.EncodeToString(b)
 }
 
+// Container is the API-facing shape of a Docker container returned to the
+// frontend, combining Docker inspect data with live CPU/Memory usage.
 type Container struct {
 	ID         string  `json:"id"`
 	Name       string  `json:"name"`
@@ -97,6 +113,9 @@ type Container struct {
 	IsPlatform bool    `json:"is_platform"` // true when this is the LightHouse container itself
 }
 
+// UserClaims is the JWT payload used to authenticate every API/WebSocket
+// request. It carries a snapshot of the user's RBAC permissions so most
+// requests can be authorized without a database round-trip.
 type UserClaims struct {
 	ID                   int    `json:"id"`
 	Username             string `json:"username"`
@@ -120,6 +139,8 @@ type UserClaims struct {
 	jwt.RegisteredClaims
 }
 
+// User is a trimmed-down, JSON-serializable view of db.User used in API
+// responses that should not expose internal-only fields.
 type User struct {
 	ID                 int    `json:"id"`
 	Username           string `json:"username"`
@@ -135,6 +156,9 @@ type User struct {
 	IsActive           bool   `json:"is_active"`
 }
 
+// logAudit records a permanent audit-trail entry for a sensitive action
+// (login, container start/stop, settings change, etc). Failures to write are
+// logged but never block the caller's request.
 func logAudit(userID int, username, action, resource, status, message string) {
 	entry := db.AuditLog{
 		UserID:   uint(userID),
@@ -153,13 +177,22 @@ func logAudit(userID int, username, action, resource, status, message string) {
 	}
 }
 
+// cachedPattern holds a user's compiled container-visibility regexes plus an
+// expiry, so repeated requests from the same user skip DB + regex-compile work.
 type cachedPattern struct {
 	patterns []*regexp.Regexp
 	expiry   time.Time
 }
 
+// patternCache maps a user ID to its cachedPattern, refreshed every 30s so
+// permission changes propagate without needing a full cache invalidation.
 var patternCache sync.Map
 
+// getAuthorizedPatterns returns the compiled regex patterns that decide which
+// container names a user is allowed to see, merging the user's own
+// AllowedContainers with their team's (if any). Admins/unrestricted users get
+// a match-everything pattern; on any lookup failure it fails closed to a
+// match-nothing pattern rather than over-exposing containers.
 func getAuthorizedPatterns(userID int) []*regexp.Regexp {
 	if cached, ok := patternCache.Load(userID); ok {
 		cp := cached.(cachedPattern)
@@ -226,6 +259,9 @@ func getAuthorizedPatterns(userID int) []*regexp.Regexp {
 	return finalPatterns
 }
 
+// appendValidatedPattern compiles regP and appends it to patterns, silently
+// skipping (with a log line) anything too long or that fails to compile so a
+// single bad pattern can't break visibility filtering for the whole request.
 func appendValidatedPattern(patterns []*regexp.Regexp, regP string) []*regexp.Regexp {
 	if len(regP) > maxContainerPatternLen {
 		log.Printf("Skipping container pattern: exceeds %d characters", maxContainerPatternLen)
@@ -239,6 +275,11 @@ func appendValidatedPattern(patterns []*regexp.Regexp, regP string) []*regexp.Re
 	return append(patterns, compiled)
 }
 
+// main is the process entry point. It first hands off to the CLI dispatcher
+// (for subcommands like `reset-password`); if no CLI subcommand matched, it
+// boots the full LightHouse server: DB init, background schedulers/collectors,
+// the Echo HTTP/WebSocket router, and (depending on LIGHTHOUSE_MODE) the
+// hub/spoke clustering agent.
 func main() {
 	if exit, code := dispatchCLI(os.Args); exit {
 		os.Exit(code)
@@ -420,7 +461,7 @@ func main() {
 			if strings.HasPrefix(auth, "Bearer lh_pat_") {
 				tokenStr := strings.TrimPrefix(auth, "Bearer ")
 				var apiToken db.ApiToken
-				if err := db.GormDB.Where("token = ?", tokenStr).First(&apiToken).Error; err == nil {
+				if err := db.GormDB.Where("token = ?", hashApiToken(tokenStr)).First(&apiToken).Error; err == nil {
 					db.GormDB.Model(&apiToken).Update("last_used", time.Now())
 					var u db.User
 					if err := db.GormDB.Preload("Team").First(&u, apiToken.UserID).Error; err == nil {
@@ -682,6 +723,9 @@ func main() {
 // generic map slice expected by the rest of the API. A single json.Marshal is
 // performed on the already-typed slice and immediately decoded into []map — no
 // intermediate []byte is retained after the call returns.
+// extractContainers normalizes a Docker SDK list response into a slice of
+// plain maps, tolerating both the common bare-array shape and API versions
+// that wrap the array inside a top-level object.
 func extractContainers(res interface{}) []map[string]interface{} {
 	b, err := json.Marshal(res)
 	if err != nil {
@@ -756,63 +800,138 @@ var (
 	globalRunningCount    int
 )
 
+// pollHealth tracks whether the background poller is keeping up so callers
+// (e.g. /api/system/stats) can tell "healthy" apart from "stuck / stale".
+var (
+	lastPollErrorUnix      int64 // atomic; unix seconds of the most recent poll failure, 0 = none
+	lastPollSuccessUnix    int64 // atomic; unix seconds of the most recent successful poll
+	statPollInFlight       int32 // atomic; guards against overlapping ticks
+	statPollMaxConcurrency = 20  // bounded worker pool size for per-container stat fetches
+)
+
+// cpuTracker holds the previous CPU sample per container behind a mutex so it
+// can be safely read/written from the bounded worker-pool goroutines in
+// statPollLoop (a bare map is not safe for concurrent access).
+type cpuTracker struct {
+	mu   sync.Mutex
+	prev map[string][2]uint64
+}
+
+// newCPUTracker creates an empty, ready-to-use cpuTracker.
+func newCPUTracker() *cpuTracker {
+	return &cpuTracker{prev: make(map[string][2]uint64)}
+}
+
+// get returns the previously recorded CPU sample for id, if any.
+func (t *cpuTracker) get(id string) ([2]uint64, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	v, ok := t.prev[id]
+	return v, ok
+}
+
+// set stores the latest CPU sample for id.
+func (t *cpuTracker) set(id string, v [2]uint64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.prev[id] = v
+}
+
+// delete removes id's tracked CPU sample, called once its container stops.
+func (t *cpuTracker) delete(id string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.prev, id)
+}
+
+// statPollLoop is the background goroutine (started once at boot) that keeps
+// per-container CPU/memory/network/disk stats fresh every 2 seconds.
 func statPollLoop(cli *client.Client) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
-	var prevCPU = make(map[string][2]uint64) // id → [totalUsage, systemUsage]
+	cpuT := newCPUTracker()
 
 	for range ticker.C {
 		if cli == nil {
 			continue
 		}
-		res, err := cli.ContainerList(context.Background(), client.ContainerListOptions{All: true})
-		if err != nil {
+		// A single stuck/overloaded tick must never queue up behind the next
+		// one — that would make the whole loop fall further and further
+		// behind under load (e.g. thousands of containers). Skip instead.
+		if !atomic.CompareAndSwapInt32(&statPollInFlight, 0, 1) {
+			log.Printf("statPollLoop: previous poll still running, skipping this tick")
 			continue
 		}
 
-		// Build set of currently running IDs so we can prune stale cache entries.
-		running := make(map[string]bool)
-		runCount := 0
-		totalCount := len(res.Items)
+		go func() {
+			defer atomic.StoreInt32(&statPollInFlight, 0)
 
-		for _, ctr := range res.Items {
-			if ctr.State == "running" {
-				running[ctr.ID] = true
-				runCount++
+			res, err := cli.ContainerList(context.Background(), client.ContainerListOptions{All: true})
+			if err != nil {
+				log.Printf("statPollLoop: ContainerList failed, live stats may be stale: %v", err)
+				atomic.StoreInt64(&lastPollErrorUnix, time.Now().Unix())
+				return
 			}
-		}
+			atomic.StoreInt64(&lastPollSuccessUnix, time.Now().Unix())
 
-		globalContainerListMu.Lock()
-		globalContainersCount = totalCount
-		globalRunningCount = runCount
-		globalContainerListMu.Unlock()
+			// Build set of currently running IDs so we can prune stale cache entries.
+			running := make(map[string]bool)
+			runCount := 0
+			totalCount := len(res.Items)
 
-		// Remove stale entries for stopped containers.
-		liveStatsMu.Lock()
-		for id := range liveStatsCache {
-			if !running[id] {
-				delete(liveStatsCache, id)
-				delete(prevCPU, id)
+			for _, ctr := range res.Items {
+				if ctr.State == "running" {
+					running[ctr.ID] = true
+					runCount++
+				}
 			}
-		}
-		liveStatsMu.Unlock()
 
-		// Poll each running container — one HTTP round-trip per container, then done.
-		for id := range running {
-			pollOneStat(cli, id, prevCPU)
-		}
+			globalContainerListMu.Lock()
+			globalContainersCount = totalCount
+			globalRunningCount = runCount
+			globalContainerListMu.Unlock()
+
+			// Remove stale entries for stopped containers.
+			liveStatsMu.Lock()
+			for id := range liveStatsCache {
+				if !running[id] {
+					delete(liveStatsCache, id)
+					cpuT.delete(id)
+				}
+			}
+			liveStatsMu.Unlock()
+
+			// Poll containers concurrently through a bounded worker pool — a plain
+			// sequential loop here cannot keep the 2-second cadence once the fleet
+			// grows into the hundreds/thousands, since each call blocks on its own
+			// HTTP round-trip (up to the 3s per-call timeout in pollOneStat).
+			sem := make(chan struct{}, statPollMaxConcurrency)
+			var wg sync.WaitGroup
+			for id := range running {
+				wg.Add(1)
+				sem <- struct{}{}
+				go func(id string) {
+					defer wg.Done()
+					defer func() { <-sem }()
+					pollOneStat(cli, id, cpuT)
+				}(id)
+			}
+			wg.Wait()
+		}()
 	}
 }
 
 // pollOneStat fetches a single one-shot stats snapshot for one container and
-// updates liveStatsCache. prevCPU is used to compute accurate CPU deltas across polls.
-func pollOneStat(cli *client.Client, id string, prevCPU map[string][2]uint64) {
+// updates liveStatsCache. cpuT tracks the previous sample to compute accurate
+// CPU deltas across polls and is safe for concurrent use by the worker pool.
+func pollOneStat(cli *client.Client, id string, cpuT *cpuTracker) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
 	s, err := cli.ContainerStats(ctx, id, client.ContainerStatsOptions{Stream: false})
 	if err != nil {
+		log.Printf("pollOneStat: ContainerStats failed for %s: %v", id, err)
 		return
 	}
 	defer s.Body.Close()
@@ -842,6 +961,7 @@ func pollOneStat(cli *client.Client, id string, prevCPU map[string][2]uint64) {
 	}
 
 	if err := json.NewDecoder(s.Body).Decode(&stat); err != nil {
+		log.Printf("pollOneStat: failed to decode stats for %s: %v", id, err)
 		return
 	}
 
@@ -850,7 +970,7 @@ func pollOneStat(cli *client.Client, id string, prevCPU map[string][2]uint64) {
 	curTotal := stat.CPUStats.CPUUsage.TotalUsage
 	curSystem := stat.CPUStats.SystemUsage
 
-	if prev, ok := prevCPU[id]; ok {
+	if prev, ok := cpuT.get(id); ok {
 		prevTotal := prev[0]
 		prevSys := prev[1]
 
@@ -865,7 +985,7 @@ func pollOneStat(cli *client.Client, id string, prevCPU map[string][2]uint64) {
 		}
 	}
 	// Store current for next tick
-	prevCPU[id] = [2]uint64{curTotal, curSystem}
+	cpuT.set(id, [2]uint64{curTotal, curSystem})
 
 	// Memory: subtract inactive_file (cgroups v2) or total_inactive_file (cgroups v1) for working-set usage.
 	memUsed := stat.MemoryStats.Usage
@@ -911,6 +1031,9 @@ func pollOneStat(cli *client.Client, id string, prevCPU map[string][2]uint64) {
 	liveStatsMu.Unlock()
 }
 
+// systemStatsBroadcaster is the background goroutine that keeps
+// latestSystemStats fresh (host CPU/memory + running/total container counts)
+// for handleGETSystemStats and handleGETWsSystemStats to read.
 func systemStatsBroadcaster(cli *client.Client) {
 	// Pre-compute core count once — it essentially never changes at runtime.
 	cores, err := cpu.Counts(true)
@@ -975,6 +1098,8 @@ func systemStatsBroadcaster(cli *client.Client) {
 	}
 }
 
+// getRetentionDays reads the configured metrics retention window from
+// settings, defaulting to 30 days if unset or invalid.
 func getRetentionDays() int {
 	var days int
 	err := db.DB.QueryRow("SELECT metrics_retention_days FROM settings WHERE id = 1").Scan(&days)
@@ -984,6 +1109,10 @@ func getRetentionDays() int {
 	return days
 }
 
+// startStatsCollector launches the three background loops that keep the
+// dashboard's metrics fresh: the system-stats broadcaster, the per-container
+// stat poller, and a 30-second ticker that persists stats and periodically
+// prunes old rows.
 func startStatsCollector(cli *client.Client) {
 	go systemStatsBroadcaster(cli)
 	go statPollLoop(cli)
@@ -1031,6 +1160,10 @@ var (
 	prevStatsMu sync.Mutex
 )
 
+// collectStats snapshots current host + per-container CPU/memory/network/disk
+// usage into db.Stat/db.SystemStat rows (computing network/disk deltas since
+// the last call), and persists them — locally, or by forwarding to the Hub if
+// this node is running in spoke mode.
 func collectStats(cli *client.Client) {
 	// System Stats
 	v, _ := mem.VirtualMemory()
@@ -1167,6 +1300,9 @@ func collectStats(cli *client.Client) {
 	}
 }
 
+// seedAdmin ensures a default admin/admin123 account exists on first boot,
+// and re-asserts the standard action permissions on every admin account (so a
+// permissions bug or manual DB edit can't accidentally lock admins out).
 func seedAdmin() {
 	var count int64
 	db.GormDB.Model(&db.User{}).Where("username = ?", "admin").Count(&count)
@@ -1200,12 +1336,19 @@ func seedAdmin() {
 	})
 }
 
+// validIDRegex restricts container IDs/names accepted from URL params to a
+// safe charset, blocking path-traversal or command-injection attempts.
 var validIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
+// isValidContainerID reports whether id is safe to interpolate into file
+// paths, exec.Command args, or shell/log output.
 func isValidContainerID(id string) bool {
 	return validIDRegex.MatchString(id)
 }
 
+// cleanupStaleAlerts marks any alert-history rows that never got a delivery
+// outcome recorded (e.g. the process crashed mid-send) as failed, so they
+// don't sit in an ambiguous "pending" state forever.
 func cleanupStaleAlerts() {
 	res := db.GormDB.Model(&db.AlertHistory{}).
 		Where("delivery_status = ?", "").
@@ -1217,6 +1360,9 @@ func cleanupStaleAlerts() {
 	}
 }
 
+// triggerRetroactiveScans runs once when auto-scan is first enabled: it scans
+// every currently-running container's image that has no existing scan result
+// yet, so users don't have to wait for the next scheduled sweep to see results.
 func triggerRetroactiveScans(cli *client.Client) {
 	log.Println("Starting retroactive vulnerability scan sweep...")
 	containers, err := cli.ContainerList(context.Background(), client.ContainerListOptions{All: false})
@@ -1241,6 +1387,9 @@ func triggerRetroactiveScans(cli *client.Client) {
 	log.Println("Retroactive vulnerability scan sweep complete.")
 }
 
+// handleGETAuthGoogle starts the Google OAuth login flow: it stores a random
+// CSRF state value (optionally carrying an invite token) in an HttpOnly
+// cookie, then redirects the browser to Google's consent screen.
 func handleGETAuthGoogle() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		var setting db.Setting
@@ -1283,6 +1432,12 @@ func handleGETAuthGoogle() echo.HandlerFunc {
 	}
 }
 
+// handleGETAuthGoogleCallback completes the Google OAuth flow: validates the
+// CSRF state cookie, exchanges the auth code for a token, fetches the user's
+// Google profile, then either binds it to an invited/existing account or
+// bootstraps the very first user as admin. On success it stashes a short-lived
+// one-time code (redeemed via handlePOSTApiTokenExchange) rather than putting
+// the JWTs directly in the redirect URL.
 func handleGETAuthGoogleCallback() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		stateCookie, err := c.Cookie("oauth_state")
@@ -1477,6 +1632,9 @@ func handleGETAuthGoogleCallback() echo.HandlerFunc {
 	}
 }
 
+// handlePOSTApiTokenExchange redeems the one-time code minted at the end of
+// the OAuth callback for the actual access/refresh token pair. Codes are
+// single-use (LoadAndDelete) and expire after 60 seconds.
 func handlePOSTApiTokenExchange() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		code := c.FormValue("code")
@@ -1491,6 +1649,10 @@ func handlePOSTApiTokenExchange() echo.HandlerFunc {
 	}
 }
 
+// handlePOSTApiToken is the username/password login endpoint (`/api/token`).
+// It enforces IP-based brute-force rate limiting, verifies the bcrypt hash,
+// merges the user's team permissions, and returns a fresh JWT access/refresh
+// token pair.
 func handlePOSTApiToken() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		ip := c.RealIP()
@@ -1581,6 +1743,9 @@ func handlePOSTApiToken() echo.HandlerFunc {
 	}
 }
 
+// handlePOSTApiTokenRefresh exchanges a valid refresh token for a new
+// access/refresh pair, re-checking the user's password-changed flag so a
+// forced password reset can't be bypassed with an old refresh token.
 func handlePOSTApiTokenRefresh() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		refreshToken := strings.TrimSpace(c.FormValue("refresh_token"))
@@ -1616,6 +1781,9 @@ func handlePOSTApiTokenRefresh() echo.HandlerFunc {
 	}
 }
 
+// handleGETApiConfig exposes the server's global action-permission flags
+// (ALLOW_START/STOP/etc.) so the frontend can hide controls that are
+// server-disabled before even checking the user's own permissions.
 func handleGETApiConfig() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]interface{}{
@@ -1629,6 +1797,10 @@ func handleGETApiConfig() echo.HandlerFunc {
 	}
 }
 
+// handleGETContainers lists all Docker containers visible to the caller,
+// applying the user's AllowedContainers regex filter and merging in live
+// CPU/memory stats and cached resource limits. Results are cached briefly
+// (see apiContainersCache) to absorb bursts of dashboard polling.
 func handleGETContainers(cli *client.Client) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
@@ -1649,18 +1821,28 @@ func handleGETContainers(cli *client.Client) echo.HandlerFunc {
 		} else {
 			apiContainersCacheMu.RUnlock()
 
-			res, err := cli.ContainerList(context.Background(), client.ContainerListOptions{All: true})
+			// singleflight collapses concurrent cache-miss requests (e.g. many
+			// dashboard tabs refreshing at once) into a single ContainerList call
+			// instead of one Docker API round-trip per in-flight request.
+			v, err, _ := containerListGroup.Do("container_list", func() (interface{}, error) {
+				res, err := cli.ContainerList(context.Background(), client.ContainerListOptions{All: true})
+				if err != nil {
+					return nil, err
+				}
+				extracted := extractContainers(res.Items)
+
+				apiContainersCacheMu.Lock()
+				apiContainersCache = extracted
+				apiContainersCacheTS = time.Now()
+				apiContainersCacheMu.Unlock()
+
+				return extracted, nil
+			})
 			if err != nil {
 				log.Printf("ContainerList error: %v", err)
 				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to list containers"})
 			}
-
-			baseContainers = extractContainers(res.Items)
-
-			apiContainersCacheMu.Lock()
-			apiContainersCache = baseContainers
-			apiContainersCacheTS = time.Now()
-			apiContainersCacheMu.Unlock()
+			baseContainers = v.([]map[string]interface{})
 		}
 
 		// In hub mode we must inject NodeID into spoke containers — use a copy only
@@ -1727,12 +1909,22 @@ func handleGETContainers(cli *client.Client) echo.HandlerFunc {
 			}
 
 			if visible {
-				ctr["_parsed_name"] = name
-				ctr["_parsed_image"] = image
-				ctr["_parsed_image_id"] = imageID
-				ctr["_parsed_id"] = id
-				ctr["_is_platform"] = isPlatform
-				visibleContainers = append(visibleContainers, ctr)
+				// Copy instead of mutating ctr in place: ctr may be a
+				// reference shared with other concurrent requests (the
+				// container-list cache and the singleflight-deduped refill
+				// both return the same underlying map objects to every
+				// caller), so writing "_parsed_*" keys directly into it is a
+				// data race the moment two requests overlap.
+				parsed := make(map[string]interface{}, len(ctr)+5)
+				for k, v := range ctr {
+					parsed[k] = v
+				}
+				parsed["_parsed_name"] = name
+				parsed["_parsed_image"] = image
+				parsed["_parsed_image_id"] = imageID
+				parsed["_parsed_id"] = id
+				parsed["_is_platform"] = isPlatform
+				visibleContainers = append(visibleContainers, parsed)
 			}
 		}
 
@@ -1852,6 +2044,9 @@ func handleGETContainers(cli *client.Client) echo.HandlerFunc {
 	}
 }
 
+// handleGETContainersIdInspect returns full Docker inspect data for one
+// container, enforcing the caller's visibility rules and stripping
+// sensitive-looking environment variables before returning it.
 func handleGETContainersIdInspect(cli *client.Client) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		id := c.Param("id")
@@ -1906,6 +2101,11 @@ func handleGETContainersIdInspect(cli *client.Client) echo.HandlerFunc {
 	}
 }
 
+// handlePOSTContainersIdAction performs start/stop/restart/remove on a
+// container after checking the server-wide env toggle, the user's specific
+// can_* permission, and their container-visibility regex. In hub mode, the
+// action is transparently forwarded to whichever Spoke actually owns the
+// container instead of the (nonexistent) local Docker daemon.
 func handlePOSTContainersIdAction(cli *client.Client) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		id := c.Param("id")
@@ -2066,6 +2266,9 @@ func handlePOSTContainersIdAction(cli *client.Client) echo.HandlerFunc {
 	}
 }
 
+// handlePOSTContainersIdScan triggers a Trivy vulnerability scan for a
+// container's image, either dispatching it to the owning Spoke (hub mode) or
+// running it locally in the background so the request returns immediately.
 func handlePOSTContainersIdScan(cli *client.Client) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
@@ -2102,6 +2305,11 @@ func handlePOSTContainersIdScan(cli *client.Client) echo.HandlerFunc {
 		}
 
 		imageParam := c.QueryParam("image")
+		if imageParam != "" {
+			if err := scanner.ValidateImageName(imageParam); err != nil {
+				return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid image reference"})
+			}
+		}
 
 		go func() {
 			ctx := context.Background()
@@ -2130,6 +2338,8 @@ func handlePOSTContainersIdScan(cli *client.Client) echo.HandlerFunc {
 	}
 }
 
+// handleGETImagesScans returns the most recent stored vulnerability scan
+// result for the given image name (query param), if one exists.
 func handleGETImagesScans() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		imageName := c.QueryParam("image")
@@ -2144,6 +2354,8 @@ func handleGETImagesScans() echo.HandlerFunc {
 	}
 }
 
+// handleGETContainersIdLogsDownload streams a container's full stdout/stderr
+// history back as a downloadable `.log` attachment.
 func handleGETContainersIdLogsDownload(cli *client.Client) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		id := c.Param("id")
@@ -2205,6 +2417,9 @@ func handleGETContainersIdLogsDownload(cli *client.Client) echo.HandlerFunc {
 	}
 }
 
+// handleGETContainersIdLogs returns a page of container log lines for the
+// in-app viewer: the most recent 100 lines by default, or up to 100 lines
+// before the `until` timestamp when paging further back into history.
 func handleGETContainersIdLogs(cli *client.Client) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		id := c.Param("id")
@@ -2333,6 +2548,8 @@ func handleGETContainersIdLogs(cli *client.Client) echo.HandlerFunc {
 	}
 }
 
+// handleGETContainersIdLogsCount returns the total number of log lines
+// currently available for a container, used by the UI to size its scrollback.
 func handleGETContainersIdLogsCount(cli *client.Client) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		id := c.Param("id")
@@ -2394,6 +2611,10 @@ func handleGETContainersIdLogsCount(cli *client.Client) echo.HandlerFunc {
 	}
 }
 
+// handleGETContainersIdStats proxies Docker's live streaming stats endpoint
+// (`docker stats`) to the client as newline-delimited JSON, bounding the
+// stream's lifetime to the request context so an abandoned client can't leak
+// a Docker daemon connection forever.
 func handleGETContainersIdStats(cli *client.Client) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		id := c.Param("id")
@@ -2430,7 +2651,15 @@ func handleGETContainersIdStats(cli *client.Client) echo.HandlerFunc {
 			}
 		}
 
-		stats, err := cli.ContainerStats(context.Background(), id, client.ContainerStatsOptions{Stream: true})
+		// Bind the Docker stream's lifetime to the actual HTTP client connection
+		// (with an outer safety cap) instead of context.Background(). Otherwise an
+		// abandoned/disconnected client (closed tab, dropped proxy, sleeping phone)
+		// leaves the goroutine and the underlying Docker daemon connection open
+		// indefinitely — a slow connection-pool/fd leak under normal usage.
+		streamCtx, cancel := context.WithTimeout(c.Request().Context(), 2*time.Hour)
+		defer cancel()
+
+		stats, err := cli.ContainerStats(streamCtx, id, client.ContainerStatsOptions{Stream: true})
 		if err != nil {
 			log.Printf("ContainerStats error: %v", err)
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch container stats"})
@@ -2443,6 +2672,11 @@ func handleGETContainersIdStats(cli *client.Client) echo.HandlerFunc {
 		enc := json.NewEncoder(c.Response())
 		dec := json.NewDecoder(stats.Body)
 		for {
+			select {
+			case <-streamCtx.Done():
+				return nil
+			default:
+			}
 			var data interface{}
 			if err := dec.Decode(&data); err != nil {
 				break
@@ -2456,6 +2690,9 @@ func handleGETContainersIdStats(cli *client.Client) echo.HandlerFunc {
 	}
 }
 
+// handleGETContainersIdStatsNow returns the single most recent cached
+// CPU/memory/network/disk sample for a container (from liveStatsCache),
+// cheaper than opening a new Docker stats stream for a one-off read.
 func handleGETContainersIdStatsNow(cli *client.Client) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		id := c.Param("id")
@@ -2520,6 +2757,9 @@ func handleGETContainersIdStatsNow(cli *client.Client) echo.HandlerFunc {
 	}
 }
 
+// handleGETContainersIdHistory returns up to 200 historical db.Stat rows for
+// a container, filterable by an explicit from/to range or a relative
+// `duration` (e.g. "6h").
 func handleGETContainersIdHistory(cli *client.Client) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		id := c.Param("id")
@@ -2596,6 +2836,8 @@ func handleGETContainersIdHistory(cli *client.Client) echo.HandlerFunc {
 	}
 }
 
+// handleGETSystemStorage reports total/used disk space for the host's root
+// filesystem via a raw statfs syscall.
 func handleGETSystemStorage() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		var stat syscall.Statfs_t
@@ -2616,6 +2858,8 @@ func handleGETSystemStorage() echo.HandlerFunc {
 	}
 }
 
+// handleGETSystemHistory returns historical host-level (not per-container)
+// metrics, filterable by from/to range, relative duration, or a day count.
 func handleGETSystemHistory() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		duration := c.QueryParam("duration")
@@ -2662,17 +2906,42 @@ func handleGETSystemHistory() echo.HandlerFunc {
 	}
 }
 
+// handleGETSystemStats returns the latest in-memory host metrics snapshot
+// plus a poll-health flag so the UI can distinguish "live" from "stale" data
+// during a Docker daemon outage.
 func handleGETSystemStats() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		sysStatsMu.RLock()
-		defer sysStatsMu.RUnlock()
-		if latestSystemStats == nil {
+		snapshot := latestSystemStats
+		sysStatsMu.RUnlock()
+		if snapshot == nil {
 			return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "Stats not ready"})
 		}
-		return c.JSON(http.StatusOK, latestSystemStats)
+
+		// Surface poll health so a Docker-daemon outage shows up as "stale/error"
+		// in the UI instead of silently repeating the last good numbers forever.
+		errTs := atomic.LoadInt64(&lastPollErrorUnix)
+		okTs := atomic.LoadInt64(&lastPollSuccessUnix)
+		resp := struct {
+			*systemStatsSnapshot
+			PollHealthy            bool   `json:"poll_healthy"`
+			LastPollError          string `json:"last_poll_error,omitempty"`
+			SecondsSinceLastPollOK int64  `json:"seconds_since_last_poll_ok,omitempty"`
+		}{systemStatsSnapshot: snapshot}
+
+		resp.PollHealthy = errTs == 0 || okTs > errTs
+		if okTs > 0 {
+			resp.SecondsSinceLastPollOK = time.Now().Unix() - okTs
+		}
+		if !resp.PollHealthy {
+			resp.LastPollError = fmt.Sprintf("container stat polling has been failing since %s", time.Unix(errTs, 0).UTC().Format(time.RFC3339))
+		}
+		return c.JSON(http.StatusOK, resp)
 	}
 }
 
+// handleGETSystemInfo reports the Docker Engine and docker-compose/compose
+// plugin versions installed on the host, for display in the Admin panel.
 func handleGETSystemInfo(cli *client.Client) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		dockerVer := "Unknown"
@@ -2698,6 +2967,10 @@ func handleGETSystemInfo(cli *client.Client) echo.HandlerFunc {
 	}
 }
 
+// handlePOSTUserChangePassword lets the logged-in user set a new password. If
+// they've already completed their mandatory first-login change, it requires
+// re-entering the current password so a hijacked session token alone can't be
+// used to lock the real owner out.
 func handlePOSTUserChangePassword() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
@@ -2741,6 +3014,9 @@ func handlePOSTUserChangePassword() echo.HandlerFunc {
 	}
 }
 
+// handleGETUserMe returns the current user's profile and effective
+// permissions (own permissions OR'd with their team's), used by the frontend
+// to decide which UI controls to show.
 func handleGETUserMe() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
@@ -2782,16 +3058,54 @@ func handleGETUserMe() echo.HandlerFunc {
 	}
 }
 
+// handleGETTeams lists all teams with their permission flags. Webhook URLs are
+// masked (see docs/SECURITY.md) since they embed bearer-equivalent secrets.
 func handleGETTeams() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		var teams []db.Team
 		if err := db.GormDB.Find(&teams).Error; err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch teams"})
 		}
-		return c.JSON(http.StatusOK, teams)
+		maskSecret := func(s string) string {
+			if s != "" {
+				return "********"
+			}
+			return ""
+		}
+		res := make([]map[string]interface{}, 0, len(teams))
+		for _, t := range teams {
+			res = append(res, map[string]interface{}{
+				"id":                     t.ID,
+				"name":                   t.Name,
+				"description":            t.Description,
+				"allowed_containers":     t.AllowedContainers,
+				"role_template_id":       t.RoleTemplateID,
+				"can_start":              t.CanStart,
+				"can_stop":               t.CanStop,
+				"can_restart":            t.CanRestart,
+				"can_delete":             t.CanDelete,
+				"can_shell":              t.CanShell,
+				"can_view_system_health": t.CanViewSystemHealth,
+				"can_run_scans":          t.CanRunScans,
+				"can_create_deployments": t.CanCreateDeployments,
+				"can_edit_deployments":   t.CanEditDeployments,
+				"can_delete_deployments": t.CanDeleteDeployments,
+				"alerts_email_address":   t.AlertsEmailAddress,
+				// Webhook URLs embed bearer-equivalent secrets in their path — mask like Settings.
+				"slack_webhook_url":   maskSecret(t.SlackWebhookUrl),
+				"msteams_webhook_url": maskSecret(t.MSTeamsWebhookUrl),
+				"gchat_webhook_url":   maskSecret(t.GChatWebhookUrl),
+				"generic_webhook_url": maskSecret(t.GenericWebhookUrl),
+				"created_at":          t.CreatedAt,
+				"updated_at":          t.UpdatedAt,
+			})
+		}
+		return c.JSON(http.StatusOK, res)
 	}
 }
 
+// handlePOSTTeams creates a new team with the given permissions, visibility
+// pattern, and alert routing (webhooks/email). Team names must be unique.
 func handlePOSTTeams() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		name := c.FormValue("name")
@@ -2839,6 +3153,9 @@ func handlePOSTTeams() echo.HandlerFunc {
 	}
 }
 
+// handlePUTTeamsId updates a team's permissions/visibility/alert settings. A
+// masked `********` webhook value in the request is treated as "unchanged"
+// and the existing stored URL is preserved rather than overwritten.
 func handlePUTTeamsId() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		idParam := c.Param("id")
@@ -2851,6 +3168,26 @@ func handlePUTTeamsId() echo.HandlerFunc {
 		allowedContainers := c.FormValue("allowed_containers")
 		if allowedContainers == "" {
 			allowedContainers = ".*"
+		}
+
+		var existing db.Team
+		db.GormDB.First(&existing, id)
+
+		slackWebhookUrl := c.FormValue("slack_webhook_url")
+		if slackWebhookUrl == "********" {
+			slackWebhookUrl = existing.SlackWebhookUrl
+		}
+		msteamsWebhookUrl := c.FormValue("msteams_webhook_url")
+		if msteamsWebhookUrl == "********" {
+			msteamsWebhookUrl = existing.MSTeamsWebhookUrl
+		}
+		gchatWebhookUrl := c.FormValue("gchat_webhook_url")
+		if gchatWebhookUrl == "********" {
+			gchatWebhookUrl = existing.GChatWebhookUrl
+		}
+		genericWebhookUrl := c.FormValue("generic_webhook_url")
+		if genericWebhookUrl == "********" {
+			genericWebhookUrl = existing.GenericWebhookUrl
 		}
 
 		updates := map[string]interface{}{
@@ -2866,10 +3203,10 @@ func handlePUTTeamsId() echo.HandlerFunc {
 			"can_edit_deployments":   c.FormValue("can_edit_deployments") == "true",
 			"can_delete_deployments": c.FormValue("can_delete_deployments") == "true",
 			"alerts_email_address":   c.FormValue("alerts_email_address"),
-			"slack_webhook_url":      c.FormValue("slack_webhook_url"),
-			"ms_teams_webhook_url":   c.FormValue("msteams_webhook_url"),
-			"g_chat_webhook_url":     c.FormValue("gchat_webhook_url"),
-			"generic_webhook_url":    c.FormValue("generic_webhook_url"),
+			"slack_webhook_url":      slackWebhookUrl,
+			"ms_teams_webhook_url":   msteamsWebhookUrl,
+			"g_chat_webhook_url":     gchatWebhookUrl,
+			"generic_webhook_url":    genericWebhookUrl,
 			"role_template_id":       nil,
 		}
 
@@ -2887,6 +3224,8 @@ func handlePUTTeamsId() echo.HandlerFunc {
 	}
 }
 
+// handleDELETETeamsId deletes a team. Members keep their individual
+// permissions but lose the team's additional (OR'd) grants.
 func handleDELETETeamsId() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		idParam := c.Param("id")
@@ -2899,6 +3238,8 @@ func handleDELETETeamsId() echo.HandlerFunc {
 	}
 }
 
+// handleGETUsers returns a paginated (10 per page) list of user accounts with
+// their effective (user OR team) permissions, for the Admin > Users panel.
 func handleGETUsers() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		page, _ := strconv.Atoi(c.QueryParam("page"))
@@ -2948,6 +3289,9 @@ func handleGETUsers() echo.HandlerFunc {
 	}
 }
 
+// handlePUTUsersIdActive enables or disables a user account. User ID 1 (the
+// bootstrap admin) is excluded from the update to guarantee there's always at
+// least one account that can never be locked out.
 func handlePUTUsersIdActive() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		id := c.Param("id")
@@ -2969,6 +3313,9 @@ func handlePUTUsersIdActive() echo.HandlerFunc {
 	}
 }
 
+// handlePOSTUsers creates a new user account, either with a local
+// username/password or via an email invite (a time-limited token emailed to
+// the user, redeemed through Google OAuth sign-in).
 func handlePOSTUsers() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		authMethod := c.FormValue("authMethod")
@@ -3118,6 +3465,10 @@ func handlePOSTUsers() echo.HandlerFunc {
 	}
 }
 
+// handlePUTUsersIdPermissions updates one user's action permissions,
+// visibility pattern, and team assignment. Action flags are clamped against
+// the server's global ALLOW_* toggles so a user can never be granted more
+// than the deployment allows.
 func handlePUTUsersIdPermissions() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		id := c.Param("id")
@@ -3166,6 +3517,9 @@ func handlePUTUsersIdPermissions() echo.HandlerFunc {
 	}
 }
 
+// handlePUTUsersIdPassword lets an administrator forcibly set a user's
+// password (e.g. after a lockout), marking it as changed so the user isn't
+// prompted to change it again on next login.
 func handlePUTUsersIdPassword() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		id := c.Param("id")
@@ -3196,6 +3550,9 @@ func handlePUTUsersIdPassword() echo.HandlerFunc {
 	}
 }
 
+// handleDELETEUsersId deletes a user account. User ID 1 (the bootstrap
+// admin) can never be deleted, guaranteeing the deployment always has at
+// least one recoverable administrator.
 func handleDELETEUsersId() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		id := c.Param("id")
@@ -3219,6 +3576,8 @@ func handleDELETEUsersId() echo.HandlerFunc {
 	}
 }
 
+// handleGETAudit returns up to the 1000 most recent audit-log entries,
+// optionally filtered to a from/to timestamp range.
 func handleGETAudit() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		from := c.QueryParam("from")
@@ -3249,6 +3608,8 @@ func handleGETAudit() echo.HandlerFunc {
 	}
 }
 
+// handleGETRoleTemplates lists the reusable permission presets (role
+// templates) administrators can assign to new local/invited users.
 func handleGETRoleTemplates() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		var templates []db.RoleTemplate
@@ -3272,6 +3633,7 @@ func handleGETRoleTemplates() echo.HandlerFunc {
 	}
 }
 
+// handlePOSTRoleTemplates creates a new permission preset.
 func handlePOSTRoleTemplates() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		var rt db.RoleTemplate
@@ -3288,6 +3650,9 @@ func handlePOSTRoleTemplates() echo.HandlerFunc {
 	}
 }
 
+// handleDELETERoleTemplatesId deletes a role template. Users already
+// assigned to it keep their current permission values (the FK is not
+// cascaded), only the reusable preset itself is removed.
 func handleDELETERoleTemplatesId() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		idParam := c.Param("id")
@@ -3300,6 +3665,7 @@ func handleDELETERoleTemplatesId() echo.HandlerFunc {
 	}
 }
 
+// handleGETAlertsRules lists all configured alert rules, newest first.
 func handleGETAlertsRules() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		var rules []alerts.AlertRule
@@ -3308,6 +3674,9 @@ func handleGETAlertsRules() echo.HandlerFunc {
 	}
 }
 
+// handleGETSettings returns the global application settings (SMTP, OAuth,
+// backup/archival, scanning). All secret-bearing fields are masked to
+// "********" rather than returned in plaintext (see docs/SECURITY.md).
 func handleGETSettings() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		var settings db.Setting
@@ -3327,10 +3696,12 @@ func handleGETSettings() echo.HandlerFunc {
 			"smtp_pass":              maskSecret(settings.SmtpPass),
 			"google_client_id":       settings.GoogleClientID,
 			"google_client_secret":   maskSecret(settings.GoogleClientSecret),
-			"slack_webhook_url":      settings.SlackWebhookUrl,
-			"msteams_webhook_url":    settings.MSTeamsWebhookUrl,
-			"gchat_webhook_url":      settings.GChatWebhookUrl,
-			"generic_webhook_url":    settings.GenericWebhookUrl,
+			// Webhook URLs embed bearer-equivalent secrets in their path (e.g. Slack's
+			// /services/T../B../XXXX segment) — mask like any other credential.
+			"slack_webhook_url":      maskSecret(settings.SlackWebhookUrl),
+			"msteams_webhook_url":    maskSecret(settings.MSTeamsWebhookUrl),
+			"gchat_webhook_url":      maskSecret(settings.GChatWebhookUrl),
+			"generic_webhook_url":    maskSecret(settings.GenericWebhookUrl),
 			"alerts_email_address":   settings.AlertsEmailAddress,
 			"backup_enabled":         settings.BackupEnabled,
 			"backup_provider":        settings.BackupProvider,
@@ -3338,7 +3709,8 @@ func handleGETSettings() echo.HandlerFunc {
 			"backup_bucket":          settings.BackupBucket,
 			"backup_region":          settings.BackupRegion,
 			"backup_endpoint":        settings.BackupEndpoint,
-			"backup_auth1":           settings.BackupAuth1,
+			// backup_auth1 can hold a full GCS service-account JSON key — mask it too.
+			"backup_auth1":           maskSecret(settings.BackupAuth1),
 			"backup_auth2":           maskSecret(settings.BackupAuth2),
 			"archival_enabled":       settings.ArchivalEnabled,
 			"archive_metrics":        settings.ArchiveMetrics,
@@ -3348,7 +3720,7 @@ func handleGETSettings() echo.HandlerFunc {
 			"archival_bucket":        settings.ArchivalBucket,
 			"archival_region":        settings.ArchivalRegion,
 			"archival_endpoint":      settings.ArchivalEndpoint,
-			"archival_auth1":         settings.ArchivalAuth1,
+			"archival_auth1":         maskSecret(settings.ArchivalAuth1),
 			"archival_auth2":         maskSecret(settings.ArchivalAuth2),
 			"auto_scan_enabled":      settings.AutoScanEnabled,
 			"scheduled_scan_enabled": settings.ScheduledScanEnabled,
@@ -3357,6 +3729,9 @@ func handleGETSettings() echo.HandlerFunc {
 	}
 }
 
+// handlePUTSettings saves the global application settings. Any secret field
+// submitted back as the "********" mask placeholder is treated as unchanged
+// and the previously stored value is preserved instead of being overwritten.
 func handlePUTSettings(cli *client.Client) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		var payload struct {
@@ -3407,11 +3782,29 @@ func handlePUTSettings(cli *client.Client) echo.HandlerFunc {
 		if payload.GoogleClientSecret == "********" {
 			payload.GoogleClientSecret = s.GoogleClientSecret
 		}
+		if payload.BackupAuth1 == "********" {
+			payload.BackupAuth1 = s.BackupAuth1
+		}
 		if payload.BackupAuth2 == "********" {
 			payload.BackupAuth2 = s.BackupAuth2
 		}
+		if payload.ArchivalAuth1 == "********" {
+			payload.ArchivalAuth1 = s.ArchivalAuth1
+		}
 		if payload.ArchivalAuth2 == "********" {
 			payload.ArchivalAuth2 = s.ArchivalAuth2
+		}
+		if payload.SlackWebhookUrl == "********" {
+			payload.SlackWebhookUrl = s.SlackWebhookUrl
+		}
+		if payload.MSTeamsWebhookUrl == "********" {
+			payload.MSTeamsWebhookUrl = s.MSTeamsWebhookUrl
+		}
+		if payload.GChatWebhookUrl == "********" {
+			payload.GChatWebhookUrl = s.GChatWebhookUrl
+		}
+		if payload.GenericWebhookUrl == "********" {
+			payload.GenericWebhookUrl = s.GenericWebhookUrl
 		}
 
 		err := db.GormDB.Model(&db.Setting{}).Where("id = ?", 1).Updates(map[string]interface{}{
@@ -3473,6 +3866,9 @@ func handlePUTSettings(cli *client.Client) echo.HandlerFunc {
 	}
 }
 
+// handlePOSTSettingsBackupTest runs an immediate, on-demand backup using the
+// currently saved settings, so an admin can verify credentials before relying
+// on the cron schedule.
 func handlePOSTSettingsBackupTest() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		var s db.Setting
@@ -3486,6 +3882,8 @@ func handlePOSTSettingsBackupTest() echo.HandlerFunc {
 	}
 }
 
+// handlePOSTSettingsArchivalTest runs an immediate, on-demand archival pass
+// to validate the configured cloud storage credentials.
 func handlePOSTSettingsArchivalTest() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		var s db.Setting
@@ -3499,6 +3897,7 @@ func handlePOSTSettingsArchivalTest() echo.HandlerFunc {
 	}
 }
 
+// handleGETAlertsRulesId returns a single alert rule by ID.
 func handleGETAlertsRulesId() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		id := c.Param("id")
@@ -3513,6 +3912,9 @@ func handleGETAlertsRulesId() echo.HandlerFunc {
 	}
 }
 
+// handlePOSTAlertsRules creates a new alert rule, validating that both the
+// container-name and log-pattern regexes actually compile before saving, then
+// tells the running AlertManager to reload its in-memory rule set.
 func handlePOSTAlertsRules(alertMgr *alerts.AlertManager) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		name := strings.TrimSpace(c.FormValue("name"))
@@ -3567,6 +3969,8 @@ func handlePOSTAlertsRules(alertMgr *alerts.AlertManager) echo.HandlerFunc {
 	}
 }
 
+// handleGETGitopsProjects lists configured GitOps projects, filtered to the
+// ones matching the caller's container-visibility patterns unless they're an admin.
 func handleGETGitopsProjects() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		var projects []db.GitProject
@@ -3600,6 +4004,10 @@ func handleGETGitopsProjects() echo.HandlerFunc {
 	}
 }
 
+// handlePOSTGitopsProjects registers a new GitOps project (either a Git repo
+// or inline compose content), validating the repo URL/branch/compose path
+// against injection and path-traversal before the background poller ever
+// touches them.
 func handlePOSTGitopsProjects() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
@@ -3616,6 +4024,11 @@ func handlePOSTGitopsProjects() echo.HandlerFunc {
 		if strings.HasPrefix(project.Branch, "-") || strings.HasPrefix(project.RepoURL, "-") {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid branch or repo URL"})
 		}
+		if project.SourceType != "inline" {
+			if err := gitops.ValidateRepoURL(project.RepoURL); err != nil {
+				return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+			}
+		}
 		if strings.Contains(project.ComposePath, "..") || strings.HasPrefix(project.ComposePath, "/") {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid Compose path"})
 		}
@@ -3629,6 +4042,8 @@ func handlePOSTGitopsProjects() echo.HandlerFunc {
 	}
 }
 
+// handlePUTGitopsProjectsId updates a GitOps project's source/deploy config
+// and flips its status to "pending" so the next poller tick redeploys it.
 func handlePUTGitopsProjectsId() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
@@ -3676,6 +4091,11 @@ func handlePUTGitopsProjectsId() echo.HandlerFunc {
 		if strings.HasPrefix(updateData.Branch, "-") {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid branch"})
 		}
+		if updateData.RepoURL != "" {
+			if err := gitops.ValidateRepoURL(updateData.RepoURL); err != nil {
+				return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+			}
+		}
 		if strings.Contains(updateData.ComposePath, "..") || strings.HasPrefix(updateData.ComposePath, "/") {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid Compose path"})
 		}
@@ -3709,6 +4129,8 @@ func handlePUTGitopsProjectsId() echo.HandlerFunc {
 	}
 }
 
+// handlePOSTGitopsProjectsIdSync manually forces an immediate redeploy by
+// marking the project "pending", without waiting for the next poll tick.
 func handlePOSTGitopsProjectsIdSync() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
@@ -3748,6 +4170,8 @@ func handlePOSTGitopsProjectsIdSync() echo.HandlerFunc {
 	}
 }
 
+// handleDELETEGitopsProjectsId removes a GitOps project's configuration (its
+// deployed containers are left running; only the sync tracking is removed).
 func handleDELETEGitopsProjectsId() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
@@ -3787,6 +4211,8 @@ func handleDELETEGitopsProjectsId() echo.HandlerFunc {
 	}
 }
 
+// handleGETGitopsProjectsIdDeployments returns the deployment history
+// (status + logs per sync attempt) for one GitOps project.
 func handleGETGitopsProjectsIdDeployments() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
@@ -3825,6 +4251,8 @@ func handleGETGitopsProjectsIdDeployments() echo.HandlerFunc {
 	}
 }
 
+// handlePUTAlertsRulesId updates an existing alert rule's matching criteria,
+// thresholds, and notification channels, then reloads the AlertManager.
 func handlePUTAlertsRulesId(alertMgr *alerts.AlertManager) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		id := c.Param("id")
@@ -3902,6 +4330,7 @@ func handlePUTAlertsRulesId(alertMgr *alerts.AlertManager) echo.HandlerFunc {
 	}
 }
 
+// handleDELETEAlertsRulesId deletes an alert rule.
 func handleDELETEAlertsRulesId(alertMgr *alerts.AlertManager) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		id := c.Param("id")
@@ -3919,6 +4348,8 @@ func handleDELETEAlertsRulesId(alertMgr *alerts.AlertManager) echo.HandlerFunc {
 	}
 }
 
+// handlePUTAlertsRulesIdToggle flips an alert rule's enabled/disabled state
+// without touching any of its other configuration.
 func handlePUTAlertsRulesIdToggle(alertMgr *alerts.AlertManager) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		id := c.Param("id")
@@ -3932,6 +4363,9 @@ func handlePUTAlertsRulesIdToggle(alertMgr *alerts.AlertManager) echo.HandlerFun
 	}
 }
 
+// handlePOSTAlertsRulesBulkChannels enables/disables notification channels
+// (Slack, Teams, GChat, webhook, email) across many alert rules in one call,
+// so an admin doesn't have to edit each rule individually.
 func handlePOSTAlertsRulesBulkChannels(alertMgr *alerts.AlertManager) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		var payload struct {
@@ -3972,6 +4406,7 @@ func handlePOSTAlertsRulesBulkChannels(alertMgr *alerts.AlertManager) echo.Handl
 	}
 }
 
+// handleDELETEAlertsHistory permanently clears the entire alert history log.
 func handleDELETEAlertsHistory() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		if err := db.GormDB.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&db.AlertHistory{}).Error; err != nil {
@@ -3982,6 +4417,8 @@ func handleDELETEAlertsHistory() echo.HandlerFunc {
 	}
 }
 
+// handleGETAlertsHistory returns recent fired-alert records (default 100,
+// capped at 500), optionally filtered to a single rule.
 func handleGETAlertsHistory() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		limitStr := c.QueryParam("limit")
@@ -4002,6 +4439,8 @@ func handleGETAlertsHistory() echo.HandlerFunc {
 	}
 }
 
+// handleGETWsSystemStats streams the host metrics snapshot to the browser
+// every 2 seconds over a WebSocket, for the live dashboard charts.
 func handleGETWsSystemStats() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		_, err := authenticateWS(c)
@@ -4038,6 +4477,9 @@ func handleGETWsSystemStats() echo.HandlerFunc {
 	}
 }
 
+// handleGETWsEvents streams live Docker daemon events (container
+// start/stop/die/etc.) to the browser, filtering out events for containers
+// the caller isn't authorized to see.
 func handleGETWsEvents(cli *client.Client) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		userClaims, err := authenticateWS(c)
@@ -4092,6 +4534,9 @@ func handleGETWsEvents(cli *client.Client) echo.HandlerFunc {
 	}
 }
 
+// handleGETWsLogsId streams a container's stdout/stderr in real time (Docker
+// `follow` mode) over a WebSocket, demultiplexing Docker's 8-byte stream
+// framing before forwarding each chunk as a text frame.
 func handleGETWsLogsId(cli *client.Client) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		id := c.Param("id")
@@ -4177,6 +4622,11 @@ func handleGETWsLogsId(cli *client.Client) echo.HandlerFunc {
 	}
 }
 
+// handleGETWsShellId opens an interactive TTY shell session inside a
+// container and bridges it to the browser over a WebSocket. Access requires
+// shell to be globally enabled (AllowShell), the specific user's can_shell
+// flag, and their container-visibility pattern; only a small allow-listed set
+// of shell binaries can be requested.
 func handleGETWsShellId(cli *client.Client) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		id := c.Param("id")

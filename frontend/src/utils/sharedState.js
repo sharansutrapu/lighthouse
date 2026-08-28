@@ -2,6 +2,12 @@ import { reactive } from 'vue';
 import { secureStorage } from './storage';
 import { apiFetch } from './apiFetch';
 
+// This module holds the single reactive `sharedState` object used across the
+// whole app (current user, theme, sidebar state, global toast, server-side
+// feature flags) plus the helper functions that read/write it, so every
+// component sees the same live values without prop-drilling.
+
+// getSystemTheme reads the OS/browser's preferred color scheme.
 export function getSystemTheme() {
   if (typeof window === 'undefined') return 'dark';
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
@@ -60,6 +66,8 @@ export const sharedState = reactive({
   isBackendDisconnected: false,
 });
 
+// applyTheme sets the active theme preference ("light", "dark", or "auto"),
+// persists it, and updates the <html data-theme> attribute used by CSS.
 export function applyTheme(preference) {
   const normalized = normalizeThemePreference(preference);
   sharedState.themePreference = normalized;
@@ -68,10 +76,13 @@ export function applyTheme(preference) {
   document.documentElement.setAttribute('data-theme', sharedState.theme);
 }
 
+// toggleTheme flips between light and dark (used by the manual theme switch).
 export function toggleTheme() {
   applyTheme(sharedState.theme === 'dark' ? 'light' : 'dark');
 }
 
+// initThemeListener subscribes to OS theme changes while preference is
+// "auto", returning an unsubscribe function for cleanup on unmount.
 export function initThemeListener() {
   if (typeof window === 'undefined') return () => {};
 
@@ -86,6 +97,7 @@ export function initThemeListener() {
   return () => mediaQuery.removeEventListener('change', handleChange);
 }
 
+// showToast displays a global toast notification for 4 seconds.
 export const showToast = (title, message, type = 'success') => {
   sharedState.toast.title = title;
   sharedState.toast.message = message;
@@ -96,6 +108,8 @@ export const showToast = (title, message, type = 'success') => {
   }, 4000);
 };
 
+// fetchCurrentUser loads the logged-in user's profile into sharedState,
+// clearing the stored session if the backend reports it's no longer valid (403).
 export const fetchCurrentUser = async () => {
   const token = secureStorage.getItem('token');
   if (!token) return { status: 'missing', user: null };
@@ -119,6 +133,8 @@ export const fetchCurrentUser = async () => {
   return { status: 'error', user: null };
 };
 
+// fetchSystemStats polls the host CPU/memory snapshot into sharedState, also
+// toggling the "backend unreachable" banner based on request success/failure.
 export const fetchSystemStats = async () => {
   const token = secureStorage.getItem('token');
   if (!token) return;
@@ -147,6 +163,8 @@ export const fetchSystemStats = async () => {
   }
 };
 
+// handleBackendError shows the "server unreachable" toast once (not on every
+// failed poll) until connectivity is restored.
 const handleBackendError = () => {
   if (!sharedState.isBackendDisconnected) {
     sharedState.isBackendDisconnected = true;
@@ -154,6 +172,10 @@ const handleBackendError = () => {
   }
 };
 
+// userCanStart/Stop/Restart/Delete/Shell mirror the backend's two-layer
+// permission model: admins always pass; everyone else needs both the
+// server-wide env toggle (envXPermission, from GET /api/config) AND their own
+// can_x flag. Purely a UI convenience — the backend re-checks independently.
 export function userCanStart(user) {
   if (user?.is_admin) return true;
   return sharedState.envStartPermission && user?.can_start === true;
@@ -179,6 +201,7 @@ export function userCanShell(user) {
   return sharedState.envShellPermission && user?.can_shell === true;
 }
 
+// formatBytes renders a byte count as a human-readable string (e.g. "1.5MB").
 export function formatBytes(bytes) {
   if (!bytes || bytes <= 0 || isNaN(bytes)) return '0B';
   const k = 1024;

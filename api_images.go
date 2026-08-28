@@ -10,7 +10,11 @@ import (
 	"github.com/moby/moby/client"
 )
 
+// RegisterImageRoutes wires up the /api/images endpoints: listing, deleting,
+// and pruning Docker images. Delete/prune require the caller to be an admin
+// or hold the can_delete permission.
 func RegisterImageRoutes(r *echo.Group, cli *client.Client) {
+	// GET /images lists all locally pulled images.
 	r.GET("/images", func(c echo.Context) error {
 		images, err := cli.ImageList(context.Background(), client.ImageListOptions{All: false})
 		if err != nil {
@@ -19,6 +23,7 @@ func RegisterImageRoutes(r *echo.Group, cli *client.Client) {
 		return c.JSON(http.StatusOK, images)
 	})
 
+	// DELETE /images/:id force-removes one image (and any now-unused parent layers).
 	r.DELETE("/images/:id", func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
 		userClaims := token.Claims.(*UserClaims)
@@ -37,6 +42,7 @@ func RegisterImageRoutes(r *echo.Group, cli *client.Client) {
 		return c.JSON(http.StatusOK, res)
 	})
 
+	// POST /images/prune removes dangling (or, if requested, all unused) images.
 	r.POST("/images/prune", func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
 		userClaims := token.Claims.(*UserClaims)

@@ -28,8 +28,8 @@ Enhancement suggestions are tracked as GitHub issues. When creating an enhanceme
 ## Local Development Setup
 
 ### Prerequisites
-* Go 1.20+
-* Node.js 18+ and npm
+* Go 1.26+
+* Node.js 20+ and pnpm
 * Docker
 
 ### Backend (Go)
@@ -39,8 +39,8 @@ Enhancement suggestions are tracked as GitHub issues. When creating an enhanceme
 
 ### Frontend (Vue 3)
 1. Navigate to the `frontend` directory.
-2. Install dependencies: `npm install`
-3. Run the dev server: `npm run dev`
+2. Install dependencies: `pnpm install`
+3. Run the dev server: `pnpm run dev`
 
 By default, the backend runs on `http://localhost:8000` and the frontend proxy targets it automatically if configured via Vite.
 

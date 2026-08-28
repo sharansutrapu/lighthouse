@@ -207,6 +207,9 @@
 </template>
 
 <script setup>
+// GitOps automations page: create/edit deployment projects (tracking a Git
+// repo/branch or inline compose YAML), trigger manual syncs, and browse each
+// project's deployment history/logs.
 import { ref, onMounted } from 'vue';
 import { apiFetch } from '../utils/apiFetch';
 import { secureStorage } from '../utils/storage';
@@ -237,6 +240,7 @@ const showHistoryModal = ref(false);
 const historyLoading = ref(false);
 const deployments = ref([]);
 
+// loadProjects fetches the list of configured GitOps projects.
 const loadProjects = async () => {
   try {
     const token = secureStorage.getItem('token');
@@ -253,6 +257,8 @@ const loadProjects = async () => {
   }
 };
 
+// openModal opens the create/edit form, pre-filled if editing an existing
+// project (auth_token is always left blank — it's never sent back from the API).
 const openModal = (project) => {
   if (project) {
     form.value = { 
@@ -271,6 +277,8 @@ const openModal = (project) => {
   showModal.value = true;
 };
 
+// handleFileUpload reads a locally selected docker-compose.yml file into the
+// inline-compose textarea.
 const handleFileUpload = (event) => {
   const file = event.target.files[0];
   if (!file) return;
@@ -286,6 +294,8 @@ const handleFileUpload = (event) => {
   reader.readAsText(file);
 };
 
+// submitProject creates a new project or updates an existing one, depending
+// on whether form.id is set.
 const submitProject = async () => {
   submitting.value = true;
   try {
@@ -326,11 +336,13 @@ const submitProject = async () => {
   }
 };
 
+// triggerDelete opens the delete-confirmation modal for a project.
 const triggerDelete = (id) => {
   pendingProjectId.value = id;
   showConfirm.value = true;
 };
 
+// triggerSync forces an immediate redeploy of one project.
 const triggerSync = async (id) => {
   isActionLoading.value = true;
   try {
@@ -352,6 +364,7 @@ const triggerSync = async (id) => {
   }
 };
 
+// executeDelete runs the confirmed project deletion.
 const executeDelete = async () => {
   const id = pendingProjectId.value;
   showConfirm.value = false;
@@ -376,6 +389,7 @@ const executeDelete = async () => {
   }
 };
 
+// viewLogs opens the deployment-history modal for a project.
 const viewLogs = async (id) => {
   showHistoryModal.value = true;
   historyLoading.value = true;

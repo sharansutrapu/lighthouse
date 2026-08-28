@@ -124,6 +124,9 @@
 </template>
 
 <script setup>
+// Modal for managing the current user's personal API tokens (used to
+// authenticate MCP/AI-agent connections): list, generate (shown once, per
+// docs/SECURITY.md), copy, revoke, and a ready-to-paste MCP client config snippet.
 import { ref, onMounted, watch } from 'vue';
 import { apiFetch } from '../utils/apiFetch';
 import { sharedState, showToast } from '../utils/sharedState';
@@ -142,12 +145,15 @@ const isGenerating = ref(false);
 const newlyGeneratedToken = ref('');
 const tokenToRevoke = ref(null);
 
+// close resets the transient "just generated" state and hides the modal.
 const close = () => {
   newlyGeneratedToken.value = '';
   newTokenName.value = '';
   emit('update:modelValue', false);
 };
 
+// fetchTokens loads the current user's API token list (metadata only — no
+// plaintext token values, which are never retrievable after creation).
 const fetchTokens = async () => {
   isLoading.value = true;
   try {
@@ -162,6 +168,8 @@ const fetchTokens = async () => {
   }
 };
 
+// generateToken creates a new API token; the plaintext is shown exactly once
+// in the response and can't be retrieved again afterward.
 const generateToken = async () => {
   if (!newTokenName.value.trim()) return;
   isGenerating.value = true;
@@ -191,10 +199,12 @@ const generateToken = async () => {
   }
 };
 
+// promptRevoke stages a token for the revoke-confirmation UI.
 const promptRevoke = (token) => {
   tokenToRevoke.value = token;
 };
 
+// executeRevoke deletes the staged token, immediately invalidating it.
 const executeRevoke = async () => {
   if (!tokenToRevoke.value) return;
   const id = tokenToRevoke.value.id;
@@ -217,6 +227,7 @@ const executeRevoke = async () => {
   }
 };
 
+// copyToken copies a plaintext token value to the clipboard.
 const copyToken = async (tokenStr) => {
   try {
     await navigator.clipboard.writeText(tokenStr);
@@ -226,12 +237,16 @@ const copyToken = async (tokenStr) => {
   }
 };
 
+// formatDate renders a token's last-used timestamp, or "Never" for the
+// backend's zero-value sentinel.
 const formatDate = (dateStr) => {
   if (!dateStr || dateStr.startsWith('0001-01-01')) return 'Never';
   const d = new Date(dateStr);
   return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
 };
 
+// getMcpConfig builds the ready-to-paste MCP client JSON config embedding
+// the given token, for AI assistants like Claude Desktop.
 const getMcpConfig = (token) => {
   return JSON.stringify({
     mcpServers: {

@@ -101,6 +101,8 @@
 </template>
 
 <script setup>
+// Docker volume management page: list/search volumes, remove one, or prune
+// all unused ones. Mirrors Images.vue's confirm-modal pattern.
 import { ref, computed, onMounted } from 'vue';
 import { apiFetch } from '../utils/apiFetch';
 import { formatBytes, showToast } from '../utils/sharedState';
@@ -119,6 +121,7 @@ const filteredVolumes = computed(() => {
   });
 });
 
+// fetchVolumes loads the full volume list from the backend.
 const fetchVolumes = async () => {
   isLoading.value = true;
   try {
@@ -134,6 +137,8 @@ const fetchVolumes = async () => {
   }
 };
 
+// confirmModal drives the single reusable confirmation dialog for both the
+// per-volume remove and the bulk prune actions.
 const confirmModal = ref({
   show: false,
   title: '',
@@ -144,6 +149,7 @@ const confirmModal = ref({
   removeContainers: false
 });
 
+// openConfirm configures and shows the confirmation modal for a destructive action.
 const openConfirm = (title, message, type, action, showRemoveContainers = false) => {
   confirmModal.value = { 
     show: true, 
@@ -156,11 +162,13 @@ const openConfirm = (title, message, type, action, showRemoveContainers = false)
   };
 };
 
+// closeConfirm hides the modal without running its action.
 const closeConfirm = () => {
   confirmModal.value.show = false;
   confirmModal.value.action = null;
 };
 
+// executeConfirm runs the modal's pending action then closes it.
 const executeConfirm = async () => {
   if (confirmModal.value.action) {
     await confirmModal.value.action({
@@ -170,6 +178,7 @@ const executeConfirm = async () => {
   closeConfirm();
 };
 
+// requestRemoveVolume opens the confirmation modal for deleting one volume by name.
 const requestRemoveVolume = (name) => {
   openConfirm('Remove Volume', `Are you sure you want to remove this volume?`, 'error', async () => {
     try {
@@ -187,6 +196,7 @@ const requestRemoveVolume = (name) => {
   });
 };
 
+// pruneVolumes opens the confirmation modal for removing all unused volumes.
 const pruneVolumes = () => {
   openConfirm('Prune Unused Volumes', 'Are you sure you want to prune all unused volumes? This action cannot be undone.', 'warning', async (options) => {
     try {

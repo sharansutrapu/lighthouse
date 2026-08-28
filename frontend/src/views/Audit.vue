@@ -24,6 +24,8 @@
 </template>
 
 <script setup>
+// Thin page wrapper around AuditManager (the actual audit-log table/filtering
+// lives there); this view just supplies the page header and event count.
 import { ref } from "vue";
 import AuditManager from "../components/AuditManager.vue";
 import { secureStorage } from "../utils/storage";

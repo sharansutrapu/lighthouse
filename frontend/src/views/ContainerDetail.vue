@@ -440,6 +440,12 @@
 </template>
 
 <script setup>
+// Deep-dive page for a single container: full Docker inspect data, live
+// CPU/memory/network/disk stats (polled every 5s while running), historical
+// usage charts, environment variables (masked/revealable), a live event feed
+// over WebSocket, on-demand vulnerability scanning, and the start/stop/
+// restart/remove/shell actions (delegated to the shared useContainers()
+// composable).
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import AppIcon from "../components/AppIcon.vue";
@@ -505,6 +511,8 @@ const scanResults = ref({
 const containerEvents = ref([]);
 let eventsWs = null;
 
+// fetchScanResults loads the most recent stored Trivy scan for this
+// container's image, if one exists.
 const fetchScanResults = async () => {
   if (!container.value || !container.value.image) return;
   try {
@@ -519,6 +527,8 @@ const fetchScanResults = async () => {
   } catch(e) {}
 };
 
+// triggerScan starts a background vulnerability scan and polls (every 3s, up
+// to 90s) until a result appears, since scans run asynchronously server-side.
 const triggerScan = async () => {
   scanResults.value.loading = true;
   scanResults.value.data = null;
@@ -560,6 +570,8 @@ const liveStats = ref({ cpu: 0, memory: 0, net_rx: 0, net_tx: 0, disk_read: 0, d
 const envQuery = ref("");
 const revealedEnvs = ref([]);
 
+// toggleEnv shows/hides one environment variable's value (env vars start
+// masked since they often carry secrets).
 const toggleEnv = (key) => {
   if (revealedEnvs.value.includes(key)) {
     revealedEnvs.value = revealedEnvs.value.filter((k) => k !== key);
@@ -576,6 +588,8 @@ const container = computed(() => {
   );
 });
 
+// resolvedInspect flattens the backend's { Container: {...} } inspect
+// envelope into a single object so template bindings don't need the nesting.
 const resolvedInspect = computed(() => {
   const data = inspectData.value;
   if (!data) return {};
@@ -649,6 +663,8 @@ const ports = computed(() => {
   return rows.sort();
 });
 
+// formatInspectTime renders a Docker inspect timestamp, treating the
+// zero-value "0001-01-01T00:00:00Z" (never started/finished) as "—".
 function formatInspectTime(value) {
   if (!value || value === "0001-01-01T00:00:00Z") return "—";
   const date = new Date(value);
@@ -733,6 +749,10 @@ watch(() => sharedState.theme, () => {
   updateCharts();
 });
 
+// updateCharts re-buckets the fetched history rows into evenly-spaced time
+// bins matching the active range filter (1h/6h/12h/24h), so the CPU/memory
+// line charts render a consistent number of points regardless of how sparse
+// or dense the underlying samples are.
 const updateCharts = () => {
   // Parse the active filter (e.g. "1h", "6h", "12h", "24h") into hours.
   const rangeHours = parseInt(activeHistoryFilter.value, 10) || 1;
@@ -806,6 +826,8 @@ watch(activeHistoryFilter, () => {
   fetchHistoryData();
 });
 
+// fetchHistoryData loads historical stats for the active time-range filter
+// and re-renders the charts.
 async function fetchHistoryData() {
   try {
     const token = secureStorage.getItem("token");
@@ -822,6 +844,7 @@ async function fetchHistoryData() {
   }
 }
 
+// fetchInspect loads the full Docker inspect payload for this container.
 async function fetchInspect() {
   inspectLoading.value = true;
   try {
@@ -839,6 +862,8 @@ async function fetchInspect() {
   }
 }
 
+// fetchLiveStats loads the latest cached CPU/memory/network/disk sample;
+// a no-op if the container isn't currently running.
 async function fetchLiveStats() {
   if (!container.value || container.value.state !== "running") return;
   try {
@@ -866,6 +891,8 @@ async function fetchLiveStats() {
   }
 }
 
+// startStatsPolling/stopStatsPolling drive the 5-second live-stats refresh
+// loop, active only while the container is running.
 function startStatsPolling() {
   stopStatsPolling();
   fetchLiveStats();
@@ -879,6 +906,8 @@ function stopStatsPolling() {
   }
 }
 
+// connectEventsWS opens the shared Docker-events WebSocket and appends any
+// event whose actor ID matches this container to the live feed (max 50 kept).
 const connectEventsWS = () => {
   if (eventsWs) eventsWs.close();
   eventsWs = createAuthenticatedWebSocket("/ws/events");
@@ -899,6 +928,8 @@ const connectEventsWS = () => {
   };
 };
 
+// confirmAction runs the action the user just confirmed in the modal;
+// removing the container navigates back to the fleet list afterward.
 async function confirmAction() {
   const action = pendingAction.value;
   isActionLoading.value = true;
@@ -914,6 +945,8 @@ async function confirmAction() {
   }
 }
 
+// executeAction posts a start/stop/restart action directly (used for actions
+// that don't need the confirmation modal, e.g. quick restart).
 const executeAction = async (action) => {
   try {
     const token = secureStorage.getItem("token");
@@ -937,6 +970,7 @@ const executeAction = async (action) => {
   }
 };
 
+// copyText copies a value to the clipboard with a confirmation toast.
 function copyText(text, label) {
   navigator.clipboard.writeText(text).then(() => {
     showToast("Copied", `${label} copied to clipboard.`, "success");

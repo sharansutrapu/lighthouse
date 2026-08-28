@@ -352,6 +352,10 @@
 </template>
 
 <script setup>
+// Landing page after login: fleet-wide summary cards (container counts, host
+// CPU/memory, top resource consumers, most-vulnerable images) plus quick
+// links. Pulls container data from the shared useContainers() poll and fetches
+// images/volumes/networks and per-image vulnerability scan results itself.
 import { ref, computed, watch, onMounted } from "vue";
 import { showToast } from "../utils/sharedState";
 import AppIcon from "../components/AppIcon.vue";
@@ -417,6 +421,8 @@ const filters = computed(() => [
   { label: "Stopped", value: "stopped", count: stoppedCount.value },
 ]);
 
+// topConsumers ranks containers by a combined CPU% + memory-share score, for
+// the "top resource consumers" panel.
 const topConsumers = computed(() => {
   const sorted = [...containers.value].sort((a, b) => {
     const aScore = (a.cpu || 0) + ((a.memory || 0) / (memTotal.value || 1)) * 100;
@@ -426,6 +432,8 @@ const topConsumers = computed(() => {
   return sorted.slice(0, 3);
 });
 
+// vulnerableContainers surfaces the top 3 running containers whose most
+// recent scan (from vulnScanData) found CRITICAL or HIGH findings.
 const vulnScanData = ref({});
 const vulnerableContainers = computed(() => {
   const list = [];
@@ -443,6 +451,8 @@ const vulnerableContainers = computed(() => {
   }).slice(0, 3);
 });
 
+// parseScanResults tallies vulnerability counts by severity out of a raw
+// Trivy scan result blob.
 const parseScanResults = (data) => {
   let counts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, UNKNOWN: 0 };
   if (data && data.Results) {
@@ -457,6 +467,8 @@ const parseScanResults = (data) => {
   return { counts };
 };
 
+// loadScans fetches the latest stored scan result for every visible
+// container's image (best-effort; a missing/failed scan is silently skipped).
 const loadScans = async () => {
   const token = secureStorage.getItem('token');
   const promises = containers.value.map(async (c) => {
@@ -476,6 +488,7 @@ const loadScans = async () => {
   await Promise.all(promises);
 };
 
+// Load vulnerability scan data once, the first time the container list becomes non-empty.
 watch(containers, (newVal) => {
   if (newVal && newVal.length > 0 && Object.keys(vulnScanData.value).length === 0) {
     loadScans();
@@ -510,6 +523,8 @@ const bridgeNetworksCount = computed(() => {
   return networks.value.filter(n => n.Driver === 'bridge').length;
 });
 
+// fetchEngineResources loads images/volumes/networks in parallel for the
+// "Docker Engine Resources" summary cards.
 const fetchEngineResources = async () => {
   try {
     const [imgRes, volRes, netRes] = await Promise.all([
@@ -541,6 +556,8 @@ onMounted(() => {
 
 const isRefreshing = ref(false);
 
+// refresh re-fetches both containers and engine resources, keeping the spin
+// animation visible for at least 500ms so quick refreshes still feel responsive.
 const refresh = async () => {
   if (isRefreshing.value) return;
   isRefreshing.value = true;

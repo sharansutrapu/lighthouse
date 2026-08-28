@@ -251,6 +251,11 @@
 </template>
 
 <script setup>
+// Real-time log streaming panel: connects to /ws/logs/:id (auto-reconnecting
+// every 3s on drop), lazily loads older history when the user scrolls to the
+// top (via an IntersectionObserver sentinel), and separately streams live
+// CPU/memory stats from /api/containers/:id/stats. Used by both Logs.vue
+// (side-by-side streams) and ContainerDetail.vue.
 import { ref, onMounted, onUnmounted, nextTick, watch, computed } from "vue";
 import { showToast } from "../utils/sharedState";
 import { secureStorage } from "../utils/storage";
@@ -334,9 +339,12 @@ const displayLogs = computed(() => {
   return source;
 });
 
+// logLineKey derives a stable v-for key for a log line without hashing the
+// full (potentially huge) string.
 const logLineKey = (log, index) =>
   `${index}-${log.length}-${log.slice(0, 24)}-${log.slice(-12)}`;
 
+// scrollToBottom jumps the log pane to its latest line and re-enables auto-scroll.
 const scrollToBottom = () => {
   if (logContainer.value) {
     logContainer.value.scrollTop = logContainer.value.scrollHeight;
@@ -344,6 +352,9 @@ const scrollToBottom = () => {
   }
 };
 
+// fetchHistoricalLogs loads up to 100 older lines before the timestamp of the
+// currently-earliest visible line ("infinite scroll upward"), de-duplicating
+// against already-loaded lines and preserving scroll position afterward.
 const fetchHistoricalLogs = async () => {
   if (isLoadingHistory.value || !hasMoreHistory.value) return;
 
@@ -438,6 +449,8 @@ const fetchHistoricalLogs = async () => {
   }
 };
 
+// handleScroll tracks whether the user is near the bottom, to decide whether
+// new incoming log lines should auto-scroll the view.
 const handleScroll = () => {
   if (!logContainer.value) return;
   const { scrollTop, scrollHeight, clientHeight } = logContainer.value;
@@ -446,6 +459,8 @@ const handleScroll = () => {
   autoScroll.value = scrollHeight - scrollTop - clientHeight < 100;
 };
 
+// setupObserver watches the top-of-list sentinel element and triggers
+// fetchHistoricalLogs when it scrolls into view.
 const setupObserver = () => {
   if (observer) observer.disconnect();
 
@@ -474,8 +489,11 @@ const setupObserver = () => {
   }
 };
 
+// clearLogs empties the currently displayed buffer (does not affect the
+// backend's stored log history).
 const clearLogs = () => (logs.value = []);
 
+// getStatColor maps a CPU/memory percentage to a semantic color threshold.
 const getStatColor = (val) => {
   const n = parseFloat(val);
   if (n > 80) return "var(--error)";
@@ -491,6 +509,8 @@ const formatBytes = (bytes) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + sizes[i];
 };
 
+// downloadLogs saves the currently-buffered (already-fetched) log lines to a
+// local .txt or .json file.
 const downloadLogs = (format) => {
   const rawLogs = logs.value.map((l) => l.replace(/\033\[[0-9;]*m/g, ""));
   let content =
@@ -506,6 +526,8 @@ const downloadLogs = (format) => {
   showDownloadModal.value = false;
 };
 
+// downloadFullLogs streams the container's entire log history from the
+// backend as a downloaded file, instead of only what's currently buffered client-side.
 const downloadFullLogs = async () => {
   try {
     const token = secureStorage.getItem("token");
@@ -528,6 +550,10 @@ const downloadFullLogs = async () => {
   }
 };
 
+// fetchStats opens Docker's raw streaming stats endpoint and manually
+// computes CPU%/memory usage from the cgroups counters (mirroring `docker
+// stats`'s own formula), since the API returns raw deltas rather than
+// pre-computed percentages. Auto-retries after 5s on any non-abort error.
 const fetchStats = async () => {
   if (statsController) statsController.abort();
   statsController = new AbortController();
@@ -598,6 +624,7 @@ const fetchStats = async () => {
   }
 };
 
+// fetchLogCount loads the total available log-line count, shown in the header.
 const fetchLogCount = async () => {
   try {
     const token = secureStorage.getItem("token");
@@ -616,6 +643,9 @@ const fetchLogCount = async () => {
   }
 };
 
+// connect opens (or reopens) the live-tail WebSocket for the current
+// container, capping the client-side buffer at 5000 lines and auto-
+// reconnecting after 3s if the connection drops unexpectedly.
 const connect = () => {
   if (socket) {
     socket.onclose = null;

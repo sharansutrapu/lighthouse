@@ -2,11 +2,12 @@
 
 dev:
 	@echo "Starting development server..."
-	@go run . & npm run --prefix frontend dev
+	@go run . & pnpm run --prefix frontend dev
 
 build:
 	@echo "Building frontend..."
-	@npm run --prefix frontend build
+	@pnpm install --prefix frontend --frozen-lockfile
+	@pnpm run --prefix frontend build
 	@echo "Building backend..."
 	@go build -o lighthouse .
 

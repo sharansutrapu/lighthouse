@@ -53,10 +53,17 @@ func (m *mockWSConn) Close() error {
 func TestRegisterHubRoutes(t *testing.T) {
 	e := echo.New()
 
-	// Call default upgraderFunc to cover it
+	// Call default upgraderFunc to cover it, including the CheckOrigin closure
+	// (only invoked by gorilla/websocket when the request actually looks like
+	// a WS handshake with an Origin header present).
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Sec-WebSocket-Version", "13")
+	req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	req.Header.Set("Origin", "http://example.com")
 	rec := httptest.NewRecorder()
-	_, _ = upgraderFunc(rec, req) // It will return err since not a real ws req, but covers the code
+	_, _ = upgraderFunc(rec, req) // still errors (ResponseRecorder isn't a Hijacker), but covers CheckOrigin
 
 	RegisterHubRoutes(e, "secret")
 

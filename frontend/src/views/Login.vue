@@ -61,6 +61,9 @@
 </template>
 
 <script setup>
+// Sign-in page: local username/password form plus a Google OAuth button.
+// Both paths, and a pending invite token carried in the URL, ultimately land
+// the user on /dashboard with a fresh JWT stored via secureStorage.
 import { ref, computed, onMounted } from "vue";
 import { showToast } from "../utils/sharedState";
 import { useRouter } from "vue-router";
@@ -81,6 +84,8 @@ const password = ref("");
 
 const logoSrc = computed(() => "/lighthouse-logo.svg");
 
+// login submits the username/password form to /api/token, forwarding any
+// pending invite_token so the backend can bind it to this login.
 const login = async () => {
   loading.value = true;
   error.value = "";
@@ -128,6 +133,8 @@ const login = async () => {
   }
 };
 
+// handleGoogleLogin redirects the browser into the backend's Google OAuth
+// flow, carrying along any pending invite_token.
 const handleGoogleLogin = () => {
   loading.value = true;
   error.value = "";

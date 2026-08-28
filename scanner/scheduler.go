@@ -1,3 +1,6 @@
+// Package scanner wraps the Trivy CLI to provide on-demand and scheduled
+// container image vulnerability scanning, storing results for display in the
+// dashboard and feeding critical findings into the alerting engine.
 package scanner
 
 import (
@@ -16,6 +19,8 @@ var currentEntryID cron.EntryID
 // AlertCallback allows higher levels to inject alerting logic to avoid import cycles
 var AlertCallback func(imageName string, resultBytes []byte)
 
+// init starts the package-wide cron scheduler immediately at process start;
+// ReloadSchedule then adds/removes the actual scan job based on settings.
 func init() {
 	scheduler = cron.New()
 	scheduler.Start()

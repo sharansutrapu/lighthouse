@@ -43,6 +43,10 @@
 </template>
 
 <script setup>
+// Interactive in-browser terminal (xterm.js) attached to a container via the
+// /ws/shell WebSocket endpoint. Keystrokes are forwarded to the socket and
+// output is written straight to the terminal; a connection drop triggers
+// exponential-backoff auto-reconnect (capped at 8 attempts / 15s).
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { Terminal } from "@xterm/xterm";
@@ -92,12 +96,15 @@ const statusLabel = computed(() => {
   return "Disconnected";
 });
 
+// disposeTerminal tears down the current xterm.js instance.
 function disposeTerminal() {
   terminal?.dispose();
   terminal = null;
   fitAddon = null;
 }
 
+// initTerminal creates a fresh xterm.js terminal, wiring keystrokes straight
+// through to the WebSocket (if open) and fitting it to its container element.
 function initTerminal() {
   disposeTerminal();
   terminal = new Terminal({
@@ -125,11 +132,14 @@ function initTerminal() {
   terminal.writeln("\x1b[1;36m[LightHouse]\x1b[0m Connecting to container shell...");
 }
 
+// fitTerminal resizes the terminal grid to fill its host element.
 function fitTerminal() {
   if (!terminal || !fitAddon || !terminalHost.value) return;
   fitAddon.fit();
 }
 
+// closeSocket cleanly tears down the current WebSocket (and any pending
+// reconnect timer) before opening a new one or unmounting.
 function closeSocket() {
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
@@ -147,6 +157,8 @@ function closeSocket() {
   }
 }
 
+// scheduleReconnect retries the connection with exponential backoff
+// (1s, 2s, 4s ... capped at 15s), giving up after 8 attempts.
 function scheduleReconnect() {
   if (sessionEnded.value || reconnectFailures >= 8) return;
   const delay = Math.min(1000 * 2 ** reconnectFailures, 15000);
@@ -156,6 +168,9 @@ function scheduleReconnect() {
   }, delay);
 }
 
+// connectWebSocket opens the shell WebSocket for the selected container/shell
+// binary, after client-side permission and running-state checks (the backend
+// re-validates both independently).
 function connectWebSocket() {
   if (!containerId.value) {
     errorMessage.value = "No container selected.";
@@ -234,6 +249,8 @@ function connectWebSocket() {
   };
 }
 
+// reconnect is the user-triggered "reconnect" button handler: resets the
+// backoff counter and starts a brand new session.
 function reconnect() {
   reconnectFailures = 0;
   sessionEnded.value = false;

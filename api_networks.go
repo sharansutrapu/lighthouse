@@ -9,7 +9,11 @@ import (
 	"github.com/moby/moby/client"
 )
 
+// RegisterNetworkRoutes wires up the /api/networks endpoints: listing,
+// deleting, and pruning Docker networks. Delete/prune require admin or the
+// can_delete permission.
 func RegisterNetworkRoutes(r *echo.Group, cli *client.Client) {
+	// GET /networks lists all Docker networks.
 	r.GET("/networks", func(c echo.Context) error {
 		networks, err := cli.NetworkList(context.Background(), client.NetworkListOptions{})
 		if err != nil {
@@ -18,6 +22,7 @@ func RegisterNetworkRoutes(r *echo.Group, cli *client.Client) {
 		return c.JSON(http.StatusOK, networks)
 	})
 
+	// DELETE /networks/:id removes one network.
 	r.DELETE("/networks/:id", func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
 		userClaims := token.Claims.(*UserClaims)
@@ -36,6 +41,7 @@ func RegisterNetworkRoutes(r *echo.Group, cli *client.Client) {
 		return c.JSON(http.StatusOK, map[string]string{"message": "Network deleted successfully"})
 	})
 
+	// POST /networks/prune removes all networks not used by at least one container.
 	r.POST("/networks/prune", func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
 		userClaims := token.Claims.(*UserClaims)

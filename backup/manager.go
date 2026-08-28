@@ -1,3 +1,6 @@
+// Package backup schedules and performs full database backups (SQLite file or
+// Postgres dump, tar.gz compressed) to a configured cloud storage provider,
+// so a LightHouse deployment can be restored after data loss.
 package backup
 
 import (
@@ -109,6 +112,8 @@ func RunBackup(s db.Setting) error {
 	return nil
 }
 
+// compressFile wraps src (the SQLite database file) into a gzipped tar
+// archive at dst, ready for upload to cloud storage.
 func compressFile(src, dst string) error {
 	out, err := os.Create(dst)
 	if err != nil {

@@ -1,3 +1,7 @@
+// Package gitops implements a lightweight GitOps poller: it periodically syncs
+// configured Git repositories (or inline compose content), detects new commits,
+// and runs `docker compose up` in an isolated per-project workspace to deploy
+// changes automatically.
 package gitops
 
 import (
@@ -8,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -20,6 +25,25 @@ var (
 	syncInterval = 30 * time.Second
 )
 
+var allowedRepoScheme = regexp.MustCompile(`^(https|http|git|ssh)://`)
+
+// ValidateRepoURL rejects git "transport helper" syntax (ext::, fd::, etc.) and
+// any scheme outside an explicit allow-list. Without this, a RepoURL like
+// "ext::sh -c ..." makes `git clone` execute an arbitrary shell command on the
+// host running this poller.
+func ValidateRepoURL(raw string) error {
+	if raw == "" {
+		return fmt.Errorf("repo_url is required")
+	}
+	if strings.Contains(raw, "::") {
+		return fmt.Errorf("unsupported git transport syntax in repo_url")
+	}
+	if !allowedRepoScheme.MatchString(raw) {
+		return fmt.Errorf("repo_url must use http://, https://, git://, or ssh://")
+	}
+	return nil
+}
+
 // StartManager starts the GitOps background worker
 func StartManager() {
 	go func() {
@@ -30,6 +54,8 @@ func StartManager() {
 	}()
 }
 
+// processProjects loads every configured GitProject and syncs each one in
+// turn, raising a system alert (without stopping the sweep) for any that fail.
 func processProjects() {
 	var projects []db.GitProject
 	if err := db.GormDB.Find(&projects).Error; err != nil {
@@ -46,6 +72,11 @@ func processProjects() {
 	}
 }
 
+// processProject syncs one GitOps project: for inline projects it writes the
+// stored compose YAML to a workspace file; for Git projects it clones (first
+// run) or fetches+resets (subsequent runs) the configured repo/branch. If the
+// resulting commit differs from the last deployed one, it runs `docker
+// compose up` and records the outcome as a GitDeployment.
 func processProject(p db.GitProject) error {
 	// If it's targeted for a spoke, we shouldn't clone it locally. We should tell the spoke to sync it!
 	// But wait, the hub could clone it, build it? No, compose up needs to run on the target node.
@@ -81,6 +112,9 @@ func processProject(p db.GitProject) error {
 
 	} else {
 		// Git deployment
+		if err := ValidateRepoURL(p.RepoURL); err != nil {
+			return err
+		}
 		// Build a sanitized URL for logging (no credentials in it).
 		sanitizedURL := p.RepoURL
 

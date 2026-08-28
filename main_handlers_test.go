@@ -1206,8 +1206,8 @@ func TestStatPollLoop(t *testing.T) {
 }
 
 func TestPollOneStat(t *testing.T) {
-	prevCPU := make(map[string][2]uint64)
-	pollOneStat(getMockClient(), "test", prevCPU)
+	cpuT := newCPUTracker()
+	pollOneStat(getMockClient(), "test", cpuT)
 }
 
 func TestSystemStatsBroadcaster(t *testing.T) {
@@ -1222,6 +1222,27 @@ func TestGetRetentionDays(t *testing.T) {
 	
 	days := getRetentionDays()
 	assert.Equal(t, 15, days)
+}
+
+func TestGetRetentionDays_NoRowAndNonPositiveBranches(t *testing.T) {
+	t.Run("infra failure: no settings row falls back to 30", func(t *testing.T) {
+		assert.NoError(t, db.InitDB(":memory:"))
+		db.GormDB.Exec("DELETE FROM settings WHERE id = 1")
+		days := getRetentionDays()
+		assert.Equal(t, 30, days)
+	})
+
+	t.Run("hostile: zero retention days falls back to 30", func(t *testing.T) {
+		assert.NoError(t, db.InitDB(":memory:"))
+		db.GormDB.Exec("UPDATE settings SET metrics_retention_days = 0 WHERE id = 1")
+		assert.Equal(t, 30, getRetentionDays())
+	})
+
+	t.Run("hostile: negative retention days falls back to 30", func(t *testing.T) {
+		assert.NoError(t, db.InitDB(":memory:"))
+		db.GormDB.Exec("UPDATE settings SET metrics_retention_days = -5 WHERE id = 1")
+		assert.Equal(t, 30, getRetentionDays())
+	})
 }
 
 func TestStartStatsCollector(t *testing.T) {
@@ -1248,6 +1269,29 @@ func TestSeedAdmin(t *testing.T) {
 	var user db.User
 	db.GormDB.First(&user, "username = ?", "admin")
 	assert.Equal(t, "admin", user.Username)
+}
+
+func TestSeedAdmin_ExistingAdminSkipsCreateButNormalizesPermissions(t *testing.T) {
+	assert.NoError(t, db.InitDB(":memory:"))
+	db.GormDB.Create(&db.User{Username: "admin", Email: "admin@test", Password: "existinghash", IsAdmin: true})
+	// A second admin with permissions left disabled should get normalized too.
+	other := db.User{Username: "other-admin", Email: "other-admin@test", IsAdmin: true}
+	assert.NoError(t, db.GormDB.Create(&other).Error)
+	db.GormDB.Model(&db.User{}).Where("id = ?", other.ID).Update("can_shell", false)
+
+	seedAdmin()
+
+	var count int64
+	db.GormDB.Model(&db.User{}).Where("username = ?", "admin").Count(&count)
+	assert.Equal(t, int64(1), count, "seedAdmin must not create a duplicate admin when one already exists")
+
+	var primary db.User
+	assert.NoError(t, db.GormDB.Where("username = ?", "admin").First(&primary).Error)
+	assert.Equal(t, "existinghash", primary.Password, "existing admin's password must not be overwritten")
+
+	var refreshedOther db.User
+	assert.NoError(t, db.GormDB.First(&refreshedOther, other.ID).Error)
+	assert.True(t, refreshedOther.CanShell, "seedAdmin must normalize permissions for every is_admin=true user, not just the seeded one")
 }
 
 func TestCleanupStaleAlerts(t *testing.T) {

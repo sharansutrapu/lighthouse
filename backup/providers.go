@@ -23,6 +23,8 @@ type S3Provider struct {
 	client *minio.Client
 }
 
+// NewS3Provider creates an S3-compatible provider (works with AWS S3, MinIO,
+// and other S3-API-compatible object stores) from an endpoint/credentials.
 func NewS3Provider(endpoint, accessKey, secretKey, region string) (*S3Provider, error) {
 	// If endpoint has https://, we must pass secure=true, else false
 	secure := true
@@ -44,6 +46,7 @@ func NewS3Provider(endpoint, accessKey, secretKey, region string) (*S3Provider, 
 	return &S3Provider{client: client}, nil
 }
 
+// Upload puts filePath's contents into bucket as objectName on S3/MinIO.
 func (s *S3Provider) Upload(ctx context.Context, bucket, objectName, filePath string) error {
 	_, err := s.client.FPutObject(ctx, bucket, objectName, filePath, minio.PutObjectOptions{
 		ContentType: "application/gzip",
@@ -56,6 +59,9 @@ type GCSProvider struct {
 	client *storage.Client
 }
 
+// NewGCSProvider creates a Google Cloud Storage provider, authenticating
+// with the given service-account JSON key (or no auth, for tests against a
+// local GCS emulator).
 func NewGCSProvider(ctx context.Context, jsonKey string) (*GCSProvider, error) {
 	var opts []option.ClientOption
 	if os.Getenv("TEST_MOCK_GCS") == "1" {
@@ -70,6 +76,7 @@ func NewGCSProvider(ctx context.Context, jsonKey string) (*GCSProvider, error) {
 	return &GCSProvider{client: client}, nil
 }
 
+// Upload streams filePath's contents into bucket as objectName on GCS.
 func (g *GCSProvider) Upload(ctx context.Context, bucket, objectName, filePath string) error {
 	if os.Getenv("TEST_UPLOAD_SKIP") == "1" {
 		return nil
@@ -94,6 +101,8 @@ type AzureProvider struct {
 	client *azblob.Client
 }
 
+// NewAzureProvider creates an Azure Blob Storage provider authenticated with
+// a storage account name/key pair.
 func NewAzureProvider(accountName, accountKey string) (*AzureProvider, error) {
 	cred, err := azblob.NewSharedKeyCredential(accountName, accountKey)
 	if err != nil {
@@ -106,6 +115,7 @@ func NewAzureProvider(accountName, accountKey string) (*AzureProvider, error) {
 	return &AzureProvider{client: client}, nil
 }
 
+// Upload puts filePath's contents into containerName as objectName on Azure Blob Storage.
 func (a *AzureProvider) Upload(ctx context.Context, containerName, objectName, filePath string) error {
 	f, err := os.Open(filePath)
 	if err != nil {

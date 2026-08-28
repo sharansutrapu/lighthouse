@@ -544,6 +544,10 @@
 </template>
 
 <script setup>
+// Admin panel for managing local/OAuth staff accounts: create, enable/disable,
+// reset password, edit per-user permissions and container-visibility
+// restrictions (with a live-fleet autocomplete for the allowed_containers
+// pattern), and delete.
 import { ref, computed, onMounted } from "vue";
 import { showToast } from "../utils/sharedState";
 import { sharedState } from "../utils/sharedState";
@@ -634,6 +638,8 @@ const isRestricted = computed(() =>
     : editingUser.value.is_restricted_access,
 );
 
+// setRestricted toggles restricted-container-access mode for the active user
+// (create or edit) and lazily loads the running fleet for autocomplete.
 const setRestricted = (val) => {
   if (showCreateModal.value) newUser.value.is_restricted = val;
   else editingUser.value.is_restricted_access = val;
@@ -695,6 +701,8 @@ const filteredPatternSuggestions = computed(() => {
   return names.slice(0, 8);
 });
 
+// fetchRunningContainers loads the currently-running fleet, used to build
+// the allowed_containers autocomplete suggestions.
 const fetchRunningContainers = async () => {
   try {
     const res = await apiFetch("/api/containers", {
@@ -710,18 +718,23 @@ const fetchRunningContainers = async () => {
   }
 };
 
+// onPatternFocus opens the suggestion dropdown and (re)loads the fleet list.
 const onPatternFocus = () => {
   clearTimeout(patternBlurTimer);
   patternSuggestionsOpen.value = true;
   fetchRunningContainers();
 };
 
+// hidePatternSuggestions closes the dropdown after a short delay so a click
+// on a suggestion still registers before blur hides it.
 const hidePatternSuggestions = () => {
   patternBlurTimer = setTimeout(() => {
     patternSuggestionsOpen.value = false;
   }, 150);
 };
 
+// applyPatternSuggestion appends (or replaces the in-progress last segment
+// of) the allowed_containers comma list with the chosen container name.
 const applyPatternSuggestion = (name) => {
   const target = activeUser.value;
   const val = (target.allowed_containers || "").trim();
@@ -751,6 +764,7 @@ const applyPatternSuggestion = (name) => {
   target.allowed_containers = [...existing, name].join(", ");
 };
 
+// closeAllModals hides every modal owned by this component and clears their staged state.
 const closeAllModals = () => {
   showCreateModal.value = false;
   showPermissionsModal.value = false;
@@ -764,6 +778,7 @@ const closeAllModals = () => {
   fleetContainers.value = [];
 };
 
+// fetchStaff loads the full user list for the admin table.
 const fetchStaff = async () => {
   try {
     const res = await apiFetch("/api/admin/users", {
@@ -779,6 +794,8 @@ const fetchStaff = async () => {
   }
 };
 
+// fetchRoleTemplates loads permission presets and defaults the create-user
+// form to the first available template.
 const fetchRoleTemplates = async () => {
   try {
     const res = await apiFetch("/api/admin/role_templates", {
@@ -795,6 +812,7 @@ const fetchRoleTemplates = async () => {
   }
 };
 
+// fetchTeams loads teams for the create/edit user team-assignment dropdown.
 const fetchTeams = async () => {
   try {
     const res = await apiFetch("/api/admin/teams", {
@@ -808,6 +826,8 @@ const fetchTeams = async () => {
   }
 };
 
+// createUser submits the new-user form; supports both local
+// (username/password) and invite (email-only, OAuth-linked-later) auth methods.
 const createUser = async () => {
   if (!newUser.value.is_admin && !newUser.value.role_template_id && !newUser.value.team_id) return;
   if (newUser.value.authMethod === 'invite' && !newUser.value.email) return;
@@ -866,6 +886,8 @@ const createUser = async () => {
   }
 };
 
+// toggleUserStatus flips a user's is_active flag (enable/disable account
+// without deleting it).
 const toggleUserStatus = async (user) => {
   try {
     const formData = new FormData();
@@ -889,6 +911,8 @@ const toggleUserStatus = async (user) => {
   }
 };
 
+// openPermissions opens the edit-permissions modal with a deep copy of the
+// target user so edits don't mutate the table until saved.
 const openPermissions = (user) => {
   editingUser.value = JSON.parse(JSON.stringify(user));
   showPermissionsModal.value = true;
@@ -896,12 +920,15 @@ const openPermissions = (user) => {
   if (editingUser.value.is_restricted_access) fetchRunningContainers();
 };
 
+// openResetPassword stages a user for the admin password-reset modal.
 const openResetPassword = (user) => {
   resetTargetUser.value = user;
   resetPassword.value = "";
   showResetModal.value = true;
 };
 
+// confirmResetPassword submits the admin-initiated password reset for the
+// staged user.
 const confirmResetPassword = async () => {
   if (!resetPassword.value) {
     showToast("Warning", "Please enter a password", "warning");
@@ -939,6 +966,9 @@ const confirmResetPassword = async () => {
   }
 };
 
+// updatePermissions saves the edited user's permission flags, restricted-
+// access setting, and team assignment (team membership overrides individual
+// permission flags server-side, so they're force-set to false when a team is chosen).
 const updatePermissions = async () => {
   try {
     const formData = new FormData();
@@ -972,11 +1002,13 @@ const updatePermissions = async () => {
   }
 };
 
+// openDeleteConfirm stages a user for the delete-confirmation modal.
 const openDeleteConfirm = (user) => {
   userToDelete.value = user;
   showDeleteModal.value = true;
 };
 
+// confirmDelete permanently removes the staged user's account.
 const confirmDelete = async () => {
   if (!userToDelete.value) return;
   try {

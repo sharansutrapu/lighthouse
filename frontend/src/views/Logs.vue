@@ -305,6 +305,10 @@
 </template>
 
 <script setup>
+// Live log-streaming page: a sidebar lists all containers; selecting one (or
+// two, in split view) opens a real-time LogViewer WebSocket stream for it.
+// Selection and split-view state are round-tripped through the URL query
+// string (?c=id1,id2&split=true) so a log view can be bookmarked/shared.
 import { ref, reactive, computed, onMounted, onUnmounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { sharedState, showToast, fetchCurrentUser, toggleTheme } from "../utils/sharedState";
@@ -332,12 +336,16 @@ const expandedStates = reactive({});
 const liveStats = ref({ cpu: 0, memory: 0 });
 let liveInterval = null;
 
+// handleViewerStats receives a stats push from the active LogViewer instance
+// (only applied if it matches the currently hovered/live container).
 const handleViewerStats = (data) => {
   if (data.id === activeLiveId.value) {
     liveStats.value = { cpu: data.cpu, memory: data.memory };
   }
 };
 
+// startLiveStats begins polling one container's stats every 6s, for the
+// sidebar's hover-to-preview CPU/memory display.
 const startLiveStats = (id) => {
   activeLiveId.value = id;
   fetchStatsNow(id);
@@ -345,6 +353,7 @@ const startLiveStats = (id) => {
   liveInterval = setInterval(() => fetchStatsNow(id), 6000);
 };
 
+// stopLiveStats halts the sidebar hover-preview polling.
 const stopLiveStats = () => {
   activeLiveId.value = null;
   if (liveInterval) clearInterval(liveInterval);
@@ -384,6 +393,8 @@ const selectedIds = ref([]);
 const isSidebarHidden = ref(window.innerWidth < 1024);
 const splitView = ref(route.query.split === "true");
 
+// syncStateFromUrl reads the `c` (container ids) and `split` query params
+// into local state — called on mount and whenever the URL changes externally.
 const syncStateFromUrl = () => {
   const urlParam = route.query.c;
   if (!urlParam) {
@@ -397,6 +408,8 @@ const syncStateFromUrl = () => {
 };
 
 // Ensure we match containers even if short IDs are provided in the URL
+// displayContainers resolves selectedIds (which may be short/prefix IDs from
+// the URL) to full container objects, capped at 2 in split view or 1 otherwise.
 const displayContainers = computed(() => {
   if (containers.value.length === 0) return [];
 
@@ -434,6 +447,8 @@ const gridClass = computed(() =>
   displayContainers.value.length > 1 ? "grid-dual" : "grid-single",
 );
 
+// fetchContainers loads the container list for the sidebar, then re-applies
+// any pending URL-based selection now that containers are available.
 const fetchContainers = async () => {
   try {
     const token = secureStorage.getItem("token");
@@ -449,6 +464,8 @@ const fetchContainers = async () => {
   }
 };
 
+// updateUrl writes the current selection/split-view state back into the URL
+// query string, keeping it shareable/bookmarkable.
 const updateUrl = () => {
   const query = { ...route.query };
 
@@ -472,6 +489,9 @@ const toggleSplitView = () => {
   updateUrl();
 };
 
+// toggleStream adds/removes a container from the active selection: in split
+// view it's a FIFO queue capped at 2, otherwise selecting replaces the
+// current single stream.
 const toggleStream = (id) => {
   if (splitView.value) {
     // SPLIT VIEW: FIFO Logic (Max 2)
@@ -493,6 +513,7 @@ const toggleStream = (id) => {
   updateUrl();
 };
 
+// removeStream drops one container from the active selection.
 const removeStream = (id) => {
   selectedIds.value = selectedIds.value.filter((sid) => sid !== id);
   updateUrl();

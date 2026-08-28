@@ -108,6 +108,8 @@
 </template>
 
 <script setup>
+// Docker network management page: list/search networks, remove one, or prune
+// all unused ones. Mirrors Images.vue/Volumes.vue's confirm-modal pattern.
 import { ref, computed, onMounted } from 'vue';
 import { apiFetch } from '../utils/apiFetch';
 import { showToast } from '../utils/sharedState';
@@ -126,6 +128,7 @@ const filteredNetworks = computed(() => {
   });
 });
 
+// fetchNetworks loads the full network list from the backend.
 const fetchNetworks = async () => {
   isLoading.value = true;
   try {
@@ -141,6 +144,8 @@ const fetchNetworks = async () => {
   }
 };
 
+// confirmModal drives the single reusable confirmation dialog for both the
+// per-network remove and the bulk prune actions.
 const confirmModal = ref({
   show: false,
   title: '',
@@ -151,6 +156,7 @@ const confirmModal = ref({
   removeContainers: false
 });
 
+// openConfirm configures and shows the confirmation modal for a destructive action.
 const openConfirm = (title, message, type, action, showRemoveContainers = false) => {
   confirmModal.value = { 
     show: true, 
@@ -163,11 +169,13 @@ const openConfirm = (title, message, type, action, showRemoveContainers = false)
   };
 };
 
+// closeConfirm hides the modal without running its action.
 const closeConfirm = () => {
   confirmModal.value.show = false;
   confirmModal.value.action = null;
 };
 
+// executeConfirm runs the modal's pending action then closes it.
 const executeConfirm = async () => {
   if (confirmModal.value.action) {
     await confirmModal.value.action({
@@ -177,6 +185,7 @@ const executeConfirm = async () => {
   closeConfirm();
 };
 
+// requestRemoveNetwork opens the confirmation modal for deleting one network by ID.
 const requestRemoveNetwork = (id) => {
   openConfirm('Remove Network', `Are you sure you want to remove this network?`, 'error', async () => {
     try {
@@ -194,6 +203,7 @@ const requestRemoveNetwork = (id) => {
   });
 };
 
+// pruneNetworks opens the confirmation modal for removing all unused networks.
 const pruneNetworks = () => {
   openConfirm('Prune Unused Networks', 'Are you sure you want to prune all unused networks? This action cannot be undone.', 'warning', async (options) => {
     try {

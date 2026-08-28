@@ -888,6 +888,11 @@
 </template>
 
 <script setup>
+// Admin control center: a tabbed shell around UserManager/TeamManager/
+// AuditManager/AlertsManager, plus the global Settings form (SMTP, Google
+// OAuth, cloud backup/archival credentials, scan scheduling) and the current
+// admin's own password-change form. Route-guarded to admins only
+// (see router/index.js's requiresAdmin meta).
 import { ref, computed, onMounted } from 'vue';
 import { apiFetch } from '../utils/apiFetch';
 import AppIcon        from '../components/AppIcon.vue';
@@ -923,6 +928,9 @@ const alertRulesCount = ref(null);
 const teamsCount = ref(0);
 const alertsTriggeredCount = ref(0);
 const currentUser = ref({});
+// settings mirrors db.Setting's JSON shape; secret fields arrive from GET
+// /api/admin/settings already masked as "********" (see docs/SECURITY.md) and
+// are only overwritten server-side if the user actually types a new value.
 const settings = ref({
   metrics_retention_days: 30,
   smtp_host: "",
@@ -964,6 +972,7 @@ const token = secureStorage.getItem('token');
 const isAdmin = computed(() => sharedState.currentUser?.is_admin === true);
 
 onMounted(async () => {
+  // fetchAlertRulesCount loads the total alert-rule count for the metrics strip.
   const fetchAlertRulesCount = async () => {
     try {
       const currentToken = secureStorage.getItem('token');
@@ -983,6 +992,7 @@ onMounted(async () => {
   };
   fetchAlertRulesCount();
 
+  // fetchAlertsTriggeredCount loads a recent-alert-history count for the metrics strip.
   const fetchAlertsTriggeredCount = async () => {
     try {
       const currentToken = secureStorage.getItem('token');
@@ -1002,6 +1012,7 @@ onMounted(async () => {
   };
   fetchAlertsTriggeredCount();
 
+  // fetchSettings loads the current global settings into the form.
   const fetchSettings = async () => {
     try {
       const token = secureStorage.getItem('token');
@@ -1025,6 +1036,9 @@ onMounted(async () => {
 // ── Handlers ──────────────────────────────────────────────────────────────────
 const handleStaffCountUpdate = (count) => { staffUsersCount.value = count; };
 
+// saveSettings PUTs the whole settings form back to the backend; any
+// untouched masked secret field ("********") is preserved server-side rather
+// than overwritten (see docs/SECURITY.md).
 const saveSettings = async () => {
   if (settingsSaving.value) return;
   settingsSaving.value = true;
@@ -1051,6 +1065,8 @@ const saveSettings = async () => {
   }
 };
 
+// testBackup saves settings, then triggers an immediate on-demand backup to
+// validate the configured cloud credentials before relying on the schedule.
 const testBackup = async () => {
   if (backupTesting.value) return;
   
@@ -1095,6 +1111,9 @@ const confirmPassword = ref("");
 const currentPassword = ref("");
 const error = ref("");
 
+// handlePasswordUpdate changes the logged-in admin's own password, requiring
+// their current password (the same forced-reauth rule that applies to any
+// user changing their password after the first mandatory change).
 const handlePasswordUpdate = async () => {
   if (newPassword.value !== confirmPassword.value) {
     error.value = "Passwords do not match";
@@ -1139,6 +1158,8 @@ const handlePasswordUpdate = async () => {
     loading.value = false;
   }
 };
+// testArchival triggers an immediate on-demand archival pass to validate the
+// configured cloud credentials.
 const testArchival = async () => {
   archivalTesting.value = true;
   try {

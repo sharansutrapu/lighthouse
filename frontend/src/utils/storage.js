@@ -38,6 +38,9 @@ export const secureStorage = {
   }
 };
 
+// parseJwt decodes a JWT's payload (base64url segment 2) client-side, without
+// verifying its signature — used only to read display claims (e.g. is_admin)
+// already trusted because the token came straight from the backend.
 export const parseJwt = (token) => {
   if (!token) return null;
   try {

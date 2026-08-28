@@ -119,6 +119,8 @@
 </template>
 
 <script setup>
+// Docker image management page: list/search images, remove one, or prune all
+// unused ones (with an optional "remove stopped containers first" step).
 import { ref, computed, onMounted } from 'vue';
 import { apiFetch } from '../utils/apiFetch';
 import { formatBytes, showToast } from '../utils/sharedState';
@@ -137,6 +139,7 @@ const filteredImages = computed(() => {
   });
 });
 
+// fetchImages loads the full image list from the backend.
 const fetchImages = async () => {
   isLoading.value = true;
   try {
@@ -152,6 +155,9 @@ const fetchImages = async () => {
   }
 };
 
+// confirmModal drives a single reusable confirmation dialog for both the
+// per-image remove and the bulk prune actions; `action` holds the callback to
+// run if the user confirms.
 const confirmModal = ref({
   show: false,
   title: '',
@@ -164,6 +170,7 @@ const confirmModal = ref({
   allUnused: false
 });
 
+// openConfirm configures and shows the confirmation modal for a destructive action.
 const openConfirm = (title, message, type, action, showRemoveContainers = false, showAllUnused = false) => {
   confirmModal.value = { 
     show: true, 
@@ -178,11 +185,14 @@ const openConfirm = (title, message, type, action, showRemoveContainers = false,
   };
 };
 
+// closeConfirm hides the modal without running its action.
 const closeConfirm = () => {
   confirmModal.value.show = false;
   confirmModal.value.action = null;
 };
 
+// executeConfirm runs the modal's pending action (passing along any
+// checkbox options the user set) then closes it.
 const executeConfirm = async () => {
   if (confirmModal.value.action) {
     await confirmModal.value.action({
@@ -193,6 +203,7 @@ const executeConfirm = async () => {
   closeConfirm();
 };
 
+// requestRemoveImage opens the confirmation modal for deleting one image by ID.
 const requestRemoveImage = (id) => {
   openConfirm('Remove Image', `Are you sure you want to remove the image ${id.substring(0, 12)}?`, 'error', async () => {
     try {
@@ -210,6 +221,7 @@ const requestRemoveImage = (id) => {
   });
 };
 
+// pruneImages opens the confirmation modal for removing all unused images.
 const pruneImages = () => {
   openConfirm('Prune Unused Images', 'Are you sure you want to prune unused images? This action cannot be undone.', 'warning', async (options) => {
     try {
@@ -238,6 +250,7 @@ const pruneImages = () => {
   }, true, true);
 };
 
+// formatDate renders a Unix timestamp as a locale date/time string.
 const formatDate = (ts) => {
   if (!ts) return 'Unknown';
   return new Date(ts * 1000).toLocaleString();

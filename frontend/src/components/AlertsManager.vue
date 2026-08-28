@@ -747,6 +747,10 @@
 </template>
 
 <script setup>
+// Alert rule builder and history viewer: rules match container events
+// (die/oom/restart/etc.) and/or log-line patterns, then route notifications
+// to Slack/Teams/Google Chat/generic webhook/email, with per-rule cooldown
+// throttling. Also supports bulk channel updates across multiple rules.
 import { ref, computed, onMounted } from 'vue';
 import { apiFetch } from '../utils/apiFetch';
 import { secureStorage } from '../utils/storage';
@@ -779,6 +783,8 @@ const editorSections = computed(() => [
   { id: 'throttle', step: '4', label: 'Throttling', hint: 'Noise control' },
 ]);
 
+// scrollToSection jumps the rule-editor body to the given wizard step and
+// marks it as the active step indicator.
 function scrollToSection(id) {
   activeSection.value = id;
   const el = document.getElementById(`section-${id}`);
@@ -787,6 +793,8 @@ function scrollToSection(id) {
   }
 }
 
+// syncActiveSection updates the active step indicator as the user manually
+// scrolls the rule-editor body, based on which section header has scrolled past the top.
 function syncActiveSection() {
   const container = editorBodyRef.value;
   if (!container) return;
@@ -821,6 +829,7 @@ const bulkForm = ref({
   enable_email: false,
 });
 
+// toggleSelectAllRules selects/deselects every rule for the bulk-channel-update action.
 const toggleSelectAllRules = () => {
   if (selectAllRules.value) {
     selectedRules.value = rules.value.map(r => r.id);
@@ -881,6 +890,7 @@ const filteredHistory = computed(() => {
 
 const apiBase = '/api/admin/alerts';
 
+// loadRules fetches all alert rules for the Rules tab.
 const loadRules = async () => {
   loading.value = true;
   try {
@@ -898,6 +908,7 @@ const loadRules = async () => {
   }
 };
 
+// clearAllHistory permanently deletes every alert history entry.
 const clearAllHistory = async () => {
   historyLoading.value = true;
   try {
@@ -918,6 +929,7 @@ const clearAllHistory = async () => {
   }
 };
 
+// fetchHistory loads the most recent 200 fired-alert history entries.
 const fetchHistory = async () => {
   historyLoading.value = true;
   try {
@@ -933,6 +945,7 @@ const fetchHistory = async () => {
 
 // ── Modal helpers ─────────────────────────────────────────────────────────────
 
+// openCreateModal resets the rule form to defaults for creating a new rule.
 const openCreateModal = () => {
   editingRule.value = null;
   form.value = emptyForm();
@@ -940,11 +953,14 @@ const openCreateModal = () => {
   showModal.value = true;
 };
 
+// openDetailsModal shows the full details of one history entry.
 const openDetailsModal = (entry) => {
   viewDetailsEntry.value = entry;
   showDetailsModal.value = true;
 };
 
+// openEditModal populates the rule form from an existing rule, expanding its
+// comma-separated event_types string back into individual checkboxes.
 const openEditModal = (rule) => {
   editingRule.value = rule;
   const evList = (rule.event_types || '').split(',').map(s => s.trim());
@@ -986,12 +1002,16 @@ const openEditModal = (rule) => {
 const closeModal = () => { showModal.value = false; };
 
 // Build event_types string from checkboxes
+// buildEventTypes serializes the checked event checkboxes into the
+// comma-separated string the API expects.
 const buildEventTypes = () =>
   Object.entries(form.value.events)
     .filter(([, v]) => v)
     .map(([k]) => k)
     .join(',');
 
+// validate checks the rule form has a name, pattern, at least one delivery
+// channel, and at least one trigger condition (event or log pattern).
 const validate = () => {
   if (!form.value.name.trim()) return 'Rule name is required.';
   if (!form.value.container_pattern.trim()) return 'Container pattern is required.';
@@ -1008,6 +1028,7 @@ const validate = () => {
   return '';
 };
 
+// saveRule creates or updates the rule (POST vs PUT based on editingRule).
 const saveRule = async () => {
   formError.value = validate();
   if (formError.value) return;
@@ -1051,6 +1072,7 @@ const saveRule = async () => {
 
 // ── Toggle ────────────────────────────────────────────────────────────────────
 
+// toggleRule flips a rule's enabled flag without opening the full editor.
 const toggleRule = async (rule) => {
   const next = !rule.enabled;
   const body = new FormData();
@@ -1068,8 +1090,10 @@ const toggleRule = async (rule) => {
 
 // ── Delete ────────────────────────────────────────────────────────────────────
 
+// confirmDelete stages a rule for the delete-confirmation modal.
 const confirmDelete = (rule) => { deletingRule.value = rule; showDeleteModal.value = true; };
 
+// deleteRule permanently removes the staged rule.
 const deleteRule = async () => {
   if (!deletingRule.value) return;
   saving.value = true;
@@ -1093,6 +1117,8 @@ const deleteRule = async () => {
   }
 };
 
+// bulkUpdateChannels applies the same delivery-channel selection to every
+// currently-selected rule in a single request.
 const bulkUpdateChannels = async () => {
   if (selectedRules.value.length === 0) return;
   saving.value = true;
@@ -1127,6 +1153,9 @@ const bulkUpdateChannels = async () => {
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
 
+// splitEvents/formatEventName render a rule's raw event_types string as
+// human-readable badges; formatCooldown/formatDate/formatTime format
+// durations and timestamps for display.
 const splitEvents  = (s) => (s || '').split(',').map(e => e.trim()).filter(Boolean);
 const formatEventName = (ev) => {
   const map = {

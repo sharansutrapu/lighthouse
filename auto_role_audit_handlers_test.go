@@ -35,6 +35,29 @@ func TestHandleGETAudit(t *testing.T) {
 	assert.Equal(t, "admin", logs[0]["username"])
 }
 
+func TestHandleGETAudit_FromToFilter(t *testing.T) {
+	err := db.InitDB(":memory:")
+	assert.NoError(t, err)
+	db.GormDB.Save(&db.AuditLog{Username: "admin", Action: "LOGIN", Timestamp: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)})
+	db.GormDB.Save(&db.AuditLog{Username: "admin", Action: "LOGOUT", Timestamp: time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)})
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/audit?from=2024-05-01&to=2024-07-01", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	h := handleGETAudit()
+	err = h(c)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var logs []map[string]interface{}
+	err = json.Unmarshal(rec.Body.Bytes(), &logs)
+	assert.NoError(t, err)
+	assert.Len(t, logs, 1)
+	assert.Equal(t, "LOGOUT", logs[0]["action"])
+}
+
 func TestHandleGETRoleTemplates(t *testing.T) {
 	err := db.InitDB(":memory:")
 	assert.NoError(t, err)

@@ -60,7 +60,7 @@ Depending on your deployment mode, LightHouse uses either a local `lighthouse.db
 - **Container Stats**: Historical performance data (CPU/Memory).
 - **GitOps Projects**: Repository configuration and sync history.
 - **Alerting Rules**: Definitions for when to trigger notifications.
-- **API Keys (MCP)**: Dedicated credentials used by AI agents to establish secure MCP sessions.
+- **API Keys (MCP)**: Dedicated credentials used by AI agents to establish secure MCP sessions. Only a SHA-256 hash of each token is persisted; the plaintext is shown once at creation and never stored.
 
 ## 🔐 Security Model
 

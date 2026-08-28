@@ -4,12 +4,17 @@ import { secureStorage } from '../utils/storage';
 import { sharedState, showToast, formatBytes } from '../utils/sharedState';
 import { apiFetch } from '../utils/apiFetch';
 
+// This composable centralizes the container list: a single module-level
+// `containers` ref shared by every component that calls useContainers(), kept
+// fresh by one shared 8-second poll (ref-counted via pollSubscribers) so
+// multiple mounted views never each start their own duplicate polling loop.
 const containers = ref([]);
 const loading = ref(true);
 let pollInterval = null;
 let pollSubscribers = 0;
 
-
+// fetchContainers loads the current container list from the backend into the
+// shared `containers` ref.
 export async function fetchContainers() {
   try {
     const token = secureStorage.getItem('token');
@@ -26,12 +31,15 @@ export async function fetchContainers() {
   }
 }
 
+// startPolling begins the shared 8-second refresh loop (idempotent — safe to
+// call while already running).
 function startPolling() {
   if (pollInterval) return;
   fetchContainers();
   pollInterval = setInterval(fetchContainers, 8000);
 }
 
+// stopPolling halts the shared refresh loop.
 function stopPolling() {
   if (pollInterval) {
     clearInterval(pollInterval);
@@ -39,6 +47,7 @@ function stopPolling() {
   }
 }
 
+// formatContainerDate renders a Unix timestamp (seconds) as a locale date/time string.
 export function formatContainerDate(unix) {
   if (!unix) return 'N/A';
   return new Date(unix * 1000).toLocaleString('en-US', {
@@ -50,6 +59,9 @@ export function formatContainerDate(unix) {
   });
 }
 
+// useContainers exposes the shared container list plus start/stop/restart/
+// remove actions (with a confirmation-modal flow) to any component. Pass
+// { autoPoll: false } to read the shared state without joining the polling loop.
 export function useContainers(options = {}) {
   const { autoPoll = true } = options;
   const router = useRouter();
@@ -77,6 +89,8 @@ export function useContainers(options = {}) {
   );
 
 
+  // goToLogs/goToShell/goToDetail navigate to the Logs/Shell/detail page for
+  // a given container ID.
   const goToLogs = (id) => {
     router.push({ path: '/logs', query: { c: id } });
   };
@@ -89,12 +103,16 @@ export function useContainers(options = {}) {
     router.push({ path: `/containers/${id}` });
   };
 
+  // triggerConfirm opens the shared confirmation modal for a pending
+  // start/stop/restart/remove action.
   const triggerConfirm = (id, action) => {
     pendingId.value = id;
     pendingAction.value = action;
     showConfirm.value = true;
   };
 
+  // executeAction runs the confirmed pending action against the backend and
+  // refreshes the container list on success.
   const executeAction = async () => {
     if (!pendingId.value || !pendingAction.value) return;
     if (isActionLoading.value) return;

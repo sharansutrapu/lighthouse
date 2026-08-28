@@ -16,6 +16,12 @@ openssl rand -base64 32
 ```
 Pass this value to the `SECRET_KEY` environment variable.
 
+### API Tokens (Personal Access Tokens)
+Users and AI agents (via MCP) can authenticate with long-lived `lh_pat_...` tokens instead of a JWT session.
+- **Shown once**: the plaintext token is only ever returned in the response to its creation call. It is never logged and cannot be retrieved again afterward.
+- **Hashed at rest**: only a SHA-256 hash of the token is stored in the database. A leaked database backup does not expose usable credentials — lookups hash the incoming `Authorization: Bearer` value and compare against the stored hash.
+- **Revocation**: deleting a token from the UI immediately invalidates it for all future requests.
+
 ## 🔐 Role-Based Access Control (RBAC)
 
 Permissions are divided into two categories: **Visibility** and **Actions**.
@@ -81,6 +87,15 @@ The Model Context Protocol (MCP) server integration requires explicit API tokens
 
 ### 7. Automated Security Validation
 The backend security constraints are continuously verified by a comprehensive End-to-End validation suite (`e2e_validator.py`). This script executes a battery of assertions against the REST API to guarantee that BOLA defenses, password requirements, and API key restrictions cannot silently regress during future development.
+
+### 8. Secret Masking in API Responses
+`GET /api/settings` and `GET /api/teams` never return SMTP passwords, the Google OAuth client secret, cloud backup/archival credentials (including full GCS service-account JSON keys), or Slack/MS Teams/Google Chat/generic webhook URLs (which embed a bearer-equivalent secret in their path) in plaintext. Previously-saved values are represented as `********`; the corresponding `PUT` handlers detect and preserve that placeholder instead of overwriting the real secret, so the settings/team-edit forms round-trip safely without ever re-displaying a stored credential.
+
+### 9. SMTP Header Injection Prevention
+Email alert delivery strips CR/LF characters from every value interpolated into SMTP headers (`From`, `To`, `Cc`, `Subject`) before sending, preventing an attacker-influenced container name or alert payload from injecting additional headers or forging recipients.
+
+### 10. Constant-Time Shared-Secret Comparison
+The Hub validates the Spoke's `HUB_TOKEN` using `crypto/subtle.ConstantTimeCompare` rather than a plain string comparison, removing a timing side-channel on this network-facing credential check.
 
 ## 🛡️ Best Practices
 

@@ -19,6 +19,8 @@
 </template>
 
 <script setup>
+// Renders one named icon from utils/icons.js as an inline SVG, so icons are
+// styled via CSS `color`/`stroke` like text instead of needing separate asset files.
 import { computed } from "vue";
 import { icons } from "../utils/icons";
 

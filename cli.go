@@ -1,3 +1,6 @@
+// This file implements the `lighthouse` binary's command-line interface:
+// subcommands for running the server, resetting a password, and printing
+// version/config/help information.
 package main
 
 import (
@@ -14,6 +17,10 @@ var (
 	runMode       = "server"
 )
 
+// dispatchCLI inspects os.Args and handles any recognized subcommand
+// (reset-password, version, config, help) without starting the server. If no
+// subcommand matches (or none was given), it configures standalone "server"
+// mode and returns exit=false so main() proceeds to boot normally.
 func dispatchCLI(args []string) (exit bool, exitCode int) {
 	if len(args) < 2 {
 		applyRunMode("server")
@@ -51,22 +58,30 @@ func dispatchCLI(args []string) (exit bool, exitCode int) {
 	}
 }
 
+// applyRunMode records the active run mode and ensures LIGHTHOUSE_MODE
+// defaults to "standalone" if the operator didn't set it explicitly.
 func applyRunMode(mode string) {
 	runMode = mode
 	serveFrontend = true
 	setEnvIfEmpty("LIGHTHOUSE_MODE", "standalone")
 }
 
+// setEnvIfEmpty sets the environment variable key to value only if it isn't
+// already set, letting operator-provided env vars always take precedence.
 func setEnvIfEmpty(key, value string) {
 	if strings.TrimSpace(os.Getenv(key)) == "" {
 		_ = os.Setenv(key, value)
 	}
 }
 
+// printVersion prints the `lighthouse version` output.
 func printVersion() {
 	fmt.Printf("lighthouse %s\n", Version)
 }
 
+// printConfig prints the `lighthouse config` output: the effective
+// non-secret configuration, so an operator can sanity-check env vars without
+// ever printing SECRET_KEY or other credentials.
 func printConfig() {
 	boolEnv := func(key string, defaultVal bool) string {
 		val := strings.TrimSpace(os.Getenv(key))
@@ -104,6 +119,8 @@ func printConfig() {
 	}
 }
 
+// runModeLabel returns the effective run mode for display, preferring the
+// LIGHTHOUSE_MODE env var over the in-process default.
 func runModeLabel() string {
 	if v := strings.TrimSpace(os.Getenv("LIGHTHOUSE_MODE")); v != "" {
 		return v
@@ -111,6 +128,7 @@ func runModeLabel() string {
 	return runMode
 }
 
+// envOrDefault returns the environment variable key's value, or fallback if unset.
 func envOrDefault(key, fallback string) string {
 	if val := strings.TrimSpace(os.Getenv(key)); val != "" {
 		return val
@@ -118,6 +136,8 @@ func envOrDefault(key, fallback string) string {
 	return fallback
 }
 
+// printCLIHelp prints general `lighthouse help` usage, or (if topic names a
+// subcommand) that subcommand's detailed help text.
 func printCLIHelp(topic []string) {
 	if len(topic) > 0 {
 		switch topic[0] {
@@ -162,6 +182,7 @@ Docker:
 `)
 }
 
+// logRunMode logs which LIGHTHOUSE_MODE the server is starting in.
 func logRunMode() {
 	if v := os.Getenv("LIGHTHOUSE_MODE"); v != "" {
 		log.Printf("Starting LightHouse in %s mode", v)

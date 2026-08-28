@@ -19,6 +19,11 @@ import (
 	"lighthouse/db"
 )
 
+// registerMCPRoutes exposes LightHouse's Docker operations as MCP (Model
+// Context Protocol) tools over an SSE transport, so AI agents can list,
+// inspect, and control containers. Every tool call is bound to the same
+// RBAC/visibility rules as the human user who issued the API token used to
+// authenticate (see docs/SECURITY.md, "MCP Server Security").
 func registerMCPRoutes(r *echo.Group, cli *client.Client) {
 	// Create MCP server
 	mcpServer := server.NewMCPServer(
@@ -138,6 +143,8 @@ func getMCPUserIsAdmin(userID int) bool {
 	return u.IsAdmin
 }
 
+// mcpListContainersHandler implements the "list_containers" MCP tool,
+// returning only containers visible under the caller's permissions.
 func mcpListContainersHandler(cli *client.Client) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		claims, ok := ctx.Value("userClaims").(*UserClaims)
@@ -193,6 +200,9 @@ func mcpListContainersHandler(cli *client.Client) server.ToolHandlerFunc {
 	}
 }
 
+// mcpGetContainerLogsHandler implements the "get_container_logs" MCP tool,
+// returning the last 100 lines of stdout/stderr, truncated to 50KB total to
+// avoid overwhelming the calling AI agent's context window.
 func mcpGetContainerLogsHandler(cli *client.Client) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		claims, ok := ctx.Value("userClaims").(*UserClaims)
@@ -252,6 +262,7 @@ func mcpGetContainerLogsHandler(cli *client.Client) server.ToolHandlerFunc {
 	}
 }
 
+// mcpInspectContainerHandler implements the "inspect_container" MCP tool.
 func mcpInspectContainerHandler(cli *client.Client) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		claims, ok := ctx.Value("userClaims").(*UserClaims)
@@ -287,6 +298,7 @@ func mcpInspectContainerHandler(cli *client.Client) server.ToolHandlerFunc {
 
 // -- Lifecycle Management --
 
+// mcpStartContainerHandler implements the "start_container" MCP tool.
 func mcpStartContainerHandler(cli *client.Client) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		claims, ok := ctx.Value("userClaims").(*UserClaims)
@@ -324,6 +336,7 @@ func mcpStartContainerHandler(cli *client.Client) server.ToolHandlerFunc {
 	}
 }
 
+// mcpStopContainerHandler implements the "stop_container" MCP tool.
 func mcpStopContainerHandler(cli *client.Client) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		claims, ok := ctx.Value("userClaims").(*UserClaims)
@@ -361,6 +374,7 @@ func mcpStopContainerHandler(cli *client.Client) server.ToolHandlerFunc {
 	}
 }
 
+// mcpRestartContainerHandler implements the "restart_container" MCP tool.
 func mcpRestartContainerHandler(cli *client.Client) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		claims, ok := ctx.Value("userClaims").(*UserClaims)
@@ -400,6 +414,7 @@ func mcpRestartContainerHandler(cli *client.Client) server.ToolHandlerFunc {
 
 // -- System Resources (Admin Only) --
 
+// mcpListImagesHandler implements the admin-only "list_images" MCP tool.
 func mcpListImagesHandler(cli *client.Client) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		claims, ok := ctx.Value("userClaims").(*UserClaims)
@@ -417,6 +432,7 @@ func mcpListImagesHandler(cli *client.Client) server.ToolHandlerFunc {
 	}
 }
 
+// mcpListVolumesHandler implements the admin-only "list_volumes" MCP tool.
 func mcpListVolumesHandler(cli *client.Client) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		claims, ok := ctx.Value("userClaims").(*UserClaims)
@@ -434,6 +450,7 @@ func mcpListVolumesHandler(cli *client.Client) server.ToolHandlerFunc {
 	}
 }
 
+// mcpListNetworksHandler implements the admin-only "list_networks" MCP tool.
 func mcpListNetworksHandler(cli *client.Client) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		claims, ok := ctx.Value("userClaims").(*UserClaims)

@@ -16,6 +16,9 @@
 </template>
 
 <script setup>
+// Root component: picks the "main" (sidebar) layout or a bare layout (e.g.
+// Login) based on the active route's meta.layout, and keeps the OS-theme
+// listener alive for the lifetime of the app.
 import { onMounted, onUnmounted } from 'vue';
 import { useRoute } from 'vue-router';
 import MainLayout from './components/MainLayout.vue';

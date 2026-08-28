@@ -10,6 +10,11 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// runResetPasswordCLI implements `lighthouse reset-password <username>
+// <new-password>`: an emergency, out-of-band way to recover a locked-out
+// account without going through the web UI. It opens the on-disk database
+// directly (refusing :memory:), hashes the new password, and bumps
+// password_version so any existing JWT sessions for that user are invalidated.
 func runResetPasswordCLI(args []string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("usage: lighthouse reset-password <username> <new-password>")

@@ -226,6 +226,31 @@ func TestHandlePOSTApiTokenRefresh_UserNotFound(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 }
 
+func TestHandlePOSTApiTokenRefresh_HappyPath(t *testing.T) {
+	setupAuthTokenTestDB(t)
+	initSecretKey()
+
+	user := db.User{Username: "refreshuser", IsActive: true, PasswordVersion: 1, PasswordChanged: true}
+	db.GormDB.Create(&user)
+
+	claims := &UserClaims{ID: int(user.ID), Username: user.Username, PasswordVersion: 1}
+	_, refreshToken, err := issueTokenPair(claims)
+	assert.NoError(t, err)
+
+	f := make(url.Values)
+	f.Set("refresh_token", refreshToken)
+	c, rec := newFormContext(http.MethodPost, "/api/token/refresh", f)
+
+	h := handlePOSTApiTokenRefresh()
+	assert.NoError(t, h(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var body map[string]interface{}
+	assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.NotEmpty(t, body["access_token"])
+	assert.NotEmpty(t, body["refresh_token"])
+}
+
 // ─── handlePOSTApiTokenExchange Tests ────────────────────────────────────────
 
 func TestHandlePOSTApiTokenExchange_MissingCode(t *testing.T) {

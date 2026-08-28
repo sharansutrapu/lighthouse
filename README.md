@@ -60,7 +60,7 @@ Keep your infrastructure secure with native image scanning:
 ### 🤖 MCP Support (Model Context Protocol)
 Supercharge your AI agents with direct access to your Docker infrastructure:
 - **Seamless Integration:** Native support for the Model Context Protocol (MCP) using SSE (Server-Sent Events) and stateless message exchanges.
-- **Secure Access:** Generate, manage, and revoke dedicated API tokens for your AI assistants directly from the UI.
+- **Secure Access:** Generate, manage, and revoke dedicated API tokens for your AI assistants directly from the UI. Tokens are shown once at creation and stored hashed (never in plaintext).
 - **RBAC Enforced:** AI Agents are bound by the exact same Role-Based Access Control (RBAC) and visibility filters as the user who generated their token. An AI cannot see or interact with a container its owner doesn't have access to.
 - **Easy Configuration:** Get instant, copy-paste ready `npx` connection commands from the dedicated MCP Configuration panel.
 - **AI-Driven DevOps:** Allow your LLMs and agents to query container health, read logs, and trigger deployments safely.

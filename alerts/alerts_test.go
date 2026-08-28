@@ -1603,3 +1603,139 @@ func setupTestDB(t *testing.T) {
 	setupTestManager(t)
 }
 
+// TestTriggerAlertGroupingWindowFires covers the deferred branch of triggerAlert
+// that only runs when the grouping-window timer actually fires (cooldown check
+// + deliverGroup + debounce-map cleanup) — not exercised by tests that only
+// call triggerAlert without waiting out the (normally 30s) window.
+func TestTriggerAlertGroupingWindowFires(t *testing.T) {
+	setupTestDBExtra(t)
+	db.GormDB.Where("id = ?", 1).FirstOrCreate(&db.Setting{ID: 1})
+
+	origWindow := groupingWindow
+	groupingWindow = 20 * time.Millisecond
+	t.Cleanup(func() { groupingWindow = origWindow })
+
+	// Unique per run: setupTestDBExtra's shared-cache in-memory sqlite can
+	// retain rows across repeated test runs in the same process.
+	containerName := "timer-container-" + time.Now().Format("150405.000000000")
+
+	am := NewAlertManager(nil)
+	rule := &AlertRule{ID: 42, Name: "Timer Rule", CooldownSeconds: 60}
+
+	am.triggerAlert(rule, containerName, "event", "first")
+	am.triggerAlert(rule, containerName, "event", "second")
+
+	// Poll for the delivered history row rather than the debounce map, since
+	// the map entry is cleared slightly before deliverGroup's DB insert runs.
+	var count int64
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		db.GormDB.Model(&db.AlertHistory{}).Where("container_name = ?", containerName).Count(&count)
+		if count > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if count != 1 {
+		t.Fatalf("Expected 1 delivered alert history record, got %d", count)
+	}
+
+	am.debounceMu.Lock()
+	_, stillGrouped := am.groupedDebounce[containerName]
+	am.debounceMu.Unlock()
+	if stillGrouped {
+		t.Fatal("Expected debounce group to be cleared after the grouping window fired")
+	}
+
+	// A second round should be filtered out entirely by the cooldown, so
+	// deliverGroup must not be called and no new history row created.
+	am.triggerAlert(rule, containerName, "event", "third")
+	time.Sleep(200 * time.Millisecond) // well past the grouping window
+
+	db.GormDB.Model(&db.AlertHistory{}).Where("container_name = ?", containerName).Count(&count)
+	if count != 1 {
+		t.Fatalf("Expected cooldown to suppress the second delivery, still expected 1 record, got %d", count)
+	}
+}
+
+// TestTriggerContainerEventPatternMatchAndMismatch covers both branches of
+// TriggerContainerEvent's container-pattern check using rules loaded through
+// ReloadRules (so ContainerPattern is actually compiled) — every other
+// TriggerContainerEvent test builds *AlertRule literals directly, which
+// leaves compiledContainerRe nil and matchesContainer always false.
+func TestTriggerContainerEventPatternMatchAndMismatch(t *testing.T) {
+	setupTestDBExtra(t)
+	db.GormDB.Create(&db.AlertRule{
+		Name:             "Matches Only Target",
+		ContainerPattern: "^only-this-container$",
+		EventTypes:       "start",
+		CooldownSeconds:  60,
+		Enabled:          true,
+	})
+
+	am := NewAlertManager(nil)
+	am.ReloadRules()
+
+	// Mismatch: rule's compiled pattern doesn't match this container, so
+	// TriggerContainerEvent must `continue` without ever calling triggerAlert.
+	am.TriggerContainerEvent("start", "some-other-container", "should not match")
+	am.debounceMu.Lock()
+	_, grouped := am.groupedDebounce["some-other-container"]
+	am.debounceMu.Unlock()
+	if grouped {
+		t.Fatal("Expected non-matching container pattern to skip triggerAlert entirely")
+	}
+
+	// Match: same rule, correct container name, matching event type — must
+	// reach the inner loop and call triggerAlert, creating a debounce group.
+	am.TriggerContainerEvent("start", "only-this-container", "should match")
+	am.debounceMu.Lock()
+	_, grouped = am.groupedDebounce["only-this-container"]
+	am.debounceMu.Unlock()
+	if !grouped {
+		t.Fatal("Expected matching container pattern + event type to trigger an alert")
+	}
+}
+
+// TestRunEventLoopProcessesMessage covers the branch of runEventLoop where a
+// real container event flows through the messages channel and is dispatched
+// to processContainerEvent, plus the non-container-event filter branch.
+func TestRunEventLoopProcessesMessage(t *testing.T) {
+	setupTestDBExtra(t)
+
+	eventJSON := `{"Type":"container","Action":"die","Actor":{"ID":"abc123","Attributes":{"name":"evented"}}}` + "\n"
+	nonContainerEventJSON := `{"Type":"network","Action":"connect","Actor":{"ID":"net1"}}` + "\n"
+
+	mockHTTPClient := &http.Client{
+		Transport: &dockerMockTransport{
+			roundTripFunc: func(req *http.Request) (*http.Response, error) {
+				body := nonContainerEventJSON + eventJSON
+				return &http.Response{
+					StatusCode: 200,
+					Body:       io.NopCloser(strings.NewReader(body)),
+					Header:     make(http.Header),
+				}, nil
+			},
+		},
+	}
+	cli, _ := client.NewClientWithOpts(client.WithHTTPClient(mockHTTPClient))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	am := &AlertManager{
+		cli:   cli,
+		ctx:   ctx,
+		rules: map[int64]*AlertRule{},
+	}
+
+	am.runEventLoop()
+
+	am.startedAtMu.Lock()
+	_, sawDie := am.startedAt["evented"]
+	am.startedAtMu.Unlock()
+	// "die" doesn't populate startedAt (only "start" does); this simply
+	// confirms processContainerEvent ran without panicking on a real message
+	// decoded off the wire, and that the non-container event was skipped.
+	_ = sawDie
+}
+

@@ -2,6 +2,7 @@ package alerts
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -23,6 +24,8 @@ var (
 	}
 )
 
+// smtpClient is the subset of *smtp.Client's methods DeliverEmail needs,
+// extracted as an interface so tests can substitute a mock SMTP server.
 type smtpClient interface {
 	Auth(a smtp.Auth) error
 	Mail(from string) error
@@ -62,6 +65,13 @@ type slackField struct {
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
+
+// stripCRLF removes carriage-return/line-feed characters to prevent SMTP header injection.
+func stripCRLF(s string) string {
+	s = strings.ReplaceAll(s, "\r", "")
+	s = strings.ReplaceAll(s, "\n", "")
+	return s
+}
 
 // DeliverNotification dispatches a NotificationPayload to the target channel
 // described by channelType and the JSON blob in configJSON.
@@ -244,13 +254,68 @@ func sendGenericWebhook(url string, p NotificationPayload) error {
 // httpClient is shared across all deliveries so connections are reused where
 // possible.  The 10-second timeout prevents a slow or unresponsive webhook from
 // blocking the calling goroutine indefinitely.
+//
+// Transport.DialContext re-validates the destination IP at the moment the TCP
+// connection is actually opened (see safeDialContext). Validating only the
+// pre-resolved hostname in isAllowedWebhookURL and then handing the bare URL
+// to http.Client would leave a DNS-rebinding TOCTOU window: an attacker's
+// resolver can answer the pre-check lookup with a public IP and the
+// connect-time lookup with 169.254.169.254 (or another private address).
+// Pinning validation to the exact IP being dialed closes that gap.
 var httpClient = &http.Client{
 	Timeout: 10 * time.Second,
 	CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		return http.ErrUseLastResponse
 	},
+	Transport: &http.Transport{
+		DialContext: safeDialContext,
+	},
 }
 
+var rawDialContext = (&net.Dialer{Timeout: 5 * time.Second}).DialContext
+
+// lookupIPAddr resolves a hostname to IP addresses; overridable in tests so
+// safeDialContext never needs a live DNS resolver.
+var lookupIPAddr = net.DefaultResolver.LookupIPAddr
+
+// isSafeIP reports whether ip is a routable, non-internal address.
+func isSafeIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	return !(ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified())
+}
+
+// safeDialContext resolves addr and validates the resolved IP immediately
+// before dialing it, so the IP that is checked is the exact IP that is
+// connected to (no separate pre-check/connect resolution steps to race).
+func safeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+
+	ip := net.ParseIP(host)
+	if ip == nil {
+		addrs, lookupErr := lookupIPAddr(ctx, host)
+		if lookupErr != nil || len(addrs) == 0 {
+			return nil, fmt.Errorf("alerts/delivery: dns resolution failed for %s", host)
+		}
+		ip = addrs[0].IP
+	}
+
+	if !SkipSSRFCheck && !isSafeIP(ip) {
+		return nil, fmt.Errorf("alerts/delivery: blocked SSRF target %s", ip)
+	}
+
+	return rawDialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+}
+
+// isAllowedWebhookURL is the SSRF guard applied to every configured webhook
+// URL: it must be http(s), and must not resolve to a cloud metadata endpoint,
+// loopback, private, or link-local address (unless SkipSSRFCheck is set,
+// which tests use to point at a local mock server).
 func isAllowedWebhookURL(rawURL string) bool {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
@@ -335,12 +400,18 @@ func DeliverEmail(host string, port int, user, pass, to string, cc []string, p N
 		auth = smtp.PlainAuth("", user, pass, host)
 	}
 
-	from := user
+	from := stripCRLF(user)
 	if from == "" {
 		from = "lighthouse@localhost" // Fallback if no user is provided for local SMTP relays
 	}
+	to = stripCRLF(to)
+	sanitizedCC := make([]string, len(cc))
+	for i, addr := range cc {
+		sanitizedCC[i] = stripCRLF(addr)
+	}
+	cc = sanitizedCC
 
-	subject := fmt.Sprintf("Subject: [LightHouse] %s Alert - %s\r\n", p.Type, p.ContainerName)
+	subject := fmt.Sprintf("Subject: [LightHouse] %s Alert - %s\r\n", stripCRLF(p.Type), stripCRLF(p.ContainerName))
 
 	htmlBody := fmt.Sprintf(`
 	<html>

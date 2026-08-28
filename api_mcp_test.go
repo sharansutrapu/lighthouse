@@ -466,3 +466,26 @@ func TestRegisterMCPRoutes_Coverage(t *testing.T) {
 	registerMCPRoutes(g, cli)
 	assert.NotNil(t, g)
 }
+
+// TestRegisterMCPRoutes_InjectClaimsWithValidToken covers the injectClaims
+// middleware branch where a real *jwt.Token with *UserClaims is present on
+// the echo context (via the group's auth middleware), so it gets threaded
+// onto the outgoing http.Request context (the other test only exercises
+// the no-token path).
+func TestRegisterMCPRoutes_InjectClaimsWithValidToken(t *testing.T) {
+	claims := &UserClaims{ID: 1, IsAdmin: true}
+	e, g, _, _ := setupEchoWithClaimsHelper(claims)
+	cli := mockDockerClientWithRoundTripper(t, mockHandlerForMCP)
+	registerMCPRoutes(g, cli)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/api/mcp/sse", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	go func() { e.ServeHTTP(rec, req) }()
+	time.Sleep(20 * time.Millisecond)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+

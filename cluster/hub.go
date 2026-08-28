@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -9,9 +10,12 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
+	"lighthouse/alerts"
 	"lighthouse/db"
 )
 
+// WSConn is the subset of *websocket.Conn methods used by the hub/spoke
+// protocol, extracted as an interface so tests can substitute a fake connection.
 type WSConn interface {
 	ReadMessage() (int, []byte, error)
 	WriteJSON(v interface{}) error
@@ -32,19 +36,29 @@ type Hub struct {
 	Spokes          map[string]WSConn
 	SpokeContainers map[string][]map[string]interface{}
 	ExecStreams     map[string]WSConn // maps exec_id to UI websocket
+	CommandResults  map[string]CommandResult // container_id -> most recent dispatched command outcome
+}
+
+// CommandResult is the outcome of a command dispatched to a Spoke, reported
+// back over the same WebSocket so a failure is never silently treated as success.
+type CommandResult struct {
+	Action string `json:"action"`
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
 }
 
 var GlobalHub = &Hub{
 	Spokes:          make(map[string]WSConn),
 	SpokeContainers: make(map[string][]map[string]interface{}),
 	ExecStreams:     make(map[string]WSConn),
+	CommandResults:  make(map[string]CommandResult),
 }
 
 // RegisterHubRoutes attaches the WebSocket endpoint
 func RegisterHubRoutes(e *echo.Echo, hubToken string) {
 	e.GET("/api/spoke/connect", func(c echo.Context) error {
 		token := c.QueryParam("token")
-		if token != hubToken {
+		if subtle.ConstantTimeCompare([]byte(token), []byte(hubToken)) != 1 {
 			return c.String(http.StatusUnauthorized, "Invalid token")
 		}
 		nodeID := c.QueryParam("node_id")
@@ -119,6 +133,26 @@ func handleSpokeMessage(nodeID string, msg []byte) {
 		if ok {
 			uiWs.WriteMessage(websocket.TextMessage, payload.Data)
 		}
+
+	case "command_result":
+		var result struct {
+			Action      string `json:"action"`
+			ContainerID string `json:"container_id"`
+			Status      string `json:"status"`
+			Error       string `json:"error,omitempty"`
+		}
+		if err := json.Unmarshal(payload.Data, &result); err != nil {
+			return
+		}
+		if result.Status == "failed" {
+			log.Printf("[Hub] Spoke %s reported command %q failed for container %s: %s", nodeID, result.Action, result.ContainerID, result.Error)
+			if alerts.Global != nil {
+				alerts.Global.TriggerSystemAlert("spoke_command_failed", fmt.Sprintf("Spoke %s: %s on container %s failed: %s", nodeID, result.Action, result.ContainerID, result.Error))
+			}
+		}
+		GlobalHub.Lock()
+		GlobalHub.CommandResults[result.ContainerID] = CommandResult{Action: result.Action, Status: result.Status, Error: result.Error}
+		GlobalHub.Unlock()
 	}
 }
 

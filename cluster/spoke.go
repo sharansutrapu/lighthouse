@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"net/url"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -29,11 +30,11 @@ var agentRunning = true
 func StartSpokeAgent(hubURL, hubToken, nodeID string, cli *client.Client) {
 	dockerClient = cli
 
-	url := hubURL + "/api/spoke/connect?token=" + hubToken + "&node_id=" + nodeID
+	connectURL := hubURL + "/api/spoke/connect?token=" + url.QueryEscape(hubToken) + "&node_id=" + url.QueryEscape(nodeID)
 
 	for agentRunning {
-		log.Printf("[Spoke] Dialing Hub at %s", url)
-		ws, err := dialFunc(url)
+		log.Printf("[Spoke] Dialing Hub at %s", connectURL)
+		ws, err := dialFunc(connectURL)
 		if err != nil {
 			log.Printf("[Spoke] Dial error: %v. Retrying in 5s...", err)
 			time.Sleep(reconnectInterval)
@@ -85,9 +86,16 @@ func PushToHub(msgType string, data interface{}) {
 		return
 	}
 
+	// json.RawMessage (not a bare []byte) is required here: encoding/json
+	// base64-encodes plain []byte values, which would silently turn the
+	// already-JSON-encoded `b` into an opaque base64 string on the wire —
+	// handleSpokeMessage's json.Unmarshal(payload.Data, &X) would then fail
+	// (silently, since its error return isn't checked) for every message
+	// type, every time. json.RawMessage implements json.Marshaler so it is
+	// embedded verbatim instead.
 	payload := map[string]interface{}{
 		"type": msgType,
-		"data": b,
+		"data": json.RawMessage(b),
 	}
 
 	err = spokeWs.WriteJSON(payload)
@@ -96,6 +104,9 @@ func PushToHub(msgType string, data interface{}) {
 	}
 }
 
+// handleHubMessage dispatches one multiplexed JSON message received from the
+// Hub over the spoke's WebSocket connection to the appropriate handler based
+// on its "type" field.
 func handleHubMessage(msg []byte) {
 	var payload struct {
 		Type        string `json:"type"`
@@ -119,33 +130,42 @@ func handleHubMessage(msg []byte) {
 	}
 }
 
+// scanImageFunc is overridable in tests; in production it calls the real
+// scanner package to run Trivy against an image.
 var scanImageFunc = scanner.ScanImageFunc
 
+// handleCommand executes one Hub-dispatched container action (start, stop,
+// restart, delete, or scan) against this Spoke's local Docker daemon, and
+// always reports the outcome back to the Hub via PushToHub so a failure is
+// never silently swallowed.
 func handleCommand(action, containerID string) {
 	ctx := context.Background()
+	var err error
 	switch action {
 	case "start":
-		dockerClient.ContainerStart(ctx, containerID, client.ContainerStartOptions{})
+		_, err = dockerClient.ContainerStart(ctx, containerID, client.ContainerStartOptions{})
 	case "stop":
 		timeout := 10
-		dockerClient.ContainerStop(ctx, containerID, client.ContainerStopOptions{Timeout: &timeout})
+		_, err = dockerClient.ContainerStop(ctx, containerID, client.ContainerStopOptions{Timeout: &timeout})
 	case "restart":
 		timeout := 10
-		dockerClient.ContainerRestart(ctx, containerID, client.ContainerRestartOptions{Timeout: &timeout})
+		_, err = dockerClient.ContainerRestart(ctx, containerID, client.ContainerRestartOptions{Timeout: &timeout})
 	case "delete":
-		dockerClient.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true})
+		_, err = dockerClient.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true})
 	case "scan":
 		go func() {
-			c, err := dockerClient.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
-			if err != nil {
-				log.Printf("[Spoke] scan error: container inspect failed: %v", err)
+			c, inspectErr := dockerClient.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
+			if inspectErr != nil {
+				log.Printf("[Spoke] scan error: container inspect failed: %v", inspectErr)
+				PushToHub("command_result", commandResult{Action: "scan", ContainerID: containerID, Status: "failed", Error: inspectErr.Error()})
 				return
 			}
 			imageName := c.Container.Config.Image
 			log.Printf("[Spoke] Scanning image %s...", imageName)
-			res, err := scanImageFunc(ctx, dockerClient, imageName)
-			if err != nil {
-				log.Printf("[Spoke] scan error: %v", err)
+			res, scanErr := scanImageFunc(ctx, dockerClient, imageName)
+			if scanErr != nil {
+				log.Printf("[Spoke] scan error: %v", scanErr)
+				PushToHub("command_result", commandResult{Action: "scan", ContainerID: containerID, Status: "failed", Error: scanErr.Error()})
 				return
 			}
 			b, _ := json.Marshal(res)
@@ -154,10 +174,35 @@ func handleCommand(action, containerID string) {
 				Result: string(b),
 			})
 			log.Printf("[Spoke] Scan complete for %s", imageName)
+			PushToHub("command_result", commandResult{Action: "scan", ContainerID: containerID, Status: "success"})
 		}()
+		return
+	default:
+		log.Printf("[Spoke] unknown command action %q", action)
+		return
 	}
+
+	if err != nil {
+		log.Printf("[Spoke] command %q on container %s failed: %v", action, containerID, err)
+		PushToHub("command_result", commandResult{Action: action, ContainerID: containerID, Status: "failed", Error: err.Error()})
+		return
+	}
+	PushToHub("command_result", commandResult{Action: action, ContainerID: containerID, Status: "success"})
 }
 
+// commandResult reports the outcome of a Hub-dispatched command back to the
+// Hub — without this, a failed start/stop/restart/delete on a Spoke is
+// silently dropped and the Hub (and the UI) assumes it succeeded.
+type commandResult struct {
+	Action      string `json:"action"`
+	ContainerID string `json:"container_id"`
+	Status      string `json:"status"`
+	Error       string `json:"error,omitempty"`
+}
+
+// handleExecSession would stream an interactive shell session for a
+// Hub-initiated exec request. Not yet implemented — shell access currently
+// only works against containers on the node the UI talks to directly.
 func handleExecSession(execID, containerID string) {
 	log.Printf("[Spoke] Exec session %s for container %s", execID, containerID)
 }

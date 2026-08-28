@@ -2,6 +2,10 @@
 // It maintains an in-memory rule cache backed by SQLite, subscribes to the
 // Docker daemon event stream, lazily spawns per-container log-tailer goroutines,
 // and dispatches notifications through the delivery adapters in delivery.go.
+// Package alerts implements LightHouse's alerting engine: it evaluates alert
+// rules against Docker events and resource metrics, applies per-rule cooldowns
+// to avoid notification floods, and dispatches matched alerts to configured
+// channels (email, Slack, Microsoft Teams, Google Chat, generic webhooks).
 package alerts
 
 import (
@@ -910,6 +914,9 @@ func (am *AlertManager) checkMetricsLoop() {
 	}
 }
 
+// evaluateMetrics checks every enabled rule's CPU/memory/storage thresholds
+// against the latest known container and system stats, firing alerts for any
+// rule that crosses its configured threshold (subject to its cooldown).
 func (am *AlertManager) evaluateMetrics() {
 	am.rulesMu.RLock()
 	activeRules := make([]*AlertRule, 0, len(am.rules))

@@ -216,6 +216,9 @@
 </template>
 
 <script setup>
+// Vulnerability scanning page: shows the most recent Trivy scan result per
+// container, supports scanning one or all containers, viewing full findings,
+// and exporting selected scan results as JSON.
 import { ref, computed, onMounted, watch } from 'vue';
 import { useContainers } from '../composables/useContainers';
 import { apiFetch } from '../utils/apiFetch';
@@ -256,6 +259,7 @@ const isAllSelected = computed(() => {
   return scansWithResults.length > 0 && selectedScans.value.size === scansWithResults.length;
 });
 
+// toggleSelection adds/removes one container's scan from the export selection.
 const toggleSelection = (c) => {
   if (!scanResults.value[c.id]) return;
   const newSet = new Set(selectedScans.value);
@@ -267,6 +271,7 @@ const toggleSelection = (c) => {
   selectedScans.value = newSet;
 };
 
+// toggleSelectAll selects/deselects every container that has a scan result.
 const toggleSelectAll = () => {
   if (isAllSelected.value) {
     selectedScans.value = new Set();
@@ -276,6 +281,7 @@ const toggleSelectAll = () => {
   }
 };
 
+// downloadJSON triggers a browser download of data as a named JSON file.
 const downloadJSON = (filename, data) => {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -288,6 +294,8 @@ const downloadJSON = (filename, data) => {
   URL.revokeObjectURL(url);
 };
 
+// exportSelected builds a flattened vulnerability report for every selected
+// container's latest scan and downloads it as one JSON file.
 const exportSelected = () => {
   if (selectedScans.value.size === 0) return;
   const dataToExport = containers.value
@@ -323,6 +331,7 @@ const showExportModal = ref(false);
 const activeScan = ref(null);
 const activeContainerName = ref('');
 
+// scanAll triggers a scan for every container that isn't already scanning.
 const scanAll = async () => {
   isScanningAll.value = true;
   showToast('Scan All Started', `Initiated vulnerability scans for ${containers.value.length} containers`, 'info');
@@ -340,6 +349,7 @@ const scanAll = async () => {
   showToast('Scan All Complete', 'Finished launching vulnerability scans for all containers.', 'success');
 };
 
+// parseScanResults tallies vulnerability counts by severity from a raw Trivy result.
 const parseScanResults = (data) => {
   let counts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, UNKNOWN: 0 };
   let total = 0;
@@ -359,6 +369,8 @@ const parseScanResults = (data) => {
   return { data, counts, total };
 };
 
+// loadScanForContainer fetches and parses the latest stored scan for one
+// container's image, returning true if a result was found.
 const loadScanForContainer = async (c) => {
   try {
     const token = secureStorage.getItem('token');
@@ -381,6 +393,8 @@ const loadScanForContainer = async (c) => {
   return false;
 };
 
+// loadAllScanHistories loads the latest stored scan (if any) for every
+// container in parallel, on mount.
 const loadAllScanHistories = async () => {
   const promises = containers.value.map(async (c) => {
     if (c.image) {
@@ -390,6 +404,8 @@ const loadAllScanHistories = async () => {
   await Promise.all(promises);
 };
 
+// triggerScan starts a background scan for one container and polls (every
+// 10s, up to 5 minutes) until a new result appears.
 const triggerScan = async (c) => {
   scanning.value[c.id] = true;
   scanResults.value[c.id] = null; // Clear old result during new scan
@@ -430,6 +446,7 @@ const triggerScan = async (c) => {
   }
 };
 
+// viewDetails opens the full-findings modal for one container's scan result.
 const viewDetails = (c) => {
   if (!scanResults.value[c.id]) return;
   activeScan.value = scanResults.value[c.id].data;

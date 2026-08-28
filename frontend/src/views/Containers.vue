@@ -82,6 +82,9 @@
 </template>
 
 <script setup>
+// Container fleet management page: the searchable/filterable table of all
+// containers (list data and start/stop/restart/remove actions all live in
+// the shared useContainers() composable / ContainerTable component).
 import { ref, computed } from "vue";
 import ContainerTable from "../components/ContainerTable.vue";
 import { useContainers } from "../composables/useContainers";

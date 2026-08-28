@@ -3,6 +3,8 @@ import { secureStorage, parseJwt } from '../utils/storage';
 import { sharedState } from '../utils/sharedState';
 import { apiFetch } from '../utils/apiFetch';
 
+// Route table for the SPA. `meta.requiresAuth`/`requiresAdmin` are enforced
+// below in the global navigation guard, not by the components themselves.
 const routes = [
   { path: '/', redirect: to => ({ path: '/dashboard', query: to.query }) },
   { 
@@ -102,6 +104,12 @@ const router = createRouter({
   routes
 });
 
+// The global navigation guard runs before every route change. It:
+// 1. Lazily loads server-side feature flags (GET /api/config) once per session.
+// 2. Redeems a one-time OAuth exchange code or legacy URL token, if present.
+// 3. Enforces requiresAuth/requiresAdmin by inspecting the (client-decoded,
+//    unverified) JWT claims — this is a UX convenience only; the backend
+//    independently re-validates and re-authorizes every actual API call.
 router.beforeEach(async (to, from, next) => {
   if (!sharedState.configLoaded) {
     try {
