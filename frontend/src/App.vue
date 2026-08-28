@@ -38,10 +38,26 @@ onUnmounted(() => {
 
 <style>
 /* Transitions */
-.fade-enter-active, .fade-leave-active {
-  transition: opacity 0.2s ease;
+.fade-enter-active {
+  transition: opacity 0.22s cubic-bezier(0.23, 1, 0.32, 1), transform 0.22s cubic-bezier(0.23, 1, 0.32, 1);
 }
-.fade-enter-from, .fade-leave-to {
+.fade-leave-active {
+  transition: opacity 0.12s ease;
+}
+.fade-enter-from {
   opacity: 0;
+  transform: translateY(6px);
+}
+.fade-leave-to {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 </style>

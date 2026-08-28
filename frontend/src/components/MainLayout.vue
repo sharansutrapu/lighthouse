@@ -906,6 +906,7 @@ onUnmounted(() => {
 .layout-body {
   flex: 1;
   overflow-y: auto;
+  scroll-behavior: smooth;
   padding: 1.25rem 1.5rem;
   scrollbar-width: thin;
   background:

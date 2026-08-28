@@ -181,4 +181,14 @@ router.beforeEach(async (to, from, next) => {
   }
 });
 
+// Vue Router's built-in scrollBehavior only manages window scrolling, but the
+// app's real scroll container is MainLayout's internal `.layout-body` div —
+// reset it on every route change so a new page never opens mid-scroll from
+// wherever the previous page was left.
+router.afterEach((to, from) => {
+  if (to.path === from.path) return;
+  const body = document.querySelector('.layout-body');
+  if (body) body.scrollTop = 0;
+});
+
 export default router;

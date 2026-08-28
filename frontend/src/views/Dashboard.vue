@@ -33,7 +33,12 @@
     </section>
 
     <!-- Metrics -->
-    <section class="metrics-bento animate-slide-up" style="animation-delay: 0.05s">
+    <section v-if="initialLoading" class="metrics-bento animate-slide-up" style="animation-delay: 0.05s">
+      <article v-for="n in 4" :key="n" class="metric-card metric-card-skeleton">
+        <div class="shimmer" style="border-radius: var(--radius-xl, 16px);"></div>
+      </article>
+    </section>
+    <section v-else class="metrics-bento animate-slide-up" style="animation-delay: 0.05s">
       <article class="metric-card variant-fleet">
         <div class="metric-glow" aria-hidden="true"></div>
         <div class="metric-top">
@@ -328,21 +333,27 @@
     <section class="table-panel animate-slide-up" style="animation-delay: 0.1s">
       <div class="panel-toolbar">
         <div class="toolbar-left">
-          <h2>Anomalous containers</h2>
-          <p class="toolbar-sub">Containers that are currently stopped or failing</p>
+          <h2>{{ tableHeading }}</h2>
+          <p class="toolbar-sub">{{ tableSubheading }}</p>
         </div>
         <div class="toolbar-right">
           <div class="filter-pills">
             <button
-              class="filter-pill active"
+              v-for="f in filters"
+              :key="f.value"
+              type="button"
+              class="filter-pill"
+              :class="{ active: stateFilter === f.value }"
+              @click="stateFilter = f.value"
             >
-              Stopped / Failed
-              <span class="pill-count">{{ stoppedCount }}</span>
+              {{ f.label }}
+              <span class="pill-count">{{ f.count }}</span>
             </button>
           </div>
           <div class="search-box glass">
             <AppIcon name="search" :size="16" />
             <input type="text" v-model="searchQuery" placeholder="Search..." />
+            <button v-if="searchQuery" type="button" class="search-clear" aria-label="Clear search" @click="searchQuery = ''">&times;</button>
           </div>
         </div>
       </div>
@@ -369,6 +380,23 @@ const stateFilter = ref("stopped");
 const searchQuery = ref("");
 
 const { containers, loading, runningCount, stoppedCount, fetchContainers } = useContainers();
+
+// initialLoading gates the metric-card skeleton so it only appears on the
+// very first load, not on background polling refreshes.
+const initialLoading = computed(() => loading.value && containers.value.length === 0);
+
+// tableHeading/tableSubheading reflect whichever filter pill is active, since
+// the table below defaults to "stopped" (anomalous) but can show all/running too.
+const tableHeading = computed(() => {
+  if (stateFilter.value === "running") return "Running containers";
+  if (stateFilter.value === "all") return "All containers";
+  return "Anomalous containers";
+});
+const tableSubheading = computed(() => {
+  if (stateFilter.value === "running") return "Containers currently up and serving traffic";
+  if (stateFilter.value === "all") return "Every container across your fleet";
+  return "Containers that are currently stopped or failing";
+});
 
 const username = computed(
   () => sharedState.currentUser?.username || "there",
@@ -742,6 +770,10 @@ const refresh = async () => {
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
   transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
   overflow: hidden;
+}
+
+.metric-card-skeleton {
+  padding: 0;
 }
 
 .metric-glow {
@@ -1163,6 +1195,24 @@ const refresh = async () => {
 .search-box svg {
   color: var(--text-mute);
   flex-shrink: 0;
+}
+
+.search-clear {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  line-height: 1;
+  font-size: 1rem;
+  border-radius: 50%;
+  color: var(--text-mute);
+}
+
+.search-clear:hover {
+  color: var(--text-main);
+  background: var(--bg-subtle);
 }
 
 @media (max-width: 1100px) {
