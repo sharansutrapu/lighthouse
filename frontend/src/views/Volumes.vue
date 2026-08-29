@@ -122,10 +122,10 @@ const getContainersUsingVolume = (volName) => {
   if (!containers.value) return [];
   const using = [];
   for (const c of containers.value) {
-    if (c.Mounts) {
-      for (const m of c.Mounts) {
+    if (c.mounts) {
+      for (const m of c.mounts) {
         if (m.Type === 'volume' && m.Name === volName) {
-          using.push((c.Names && c.Names[0]) ? c.Names[0].replace(/^\//, '') : c.Id.substring(0, 12));
+          using.push(c.name ? c.name.replace(/^\//, '') : c.id.substring(0, 12));
           break;
         }
       }

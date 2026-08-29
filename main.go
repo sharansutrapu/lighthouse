@@ -97,20 +97,22 @@ func generateSecureCode() string {
 // Container is the API-facing shape of a Docker container returned to the
 // frontend, combining Docker inspect data with live CPU/Memory usage.
 type Container struct {
-	ID         string  `json:"id"`
-	Name       string  `json:"name"`
-	Image      string  `json:"image"`
-	ImageID    string  `json:"image_id"`
-	State      string  `json:"state"`
-	Created    int64   `json:"created"`
-	Status     string  `json:"status"`
-	CPULimit   float64 `json:"cpu_limit"`
-	MemLimit   int64   `json:"mem_limit"`
-	CPU        float64 `json:"cpu"`
-	Memory     int64   `json:"memory"`
-	SizeRw     int64   `json:"size_rw"`
-	SizeRootFs int64   `json:"size_root_fs"`
-	IsPlatform bool    `json:"is_platform"` // true when this is the LightHouse container itself
+	ID         string      `json:"id"`
+	Name       string      `json:"name"`
+	Image      string      `json:"image"`
+	ImageID    string      `json:"image_id"`
+	State      string      `json:"state"`
+	Created    int64       `json:"created"`
+	Status     string      `json:"status"`
+	CPULimit   float64     `json:"cpu_limit"`
+	MemLimit   int64       `json:"mem_limit"`
+	CPU        float64     `json:"cpu"`
+	Memory     int64       `json:"memory"`
+	SizeRw     int64       `json:"size_rw"`
+	SizeRootFs int64       `json:"size_root_fs"`
+	IsPlatform bool        `json:"is_platform"`
+	Mounts     interface{} `json:"mounts,omitempty"`
+	Networks   interface{} `json:"networks,omitempty"`
 }
 
 // UserClaims is the JWT payload used to authenticate every API/WebSocket
@@ -2033,6 +2035,8 @@ func handleGETContainers(cli *client.Client) echo.HandlerFunc {
 					SizeRw:     sizeRwVal,
 					SizeRootFs: sizeRootFsVal,
 					IsPlatform: isPlatform,
+					Mounts:     c["Mounts"],
+					Networks:   c["NetworkSettings"],
 				})
 				listMu.Unlock()
 			}(ctr)

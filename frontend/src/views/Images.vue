@@ -139,8 +139,8 @@ const getContainersUsingImage = (imageId) => {
   if (!containers.value) return [];
   const using = [];
   for (const c of containers.value) {
-    if (c.ImageID === imageId || c.Image === imageId) {
-      using.push((c.Names && c.Names[0]) ? c.Names[0].replace(/^\//, '') : c.Id.substring(0, 12));
+    if (c.image_id === imageId || c.image === imageId) {
+      using.push(c.name ? c.name.replace(/^\//, '') : c.id.substring(0, 12));
     }
   }
   return using;

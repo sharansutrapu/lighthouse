@@ -48,7 +48,7 @@
             <tr v-for="net in filteredNetworks" :key="net.Id">
               <td data-label="Name"><strong>{{ net.Name }}</strong></td>
               <td data-label="Used By">
-                <span v-if="net.Containers && Object.keys(net.Containers).length > 0" class="text-mute"><small>{{ Object.values(net.Containers).map(c => c.Name).join(', ') }}</small></span>
+                <span v-if="getContainersUsingNetwork(net.Name).length > 0" class="text-mute"><small>{{ getContainersUsingNetwork(net.Name).join(', ') }}</small></span>
                 <span v-else class="text-mute"><small>—</small></span>
               </td>
               <td data-label="Driver"><span class="badge badge-dim mini">{{ net.Driver }}</span></td>
@@ -118,10 +118,23 @@
 import { ref, computed, onMounted } from 'vue';
 import { apiFetch } from '../utils/apiFetch';
 import { showToast } from '../utils/sharedState';
+import { useContainers } from '../composables/useContainers';
 
 const networks = ref([]);
 const isLoading = ref(true);
 const searchQuery = ref('');
+const { containers } = useContainers();
+
+const getContainersUsingNetwork = (netName) => {
+  if (!containers.value) return [];
+  const using = [];
+  for (const c of containers.value) {
+    if (c.networks && c.networks.Networks && c.networks.Networks[netName]) {
+      using.push(c.name ? c.name.replace(/^\//, '') : c.id.substring(0, 12));
+    }
+  }
+  return using;
+};
 
 const filteredNetworks = computed(() => {
   const query = searchQuery.value.toLowerCase().trim();
