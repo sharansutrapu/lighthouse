@@ -468,14 +468,15 @@
             </div>
 
             <div class="modal-card-footer">
-              <button @click="closeAllModals" class="btn-secondary">
+              <button @click="closeAllModals" class="btn-secondary" :disabled="isProcessing">
                 Cancel
               </button>
               <button
                 @click="showCreateModal ? createUser() : updatePermissions()"
                 class="btn-primary"
+                :disabled="isProcessing"
               >
-                {{ showCreateModal ? "Create Account" : "Save Changes" }}
+                {{ isProcessing ? "Processing..." : (showCreateModal ? "Create Account" : "Save Changes") }}
               </button>
             </div>
           </div>
@@ -606,6 +607,7 @@ const staffUsers = ref([]);
 const roleTemplates = ref([]);
 const teamsList = ref([]);
 const showCreateModal = ref(false);
+const isProcessing = ref(false);
 const showPermissionsModal = ref(false);
 const showDeleteModal = ref(false);
 const showResetModal = ref(false);
@@ -833,6 +835,7 @@ const createUser = async () => {
   if (newUser.value.authMethod === 'invite' && !newUser.value.email) return;
   if (newUser.value.authMethod === 'local' && (!newUser.value.username || !newUser.value.password)) return;
 
+  isProcessing.value = true;
   try {
     const formData = new FormData();
     formData.append("authMethod", newUser.value.authMethod);
@@ -883,6 +886,8 @@ const createUser = async () => {
   } catch (err) {
     console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
     showToast("Error", "A network error occurred", "error");
+  } finally {
+    isProcessing.value = false;
   }
 };
 
@@ -970,6 +975,7 @@ const confirmResetPassword = async () => {
 // access setting, and team assignment (team membership overrides individual
 // permission flags server-side, so they're force-set to false when a team is chosen).
 const updatePermissions = async () => {
+  isProcessing.value = true;
   try {
     const formData = new FormData();
     
@@ -998,7 +1004,10 @@ const updatePermissions = async () => {
       fetchStaff();
     }
   } catch (err) {
-    console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
+    console.error(err);
+    showToast("Error", "Failed to update permissions", "error");
+  } finally {
+    isProcessing.value = false;
   }
 };
 

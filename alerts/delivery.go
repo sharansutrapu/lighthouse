@@ -516,3 +516,62 @@ var (
 	smtpSendMail = smtp.SendMail
 	tlsDial      = tls.Dial
 )
+
+// SendRawEmail exports the internal SMTP delivery mechanism (including port 465 implicit TLS support)
+// so that other parts of the system (like admin invites) can send emails reliably.
+func SendRawEmail(host string, port int, user, pass, from string, to []string, msg []byte) error {
+	addr := fmt.Sprintf("%s:%d", host, port)
+	var auth smtp.Auth
+	if user != "" && pass != "" {
+		auth = smtp.PlainAuth("", user, pass, host)
+	}
+
+	if len(to) == 0 {
+		return fmt.Errorf("alerts/delivery: no recipients for email")
+	}
+
+	// Port 465 requires Implicit TLS
+	if port == 465 {
+		tlsconfig := &tls.Config{
+			ServerName: host,
+		}
+		conn, err := tlsDial("tcp", addr, tlsconfig)
+		if err != nil {
+			return fmt.Errorf("alerts/delivery: TLS dial failed: %w", err)
+		}
+		client, err := smtpNewClient(conn, host)
+		if err != nil {
+			return fmt.Errorf("alerts/delivery: SMTP client creation failed: %w", err)
+		}
+		defer client.Close()
+		if auth != nil {
+			if err = client.Auth(auth); err != nil {
+				return fmt.Errorf("alerts/delivery: SMTP auth failed: %w", err)
+			}
+		}
+		if err = client.Mail(from); err != nil {
+			return err
+		}
+		for _, rcpt := range to {
+			if err = client.Rcpt(rcpt); err != nil {
+				return err
+			}
+		}
+		w, err := client.Data()
+		if err != nil {
+			return err
+		}
+		_, err = w.Write(msg)
+		if err != nil {
+			return err
+		}
+		err = w.Close()
+		if err != nil {
+			return err
+		}
+		return client.Quit()
+	}
+
+	// Standard SMTP / STARTTLS for port 587, 25, etc.
+	return smtpSendMail(addr, auth, from, to, msg)
+}

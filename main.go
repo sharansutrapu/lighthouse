@@ -3452,10 +3452,12 @@ func handlePOSTUsers() echo.HandlerFunc {
 </html>`, inviteURL, inviteURL, inviteURL)
 
 				msg := []byte(fmt.Sprintf("To: %s\r\nSubject: You've been invited to LightHouse\r\nMIME-version: 1.0;\r\nContent-Type: text/html; charset=\"UTF-8\";\r\n\r\n%s", email, body))
-				err := smtp.SendMail(fmt.Sprintf("%s:%d", smtpHost, smtpPort), auth, smtpUser, []string{email}, msg)
-				if err != nil {
-					log.Printf("Failed to send invite email: %v", err)
-				}
+				go func(e string, m []byte) {
+					err := alerts.SendRawEmail(smtpHost, smtpPort, smtpUser, smtpPass, smtpUser, []string{e}, m)
+					if err != nil {
+						log.Printf("Failed to send invite email: %v", err)
+					}
+				}(email, msg)
 			}
 
 			token := c.Get("user").(*jwt.Token)
