@@ -37,6 +37,7 @@
           <thead>
             <tr>
               <th>Name</th>
+              <th>Used By</th>
               <th>Driver</th>
               <th>Scope</th>
               <th>Subnet</th>
@@ -46,6 +47,10 @@
           <tbody v-if="filteredNetworks.length > 0">
             <tr v-for="net in filteredNetworks" :key="net.Id">
               <td data-label="Name"><strong>{{ net.Name }}</strong></td>
+              <td data-label="Used By">
+                <span v-if="net.Containers && Object.keys(net.Containers).length > 0" class="text-mute"><small>{{ Object.values(net.Containers).map(c => c.Name).join(', ') }}</small></span>
+                <span v-else class="text-mute"><small>—</small></span>
+              </td>
               <td data-label="Driver"><span class="badge badge-dim mini">{{ net.Driver }}</span></td>
               <td data-label="Scope">{{ net.Scope }}</td>
               <td data-label="Subnet">

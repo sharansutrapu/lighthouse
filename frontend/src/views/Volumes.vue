@@ -37,6 +37,7 @@
           <thead>
             <tr>
               <th>Name</th>
+              <th>Used By</th>
               <th>Driver</th>
               <th>Mountpoint</th>
               <th class="text-right">Actions</th>
@@ -45,6 +46,10 @@
           <tbody v-if="filteredVolumes.length > 0">
             <tr v-for="vol in filteredVolumes" :key="vol.Name">
               <td data-label="Name"><strong>{{ vol.Name.length > 30 ? vol.Name.substring(0,30) + '...' : vol.Name }}</strong></td>
+              <td data-label="Used By">
+                <span v-if="getContainersUsingVolume(vol.Name).length > 0" class="text-mute"><small>{{ getContainersUsingVolume(vol.Name).join(', ') }}</small></span>
+                <span v-else class="text-mute"><small>—</small></span>
+              </td>
               <td data-label="Driver"><span class="badge badge-dim mini">{{ vol.Driver }}</span></td>
               <td data-label="Mountpoint" class="text-mute"><small>{{ vol.Mountpoint }}</small></td>
               <td data-label="Actions" class="text-right">
@@ -106,10 +111,28 @@
 import { ref, computed, onMounted } from 'vue';
 import { apiFetch } from '../utils/apiFetch';
 import { formatBytes, showToast } from '../utils/sharedState';
+import { useContainers } from '../composables/useContainers';
 
 const volumes = ref([]);
 const isLoading = ref(true);
 const searchQuery = ref('');
+const { containers } = useContainers();
+
+const getContainersUsingVolume = (volName) => {
+  if (!containers.value) return [];
+  const using = [];
+  for (const c of containers.value) {
+    if (c.Mounts) {
+      for (const m of c.Mounts) {
+        if (m.Type === 'volume' && m.Name === volName) {
+          using.push((c.Names && c.Names[0]) ? c.Names[0].replace(/^\//, '') : c.Id.substring(0, 12));
+          break;
+        }
+      }
+    }
+  }
+  return using;
+};
 
 const filteredVolumes = computed(() => {
   const query = searchQuery.value.toLowerCase().trim();

@@ -70,7 +70,7 @@
         <div class="card-body">
           <div class="info-row">
             <span class="label">Image</span>
-            <span class="value mono" :title="c.image">{{ c.image.length > 35 ? c.image.substring(0, 32) + '...' : c.image }}</span>
+            <span class="value mono" style="word-break: break-all;">{{ c.image }}</span>
           </div>
 
           <div v-if="scanResults[c.id]" class="scan-result-summary">
@@ -518,7 +518,7 @@ onMounted(() => {
 .card-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   margin-bottom: 1rem;
   gap: 1rem;
 }
@@ -526,9 +526,9 @@ onMounted(() => {
   margin: 0; 
   font-weight: 800; 
   font-size: 1.1rem; 
-  white-space: nowrap;
+  white-space: normal;
   overflow: hidden;
-  text-overflow: ellipsis;
+  word-break: break-all;
   min-width: 0;
 }
 .status-badge {

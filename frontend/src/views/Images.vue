@@ -37,6 +37,7 @@
           <thead>
             <tr>
               <th>ID</th>
+              <th>Used By</th>
               <th>Tags</th>
               <th>Size</th>
               <th>Created</th>
@@ -45,19 +46,19 @@
           </thead>
           <tbody v-if="filteredImages.length > 0">
             <tr v-for="img in filteredImages" :key="img.Id">
-              <td data-label="ID">{{ img.Id.split(':')[1]?.substring(0, 12) || img.Id }}</td>
+              <td data-label="ID"><strong>{{ img.Id.replace('sha256:', '').substring(0, 12) }}</strong></td>
+              <td data-label="Used By">
+                <span v-if="getContainersUsingImage(img.Id).length > 0" class="text-mute"><small>{{ getContainersUsingImage(img.Id).join(', ') }}</small></span>
+                <span v-else class="text-mute"><small>—</small></span>
+              </td>
               <td data-label="Tags">
-                <div class="tags-container">
-                  <span class="badge badge-dim mini" v-for="tag in img.RepoTags || []" :key="tag">
-                    {{ tag }}
-                  </span>
-                  <span class="badge badge-warning mini" v-if="!img.RepoTags || img.RepoTags.length === 0">
-                    &lt;none&gt;:&lt;none&gt;
-                  </span>
-                </div>
+                <span v-if="img.RepoTags && img.RepoTags.length > 0">
+                  <span v-for="tag in img.RepoTags" :key="tag" class="badge badge-dim mini" style="margin-right: 4px;">{{ tag }}</span>
+                </span>
+                <span v-else class="text-mute">—</span>
               </td>
               <td data-label="Size">{{ formatBytes(img.Size) }}</td>
-              <td data-label="Created">{{ formatDate(img.Created) }}</td>
+              <td data-label="Created">{{ new Date(img.Created * 1000).toLocaleString() }}</td>
               <td data-label="Actions" class="text-right">
                 <button class="action-btn danger" @click="requestRemoveImage(img.Id)" data-tooltip="Remove">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="16" height="16">
@@ -127,10 +128,23 @@
 import { ref, computed, onMounted } from 'vue';
 import { apiFetch } from '../utils/apiFetch';
 import { formatBytes, showToast } from '../utils/sharedState';
+import { useContainers } from '../composables/useContainers';
 
 const images = ref([]);
 const isLoading = ref(true);
 const searchQuery = ref('');
+const { containers } = useContainers();
+
+const getContainersUsingImage = (imageId) => {
+  if (!containers.value) return [];
+  const using = [];
+  for (const c of containers.value) {
+    if (c.ImageID === imageId || c.Image === imageId) {
+      using.push((c.Names && c.Names[0]) ? c.Names[0].replace(/^\//, '') : c.Id.substring(0, 12));
+    }
+  }
+  return using;
+};
 
 const filteredImages = computed(() => {
   const query = searchQuery.value.toLowerCase().trim();
