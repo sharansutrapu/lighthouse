@@ -806,6 +806,7 @@ onMounted(fetchAuditLogs);
   .premium-table, .premium-table tbody, .premium-table tr, .premium-table td {
     display: block;
     width: 100%;
+    min-width: 0; /* overrides the global .premium-table min-width: 800px floor */
   }
   .premium-table-container {
     background: transparent;
