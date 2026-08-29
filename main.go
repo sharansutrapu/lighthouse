@@ -20,7 +20,6 @@ import (
 	"gorm.io/gorm"
 	"log"
 	"net/http"
-	"net/smtp"
 	"net/url"
 	"os"
 	"os/exec"
@@ -3428,7 +3427,6 @@ func handlePOSTUsers() echo.HandlerFunc {
 			smtpHost, smtpPort, smtpUser, smtpPass = settings.SmtpHost, settings.SmtpPort, settings.SmtpUser, settings.SmtpPass
 
 			if smtpHost != "" {
-				auth := smtp.PlainAuth("", smtpUser, smtpPass, smtpHost)
 				inviteURL := fmt.Sprintf("%s://%s/auth/google?invite_token=%s", requestScheme(c.Request()), c.Request().Host, inviteToken)
 
 				body := fmt.Sprintf(`<html>
@@ -3704,17 +3702,17 @@ func handleGETSettings() echo.HandlerFunc {
 			"google_client_secret":   maskSecret(settings.GoogleClientSecret),
 			// Webhook URLs embed bearer-equivalent secrets in their path (e.g. Slack's
 			// /services/T../B../XXXX segment) — mask like any other credential.
-			"slack_webhook_url":      maskSecret(settings.SlackWebhookUrl),
-			"msteams_webhook_url":    maskSecret(settings.MSTeamsWebhookUrl),
-			"gchat_webhook_url":      maskSecret(settings.GChatWebhookUrl),
-			"generic_webhook_url":    maskSecret(settings.GenericWebhookUrl),
-			"alerts_email_address":   settings.AlertsEmailAddress,
-			"backup_enabled":         settings.BackupEnabled,
-			"backup_provider":        settings.BackupProvider,
-			"backup_cron":            settings.BackupCron,
-			"backup_bucket":          settings.BackupBucket,
-			"backup_region":          settings.BackupRegion,
-			"backup_endpoint":        settings.BackupEndpoint,
+			"slack_webhook_url":    maskSecret(settings.SlackWebhookUrl),
+			"msteams_webhook_url":  maskSecret(settings.MSTeamsWebhookUrl),
+			"gchat_webhook_url":    maskSecret(settings.GChatWebhookUrl),
+			"generic_webhook_url":  maskSecret(settings.GenericWebhookUrl),
+			"alerts_email_address": settings.AlertsEmailAddress,
+			"backup_enabled":       settings.BackupEnabled,
+			"backup_provider":      settings.BackupProvider,
+			"backup_cron":          settings.BackupCron,
+			"backup_bucket":        settings.BackupBucket,
+			"backup_region":        settings.BackupRegion,
+			"backup_endpoint":      settings.BackupEndpoint,
 			// backup_auth1 can hold a full GCS service-account JSON key — mask it too.
 			"backup_auth1":           maskSecret(settings.BackupAuth1),
 			"backup_auth2":           maskSecret(settings.BackupAuth2),
