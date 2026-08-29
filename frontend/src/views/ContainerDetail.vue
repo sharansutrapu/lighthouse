@@ -840,7 +840,7 @@ async function fetchHistoryData() {
     });
     if (res.ok) {
       const data = await res.json();
-      history.value = data.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+      history.value = (data || []).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
       updateCharts();
     }
   } catch (err) {
