@@ -705,9 +705,11 @@ func (am *AlertManager) deliverGroup(containerName string, triggers []TriggeredR
 		if tr.Rule.EnableGenericWebhook {
 			sendWebhook = true
 		}
-		if tr.Rule.EnableEmail && tr.Rule.EmailAddress != "" {
+		if tr.Rule.EnableEmail {
 			sendEmail = true
-			emailSet[tr.Rule.EmailAddress] = true
+			if tr.Rule.EmailAddress != "" {
+				emailSet[tr.Rule.EmailAddress] = true
+			}
 		}
 	}
 
