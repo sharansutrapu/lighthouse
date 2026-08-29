@@ -110,8 +110,11 @@
           </div>
         </div>
         <div class="modal-actions">
-          <button class="modal-btn cancel" @click="closeConfirm">Cancel</button>
-          <button :class="['modal-btn confirm', confirmModal.type]" @click="executeConfirm">Confirm</button>
+          <button class="modal-btn cancel" :disabled="confirmModal.isProcessing" @click="closeConfirm">Cancel</button>
+          <button :class="['modal-btn confirm', confirmModal.type]" :disabled="confirmModal.isProcessing" @click="executeConfirm">
+            <span v-if="confirmModal.isProcessing">Processing...</span>
+            <span v-else>Confirm</span>
+          </button>
         </div>
       </div>
     </div>
@@ -167,7 +170,8 @@ const confirmModal = ref({
   showRemoveContainers: false,
   removeContainers: false,
   showAllUnused: false,
-  allUnused: false
+  allUnused: false,
+  isProcessing: false
 });
 
 // openConfirm configures and shows the confirmation modal for a destructive action.
@@ -181,7 +185,8 @@ const openConfirm = (title, message, type, action, showRemoveContainers = false,
     showRemoveContainers,
     removeContainers: false,
     showAllUnused,
-    allUnused: false
+    allUnused: false,
+    isProcessing: false
   };
 };
 
@@ -189,16 +194,22 @@ const openConfirm = (title, message, type, action, showRemoveContainers = false,
 const closeConfirm = () => {
   confirmModal.value.show = false;
   confirmModal.value.action = null;
+  confirmModal.value.isProcessing = false;
 };
 
 // executeConfirm runs the modal's pending action (passing along any
 // checkbox options the user set) then closes it.
 const executeConfirm = async () => {
   if (confirmModal.value.action) {
-    await confirmModal.value.action({
-      removeContainers: confirmModal.value.removeContainers,
-      allUnused: confirmModal.value.allUnused
-    });
+    confirmModal.value.isProcessing = true;
+    try {
+      await confirmModal.value.action({
+        removeContainers: confirmModal.value.removeContainers,
+        allUnused: confirmModal.value.allUnused
+      });
+    } finally {
+      confirmModal.value.isProcessing = false;
+    }
   }
   closeConfirm();
 };
