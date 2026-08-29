@@ -301,9 +301,9 @@ const props = defineProps({
 });
 
 const {
-  containers, loading, activeLiveId, liveStats,
+  containers, loading,
   showConfirm, pendingAction, actionClass,
-  startLiveStats, stopLiveStats, goToLogs, goToShell, goToDetail, triggerConfirm, executeAction,
+  goToLogs, goToShell, goToDetail, triggerConfirm, executeAction,
   formatBytes, formatDate,
 } = useContainers();
 

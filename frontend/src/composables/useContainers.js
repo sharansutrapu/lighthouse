@@ -151,7 +151,6 @@ export function useContainers(options = {}) {
     if (!autoPoll) return;
     pollSubscribers -= 1;
     if (pollSubscribers === 0) stopPolling();
-    stopLiveStats();
   });
 
   return {
