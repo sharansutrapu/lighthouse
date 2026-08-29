@@ -246,7 +246,9 @@ const formatDate = (dateStr) => {
 };
 
 // getMcpConfig builds the ready-to-paste MCP client JSON config embedding
-// the given token, for AI assistants like Claude Desktop.
+// the given token, for AI assistants like Claude Desktop. Uses the current
+// origin so the generated config always points at the actual deployment
+// instead of a hardcoded domain.
 const getMcpConfig = (token) => {
   return JSON.stringify({
     mcpServers: {
@@ -256,7 +258,7 @@ const getMcpConfig = (token) => {
           "-y",
           "@cloudmcp/connect",
           "--url",
-          "https://lighthouse.sirgiving.org/api/mcp/sse",
+          `${window.location.origin}/api/mcp/sse`,
           "--header",
           `Authorization: Bearer ${token}`
         ]
