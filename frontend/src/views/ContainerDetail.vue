@@ -214,6 +214,9 @@
               <div v-if="scanResults.loading" class="scan-loading" style="padding: 1rem; text-align: center; color: var(--text-mute);">
                 <span class="pulse-dot"></span> Scanning in progress...
               </div>
+              <div v-else-if="scanResults.data?.Error" class="scan-error" style="padding: 1rem; color: var(--error); font-size: 0.85rem;">
+                Scan failed: {{ scanResults.data.Error }}
+              </div>
               <div v-else-if="scanResults.data" class="scan-data" style="margin-top: 0.5rem; background: var(--bg-main); padding: 1rem; border-radius: 8px;">
                 <div v-for="(res, idx) in scanResults.data.Results" :key="idx" class="scan-target" style="margin-bottom: 1rem;">
                   <h4 style="margin: 0 0 0.5rem 0; font-size: 0.9rem; color: var(--text-main);">{{ res.Target }}</h4>
@@ -512,7 +515,8 @@ const containerEvents = ref([]);
 let eventsWs = null;
 
 // fetchScanResults loads the most recent stored Trivy scan for this
-// container's image, if one exists.
+// container's image, if one exists. The API wraps the raw Trivy JSON as a
+// string in `.result`, so it needs a second parse to get to `.Results`.
 const fetchScanResults = async () => {
   if (!container.value || !container.value.image) return;
   try {
@@ -521,8 +525,8 @@ const fetchScanResults = async () => {
       headers: { Authorization: `Bearer ${token}` }
     });
     if (res.ok) {
-      const txt = await res.text();
-      scanResults.value.data = JSON.parse(txt);
+      const wrapper = await res.json();
+      scanResults.value.data = JSON.parse(wrapper.result);
     }
   } catch(e) {}
 };

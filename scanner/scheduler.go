@@ -75,10 +75,16 @@ func RunScheduledScans(cli *client.Client) {
 	log.Println("[Scanner] Scheduled vulnerability scan sweep complete.")
 }
 
-// ExecuteAndSaveScan scans the image and saves the result to the DB
+// ExecuteAndSaveScan scans the image and saves the result to the DB. On
+// failure it still persists an error marker (rather than nothing at all) so
+// the UI can show "scan failed" instead of indistinguishable-from-never-run.
 func ExecuteAndSaveScan(ctx context.Context, cli *client.Client, imageName string) (map[string]interface{}, error) {
 	res, err := ScanImageFunc(ctx, cli, imageName)
 	if err != nil {
+		errBytes, _ := json.Marshal(map[string]string{"Error": err.Error()})
+		if dbErr := db.GormDB.Create(&db.ImageScanResult{Image: imageName, Result: string(errBytes)}).Error; dbErr != nil {
+			log.Printf("[Scanner] Failed to save scan error record for %s: %v", imageName, dbErr)
+		}
 		return nil, err
 	}
 

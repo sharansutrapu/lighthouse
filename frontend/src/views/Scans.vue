@@ -75,7 +75,10 @@
 
           <div v-if="scanResults[c.id]" class="scan-result-summary">
             <div class="severity-badges">
-               <span class="sev-badge critical" v-if="scanResults[c.id].counts.CRITICAL > 0">
+               <span class="sev-badge critical" v-if="scanResults[c.id].error" :title="scanResults[c.id].error">
+                 Scan failed
+               </span>
+               <span class="sev-badge critical" v-if="!scanResults[c.id].error && scanResults[c.id].counts.CRITICAL > 0">
                  {{ scanResults[c.id].counts.CRITICAL }} Critical
                </span>
                <span class="sev-badge high" v-if="scanResults[c.id].counts.HIGH > 0">
@@ -90,7 +93,7 @@
                <span class="sev-badge unknown" v-if="scanResults[c.id].counts.UNKNOWN > 0">
                  {{ scanResults[c.id].counts.UNKNOWN }} Unknown
                </span>
-               <span class="sev-badge success" v-if="scanResults[c.id].total === 0">
+               <span class="sev-badge success" v-if="!scanResults[c.id].error && scanResults[c.id].total === 0">
                  0 Vulnerabilities
                </span>
             </div>
@@ -350,10 +353,16 @@ const scanAll = async () => {
 };
 
 // parseScanResults tallies vulnerability counts by severity from a raw Trivy result.
+// A stored `{Error: "..."}` marker (persisted when the scan itself failed, e.g.
+// Trivy couldn't be pulled/run) is surfaced as `error` instead of a false "0 vulnerabilities".
 const parseScanResults = (data) => {
   let counts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, UNKNOWN: 0 };
   let total = 0;
-  
+
+  if (data.Error) {
+    return { data, counts, total: 0, error: data.Error };
+  }
+
   if (data.Results) {
     for (const target of data.Results) {
       if (target.Vulnerabilities) {
