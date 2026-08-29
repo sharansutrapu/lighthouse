@@ -380,7 +380,7 @@ const parseScanResults = (data) => {
 
 // loadScanForContainer fetches and parses the latest stored scan for one
 // container's image, returning true if a result was found.
-const loadScanForContainer = async (c) => {
+const loadScanForContainer = async (c, oldDate = null) => {
   try {
     const token = secureStorage.getItem('token');
     const res = await apiFetch(`/api/images/scans?image=${encodeURIComponent(c.image)}`, {
@@ -390,6 +390,18 @@ const loadScanForContainer = async (c) => {
       const text = await res.text();
       if (text && text.trim() !== '') {
         const wrapper = JSON.parse(text);
+        const scanDate = new Date(wrapper.created_at);
+        
+        // If we are polling for a new scan, ignore old records in the DB
+        if (oldDate && scanDate.getTime() <= oldDate.getTime()) {
+          return false;
+        }
+        
+        // If currently scanning, prevent the global auto-refresher from overwriting the UI with the old scan
+        if (scanning.value[c.id] && !oldDate) {
+          return false;
+        }
+
         const data = JSON.parse(wrapper.result);
         scanResults.value[c.id] = parseScanResults(data);
         scanResults.value[c.id].createdAt = wrapper.created_at;
@@ -416,6 +428,9 @@ const loadAllScanHistories = async () => {
 // triggerScan starts a background scan for one container and polls (every
 // 10s, up to 5 minutes) until a new result appears.
 const triggerScan = async (c) => {
+  // Capture the old scan date before we clear it
+  const oldDate = scanResults.value[c.id] ? new Date(scanResults.value[c.id].createdAt) : new Date(0);
+  
   scanning.value[c.id] = true;
   scanResults.value[c.id] = null; // Clear old result during new scan
   try {
@@ -435,7 +450,7 @@ const triggerScan = async (c) => {
     // Poll for background scan completion
     let attempts = 0;
     const timer = setInterval(async () => {
-      const loaded = await loadScanForContainer(c);
+      const loaded = await loadScanForContainer(c, oldDate);
       if (loaded) {
         clearInterval(timer);
         scanning.value[c.id] = false;
