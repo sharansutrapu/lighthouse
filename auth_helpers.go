@@ -411,6 +411,11 @@ func clientAccessMiddleware() echo.MiddlewareFunc {
 			if c.Request().Method == http.MethodOptions {
 				return next(c)
 			}
+			// The spoke endpoint authenticates with its own shared token. It is not
+			// a browser route and therefore must not require browser-origin headers.
+			if path == "/api/spoke/connect" {
+				return next(c)
+			}
 			if strings.HasPrefix(path, "/ws") {
 				if !isWSAccessAllowed(c.Request()) {
 					return c.JSON(http.StatusForbidden, map[string]string{

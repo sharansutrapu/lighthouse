@@ -374,6 +374,7 @@ func main() {
 			p := c.Path()
 			return p == "/api/containers" ||
 				p == "/api/system/stats" ||
+				p == "/api/spoke/connect" ||
 				strings.HasPrefix(p, "/ws/")
 		},
 	}))

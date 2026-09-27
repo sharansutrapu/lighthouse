@@ -423,6 +423,16 @@ func TestClientAccessMiddleware(t *testing.T) {
 		t.Error("Expected 200")
 	}
 
+	// Hub/spoke authentication is enforced by the route's HUB_TOKEN check,
+	// not by browser-origin validation.
+	req = httptest.NewRequest(http.MethodGet, "/api/spoke/connect", nil)
+	rec = httptest.NewRecorder()
+	c = e.NewContext(req, rec)
+	handler(c)
+	if rec.Code != 200 {
+		t.Error("Expected spoke handshake to bypass browser-origin validation")
+	}
+
 	// Test /ws path, not allowed
 	req = httptest.NewRequest(http.MethodGet, "/ws/test", nil)
 	rec = httptest.NewRecorder()

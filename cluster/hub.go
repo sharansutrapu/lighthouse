@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -69,7 +70,12 @@ var GlobalHub = &Hub{
 // RegisterHubRoutes attaches the WebSocket endpoint
 func RegisterHubRoutes(e *echo.Echo, hubToken string) {
 	e.GET("/api/spoke/connect", func(c echo.Context) error {
-		token := c.QueryParam("token")
+		token := strings.TrimSpace(strings.TrimPrefix(c.Request().Header.Get("Authorization"), "Bearer "))
+		if token == "" {
+			// Query authentication remains temporarily supported so a hub can be
+			// upgraded before its spokes during a rolling deployment.
+			token = c.QueryParam("token")
+		}
 		if subtle.ConstantTimeCompare([]byte(token), []byte(hubToken)) != 1 {
 			return c.String(http.StatusUnauthorized, "Invalid token")
 		}

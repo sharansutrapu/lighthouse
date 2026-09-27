@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"net/http"
 	"net/url"
 	"time"
 
@@ -15,8 +16,8 @@ import (
 )
 
 var spokeWs WSConn
-var dialFunc = func(url string) (WSConn, error) {
-	ws, _, err := websocket.DefaultDialer.Dial(url, nil)
+var dialFunc = func(url string, requestHeader http.Header) (WSConn, error) {
+	ws, _, err := websocket.DefaultDialer.Dial(url, requestHeader)
 	return ws, err
 }
 var dockerClient *client.Client
@@ -30,11 +31,13 @@ var agentRunning = true
 func StartSpokeAgent(hubURL, hubToken, nodeID string, cli *client.Client) {
 	dockerClient = cli
 
-	connectURL := hubURL + "/api/spoke/connect?token=" + url.QueryEscape(hubToken) + "&node_id=" + url.QueryEscape(nodeID)
+	connectURL := hubURL + "/api/spoke/connect?node_id=" + url.QueryEscape(nodeID)
+	requestHeader := http.Header{}
+	requestHeader.Set("Authorization", "Bearer "+hubToken)
 
 	for agentRunning {
 		log.Printf("[Spoke] Connecting to Hub as node %s", nodeID)
-		ws, err := dialFunc(connectURL)
+		ws, err := dialFunc(connectURL, requestHeader)
 		if err != nil {
 			log.Printf("[Spoke] Dial error: %v. Retrying in 5s...", err)
 			time.Sleep(reconnectInterval)

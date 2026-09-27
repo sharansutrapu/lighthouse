@@ -76,7 +76,8 @@ func TestRegisterHubRoutes(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 
 	// Missing node_id
-	req = httptest.NewRequest(http.MethodGet, "/api/spoke/connect?token=secret", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/spoke/connect", nil)
+	req.Header.Set("Authorization", "Bearer secret")
 	rec = httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
@@ -85,7 +86,8 @@ func TestRegisterHubRoutes(t *testing.T) {
 	upgraderFunc = func(w http.ResponseWriter, r *http.Request) (WSConn, error) {
 		return nil, errors.New("upgrade error")
 	}
-	req = httptest.NewRequest(http.MethodGet, "/api/spoke/connect?token=secret&node_id=node1", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/spoke/connect?node_id=node1", nil)
+	req.Header.Set("Authorization", "Bearer secret")
 	rec = httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
 	// it should log or return err, echo returns 500 when handler returns err
@@ -99,7 +101,8 @@ func TestRegisterHubRoutes(t *testing.T) {
 	upgraderFunc = func(w http.ResponseWriter, r *http.Request) (WSConn, error) {
 		return mws, nil
 	}
-	req = httptest.NewRequest(http.MethodGet, "/api/spoke/connect?token=secret&node_id=node2", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/spoke/connect?node_id=node2", nil)
+	req.Header.Set("Authorization", "Bearer secret")
 	rec = httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)

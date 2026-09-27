@@ -97,16 +97,28 @@ func getMockDockerClient() *client.Client {
 }
 
 func TestStartSpokeAgent(t *testing.T) {
+	originalDialFunc := dialFunc
+	originalSyncInterval := syncInterval
+	originalReconnectInterval := reconnectInterval
+	originalAgentRunning := agentRunning
+	t.Cleanup(func() {
+		dialFunc = originalDialFunc
+		syncInterval = originalSyncInterval
+		reconnectInterval = originalReconnectInterval
+		agentRunning = originalAgentRunning
+	})
+
 	// Call default dialFunc to cover it
-	_, _ = dialFunc("http://invalid")
+	_, _ = dialFunc("http://invalid", nil)
 
 	syncInterval = 10 * time.Millisecond
 	reconnectInterval = 10 * time.Millisecond
 	agentRunning = true
-	defer func() { agentRunning = false }()
 
 	dialCount := 0
-	dialFunc = func(url string) (WSConn, error) {
+	var authHeader string
+	dialFunc = func(url string, requestHeader http.Header) (WSConn, error) {
+		authHeader = requestHeader.Get("Authorization")
 		dialCount++
 		if dialCount == 1 {
 			return nil, errors.New("dial error")
@@ -129,6 +141,7 @@ func TestStartSpokeAgent(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	agentRunning = false
 	assert.GreaterOrEqual(t, dialCount, 1)
+	assert.Equal(t, "Bearer tok", authHeader)
 }
 
 func TestPushToHub(t *testing.T) {
