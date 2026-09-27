@@ -158,11 +158,11 @@
       <div class="resource-list">
         <div
           v-for="c in filteredContainers"
-          :key="c.id"
+          :key="`${c.node_id || sharedState.localNodeId || 'local'}:${c.id}`"
           class="resource-card group"
-          :class="{ active: isVisible(c.id) }"
-          @click="toggleStream(c.id)"
-          @mouseenter="startLiveStats(c.id)"
+          :class="{ active: isVisible(c.id), unavailable: c.capabilities?.logs === false }"
+          @click="toggleStream(c)"
+          @mouseenter="startLiveStats(c)"
           @mouseleave="stopLiveStats"
         >
           <!-- Status dot indicator -->
@@ -173,10 +173,11 @@
               <span v-if="c.is_platform" class="platform-badge" style="font-size: 0.6rem; padding: 0.1rem 0.3rem; margin-left: 0.3rem;">⚡ PLATFORM</span>
             </span>
             <span class="card-image-tag">{{ c.image }}</span>
+            <span v-if="sharedState.deploymentMode === 'hub'" class="node-tag">{{ c.node_id || sharedState.localNodeId }}</span>
           </div>
 
           <!-- Stats Peek (Only for running) -->
-          <div v-if="c.state === 'running'" class="stats-peek-inline">
+          <div v-if="c.state === 'running' && c.capabilities?.stats !== false" class="stats-peek-inline">
             <div class="peek-stat">
               <span
                 class="p-value"
@@ -201,6 +202,7 @@
               </span>
             </div>
           </div>
+          <span v-else-if="c.capabilities?.logs === false" class="remote-unavailable">Summary only</span>
         </div>
         <div v-if="filteredContainers.length === 0" class="empty-search-msg">
           <p class="text-mute">No containers found</p>
@@ -346,11 +348,12 @@ const handleViewerStats = (data) => {
 
 // startLiveStats begins polling one container's stats every 6s, for the
 // sidebar's hover-to-preview CPU/memory display.
-const startLiveStats = (id) => {
-  activeLiveId.value = id;
-  fetchStatsNow(id);
+const startLiveStats = (container) => {
+  if (container.capabilities?.stats === false) return;
+  activeLiveId.value = container.id;
+  fetchStatsNow(container.id);
   if (liveInterval) clearInterval(liveInterval);
-  liveInterval = setInterval(() => fetchStatsNow(id), 6000);
+  liveInterval = setInterval(() => fetchStatsNow(container.id), 6000);
 };
 
 // stopLiveStats halts the sidebar hover-preview polling.
@@ -402,7 +405,13 @@ const syncStateFromUrl = () => {
     return;
   }
   const urlIds = urlParam.split(",").filter(Boolean);
-  selectedIds.value = urlIds;
+  selectedIds.value = urlIds.filter((id) => {
+    const exact = containers.value.find((container) => container.id === id);
+    if (exact) return exact.capabilities?.logs !== false;
+    if (id.length < 12) return false;
+    const matches = containers.value.filter((container) => container.id.startsWith(id));
+    return matches.length === 1 && matches[0].capabilities?.logs !== false;
+  });
   splitView.value = route.query.split === "true";
   console.log("[Logs] Synced IDs from URL:", selectedIds.value);
 };
@@ -417,15 +426,14 @@ const displayContainers = computed(() => {
     .map((id) => {
       // Try exact match first
       let match = containers.value.find((c) => c.id === id);
-      // Fallback: match by prefix (handle short IDs)
-      if (!match) {
-        match = containers.value.find(
-          (c) => c.id.startsWith(id) || id.startsWith(c.id),
-        );
+      // Accept a Docker ID prefix only when it identifies exactly one row.
+      if (!match && id.length >= 12) {
+        const matches = containers.value.filter((c) => c.id.startsWith(id));
+        match = matches.length === 1 ? matches[0] : null;
       }
       return match;
     })
-    .filter(Boolean);
+    .filter((container) => container?.capabilities?.logs !== false);
 
   return splitView.value
     ? ordered.slice(-2)
@@ -492,7 +500,12 @@ const toggleSplitView = () => {
 // toggleStream adds/removes a container from the active selection: in split
 // view it's a FIFO queue capped at 2, otherwise selecting replaces the
 // current single stream.
-const toggleStream = (id) => {
+const toggleStream = (container) => {
+  if (container.capabilities?.logs === false) {
+    showToast("Remote workload", `Log streaming from ${container.node_id} is not available yet.`, "info");
+    return;
+  }
+  const id = container.id;
   if (splitView.value) {
     // SPLIT VIEW: FIFO Logic (Max 2)
     if (selectedIds.value.includes(id)) {
@@ -649,6 +662,24 @@ watch(() => route.query, syncStateFromUrl);
   width: 100%;
   flex-shrink: 0;
   box-sizing: border-box;
+}
+
+.resource-card.unavailable {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.node-tag,
+.remote-unavailable {
+  display: inline-flex;
+  width: fit-content;
+  margin-top: 0.25rem;
+  padding: 0.12rem 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-mute);
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
 }
 
 .resource-card:hover {

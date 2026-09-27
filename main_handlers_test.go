@@ -1,16 +1,19 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/labstack/echo/v4"
 	"github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
 	"lighthouse/alerts"
+	"lighthouse/cluster"
 	"lighthouse/db"
 )
 
@@ -24,6 +27,21 @@ func TestHandleGETContainers(t *testing.T) {
 	err := db.InitDB(":memory:")
 	assert.NoError(t, err)
 	db.GormDB.Save(&db.User{ID: 1, IsAdmin: true})
+
+	originalMode := LighthouseMode
+	originalNodeID := NodeID
+	originalContainersCache := apiContainersCache
+	originalContainersCacheTS := apiContainersCacheTS
+	LighthouseMode = "standalone"
+	NodeID = "standalone-1"
+	apiContainersCache = nil
+	apiContainersCacheTS = time.Time{}
+	defer func() {
+		LighthouseMode = originalMode
+		NodeID = originalNodeID
+		apiContainersCache = originalContainersCache
+		apiContainersCacheTS = originalContainersCacheTS
+	}()
 
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodGet, "/containers", nil)
@@ -42,9 +60,79 @@ func TestHandleGETContainers(t *testing.T) {
 	err = h(c)
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var containers []Container
+	assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &containers))
+	if assert.Len(t, containers, 1) {
+		assert.Equal(t, "standalone-1", containers[0].NodeID)
+		assert.False(t, containers[0].IsRemote)
+		assert.True(t, containers[0].Capabilities.Inspect)
+		assert.True(t, containers[0].Capabilities.Actions)
+	}
 }
 
+func TestHandleGETContainersIncludesRemoteTopology(t *testing.T) {
+	err := db.InitDB(":memory:")
+	assert.NoError(t, err)
+	db.GormDB.Save(&db.User{ID: 1, IsAdmin: true})
 
+	originalMode := LighthouseMode
+	originalNodeID := NodeID
+	LighthouseMode = "hub"
+	NodeID = "hub-1"
+	apiContainersCache = nil
+	apiContainersCacheTS = time.Time{}
+
+	cluster.GlobalHub.Lock()
+	originalSpokeContainers := cluster.GlobalHub.SpokeContainers
+	cluster.GlobalHub.SpokeContainers = map[string][]map[string]interface{}{
+		"spoke-1": {
+			{
+				"ID":      "remote-container-id",
+				"Names":   []interface{}{`/remote-app`},
+				"Image":   "nginx:alpine",
+				"ImageID": "sha256:remote",
+				"State":   "running",
+				"Status":  "Up 1 minute",
+				"Created": float64(1),
+			},
+		},
+	}
+	cluster.GlobalHub.Unlock()
+
+	defer func() {
+		LighthouseMode = originalMode
+		NodeID = originalNodeID
+		apiContainersCache = nil
+		apiContainersCacheTS = time.Time{}
+		cluster.GlobalHub.Lock()
+		cluster.GlobalHub.SpokeContainers = originalSpokeContainers
+		cluster.GlobalHub.Unlock()
+	}()
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/containers", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	mockUserContext(c, 1, true)
+
+	cli := mockDockerClientWithRoundTripper(t, func(req *http.Request) (*http.Response, error) {
+		return makeResponse(http.StatusOK, `[]`), nil
+	})
+
+	assert.NoError(t, handleGETContainers(cli)(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var containers []Container
+	assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &containers))
+	if assert.Len(t, containers, 1) {
+		assert.Equal(t, "remote-app", containers[0].Name)
+		assert.Equal(t, "spoke-1", containers[0].NodeID)
+		assert.True(t, containers[0].IsRemote)
+		assert.False(t, containers[0].Capabilities.Inspect)
+		assert.False(t, containers[0].Capabilities.Actions)
+	}
+}
 
 func TestHandlePOSTContainersIdAction(t *testing.T) {
 	err := db.InitDB(":memory:")
@@ -75,15 +163,6 @@ func TestHandlePOSTContainersIdAction(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
-
-
-
-
-
-
-
-
-
 
 func TestHandleGETContainersIdInspect(t *testing.T) {
 	err := db.InitDB(":memory:")
@@ -410,22 +489,6 @@ func TestHandleGETSystemInfo(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 func TestHandleGETAlertsRules(t *testing.T) {
 	err := db.InitDB(":memory:")
@@ -1011,48 +1074,6 @@ func TestHandleGETWsShellId(t *testing.T) {
 	assert.NotNil(t, rec.Code)
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // Added comprehensive tests for main handlers and functions
 
 func getMockClient() *client.Client {
@@ -1072,12 +1093,12 @@ func TestHandleGETAuthGoogle(t *testing.T) {
 	err := db.InitDB(":memory:")
 	assert.NoError(t, err)
 	db.GormDB.Save(&db.Setting{ID: 1, GoogleClientID: "client123", GoogleClientSecret: "secret123"})
-	
+
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodGet, "/auth/google", nil)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
-	
+
 	h := handleGETAuthGoogle()
 	err = h(c)
 	assert.NoError(t, err)
@@ -1088,12 +1109,12 @@ func TestHandleGETAuthGoogleCallback(t *testing.T) {
 	err := db.InitDB(":memory:")
 	assert.NoError(t, err)
 	db.GormDB.Save(&db.Setting{ID: 1, GoogleClientID: "client123", GoogleClientSecret: "secret123"})
-	
+
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodGet, "/auth/google/callback?state=invalid&code=123", nil)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
-	
+
 	h := handleGETAuthGoogleCallback()
 	err = h(c)
 	assert.NoError(t, err)
@@ -1106,7 +1127,7 @@ func TestHandlePOSTApiTokenExchange(t *testing.T) {
 	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
-	
+
 	h := handlePOSTApiTokenExchange()
 	err := h(c)
 	assert.NoError(t, err)
@@ -1121,7 +1142,7 @@ func TestHandlePOSTApiToken(t *testing.T) {
 	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
-	
+
 	h := handlePOSTApiToken()
 	err = h(c)
 	assert.NoError(t, err)
@@ -1134,7 +1155,7 @@ func TestHandlePOSTApiTokenRefresh(t *testing.T) {
 	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
-	
+
 	h := handlePOSTApiTokenRefresh()
 	err := h(c)
 	assert.NoError(t, err)
@@ -1142,15 +1163,29 @@ func TestHandlePOSTApiTokenRefresh(t *testing.T) {
 }
 
 func TestHandleGETApiConfig(t *testing.T) {
+	originalMode := LighthouseMode
+	originalNodeID := NodeID
+	LighthouseMode = "hub"
+	NodeID = "hub-1"
+	defer func() {
+		LighthouseMode = originalMode
+		NodeID = originalNodeID
+	}()
+
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
-	
+
 	h := handleGETApiConfig()
 	err := h(c)
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var response map[string]interface{}
+	assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
+	assert.Equal(t, "hub", response["mode"])
+	assert.Equal(t, "hub-1", response["node_id"])
 }
 
 func TestExtractContainers(t *testing.T) {
@@ -1160,7 +1195,7 @@ func TestExtractContainers(t *testing.T) {
 	res := extractContainers(input)
 	assert.NotNil(t, res)
 	assert.Equal(t, "123", res[0]["Id"])
-	
+
 	res2 := extractContainers(nil)
 	assert.Nil(t, res2)
 }
@@ -1176,9 +1211,9 @@ func TestGenerateSecureCode(t *testing.T) {
 func TestLogAudit(t *testing.T) {
 	err := db.InitDB(":memory:")
 	assert.NoError(t, err)
-	
+
 	logAudit(1, "testuser", "test_action", "test_resource", "success", "test message")
-	
+
 	var logs []db.AuditLog
 	db.GormDB.Find(&logs)
 	assert.Equal(t, 1, len(logs))
@@ -1188,9 +1223,9 @@ func TestLogAudit(t *testing.T) {
 func TestGetAuthorizedPatterns(t *testing.T) {
 	err := db.InitDB(":memory:")
 	assert.NoError(t, err)
-	
+
 	db.GormDB.Save(&db.User{ID: 999, AllowedContainers: "test.*"})
-	
+
 	patterns := getAuthorizedPatterns(999)
 	assert.NotEmpty(t, patterns)
 }
@@ -1217,9 +1252,9 @@ func TestSystemStatsBroadcaster(t *testing.T) {
 func TestGetRetentionDays(t *testing.T) {
 	err := db.InitDB(":memory:")
 	assert.NoError(t, err)
-	
+
 	db.GormDB.Save(&db.Setting{ID: 1, MetricsRetentionDays: 15})
-	
+
 	days := getRetentionDays()
 	assert.Equal(t, 15, days)
 }
@@ -1265,7 +1300,7 @@ func TestSeedAdmin(t *testing.T) {
 	err := db.InitDB(":memory:")
 	assert.NoError(t, err)
 	seedAdmin()
-	
+
 	var user db.User
 	db.GormDB.First(&user, "username = ?", "admin")
 	assert.Equal(t, "admin", user.Username)

@@ -51,6 +51,7 @@
 
         <div class="action-rail">
           <button
+            v-if="container.capabilities?.logs !== false"
             type="button"
             class="action-chip logs"
             @click="goToLogs(container.id)"
@@ -60,6 +61,7 @@
           </button>
           <button
             v-if="
+              container.capabilities?.shell !== false &&
               userCanShell(sharedState.currentUser) &&
               container.state === 'running'
             "
@@ -71,6 +73,7 @@
             <span>Shell</span>
           </button>
           <button
+            v-if="container.capabilities?.actions !== false && userCanStart(sharedState.currentUser) && container.state !== 'running'"
             type="button"
             class="action-chip start"
             @click="triggerConfirm(container.id, 'start')"
@@ -79,6 +82,7 @@
             <span>Start</span>
           </button>
           <button
+            v-if="container.capabilities?.actions !== false && userCanRestart(sharedState.currentUser)"
             type="button"
             class="action-chip restart"
             @click="triggerConfirm(container.id, 'restart')"
@@ -87,6 +91,7 @@
             <span>Restart</span>
           </button>
           <button
+            v-if="container.capabilities?.actions !== false && !container.is_platform && userCanStop(sharedState.currentUser) && container.state === 'running'"
             type="button"
             class="action-chip stop"
             @click="triggerConfirm(container.id, 'stop')"
@@ -95,7 +100,7 @@
             <span>Stop</span>
           </button>
           <button
-            v-if="!container.is_platform && userCanDelete(sharedState.currentUser)"
+            v-if="container.capabilities?.actions !== false && !container.is_platform && userCanDelete(sharedState.currentUser)"
             type="button"
             class="action-chip delete"
             @click="triggerConfirm(container.id, 'remove')"
@@ -104,6 +109,7 @@
             <span>Delete</span>
           </button>
           <button
+            v-if="container.capabilities?.scan !== false && (sharedState.currentUser?.is_admin || sharedState.currentUser?.can_run_scans)"
             type="button"
             class="action-chip"
             @click="triggerScan"
@@ -114,7 +120,15 @@
         </div>
       </section>
 
-      <section v-if="container.state === 'running'" class="stats-grid">
+      <section v-if="container.is_remote" class="remote-capability-notice">
+        <AppIcon name="server" :size="20" />
+        <div>
+          <strong>Remote workload on {{ container.node_id }}</strong>
+          <p>This spoke currently provides fleet presence only. Inspection, logs, shell, actions, and scans will appear when the remote transport supports them.</p>
+        </div>
+      </section>
+
+      <section v-if="container.state === 'running' && container.capabilities?.stats !== false" class="stats-grid">
         <article class="stat-card">
           <span class="stat-label">CPU</span>
           <span class="stat-value">{{ liveStats.cpu.toFixed(1) }}%</span>
@@ -169,7 +183,7 @@
         </article>
       </section>
 
-      <section class="detail-panels">
+      <section v-if="container.capabilities?.inspect !== false" class="detail-panels">
         <article class="panel">
           <div class="panel-head">
             <h2>Overview</h2>
@@ -518,7 +532,7 @@ let eventsWs = null;
 // container's image, if one exists. The API wraps the raw Trivy JSON as a
 // string in `.result`, so it needs a second parse to get to `.Results`.
 const fetchScanResults = async () => {
-  if (!container.value || !container.value.image) return;
+  if (!container.value || !container.value.image || container.value.capabilities?.scan === false) return;
   try {
     const token = secureStorage.getItem("token");
     const res = await apiFetch(`/api/images/scans?image=${encodeURIComponent(container.value.image)}`, {
@@ -534,6 +548,10 @@ const fetchScanResults = async () => {
 // triggerScan starts a background vulnerability scan and polls (every 3s, up
 // to 90s) until a result appears, since scans run asynchronously server-side.
 const triggerScan = async () => {
+  if (container.value?.capabilities?.scan === false) {
+    showToast("Remote workload", "Remote scanning is not available yet.", "info");
+    return;
+  }
   scanResults.value.loading = true;
   scanResults.value.data = null;
   try {
@@ -982,12 +1000,16 @@ function copyText(text, label) {
 }
 
 watch(container, (value) => {
-  if (value?.state === "running") startStatsPolling();
+  if (value?.state === "running" && value.capabilities?.stats !== false) startStatsPolling();
   else stopStatsPolling();
 });
 
 onMounted(async () => {
   await fetchContainers();
+  if (container.value?.capabilities?.inspect === false) {
+    inspectLoading.value = false;
+    return;
+  }
   await fetchInspect();
   await fetchHistoryData();
   if (container.value?.state === "running") startStatsPolling();
@@ -1005,6 +1027,20 @@ onUnmounted(() => {
   gap: 1.25rem;
   padding-bottom: 2rem;
 }
+
+.remote-capability-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 1rem 1.15rem;
+  border: 1px solid rgba(var(--accent-rgb), 0.3);
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.remote-capability-notice strong { color: var(--text-main); }
+.remote-capability-notice p { margin: 0.25rem 0 0; color: var(--text-dim); font-size: 0.82rem; line-height: 1.5; }
 
 .detail-loading {
   display: flex;

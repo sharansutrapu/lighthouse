@@ -52,6 +52,8 @@ func (m *mockWSConn) Close() error {
 
 func TestRegisterHubRoutes(t *testing.T) {
 	e := echo.New()
+	originalUpgrader := upgraderFunc
+	t.Cleanup(func() { upgraderFunc = originalUpgrader })
 
 	// Call default upgraderFunc to cover it, including the CheckOrigin closure
 	// (only invoked by gorilla/websocket when the request actually looks like
@@ -109,6 +111,13 @@ func TestRegisterHubRoutes(t *testing.T) {
 }
 
 func TestHandleSpokeMessage(t *testing.T) {
+	originalDB := db.GormDB
+	testDB, err := gorm.Open(sqlite.Open("file:hub_message_test?mode=memory&cache=shared"), &gorm.Config{})
+	assert.NoError(t, err)
+	assert.NoError(t, testDB.AutoMigrate(&db.Stat{}, &db.SystemStat{}))
+	db.GormDB = testDB
+	t.Cleanup(func() { db.GormDB = originalDB })
+
 	// containers
 	GlobalHub.Lock()
 	GlobalHub.SpokeContainers["node1"] = nil
@@ -125,7 +134,14 @@ func TestHandleSpokeMessage(t *testing.T) {
 	// stat
 	msg = []byte(`{"type":"stat","data":{"cpu_percent": 10.5}}`)
 	handleSpokeMessage("node1", msg)
-	// (Check DB manually or ignore)
+
+	// The spoke publishes container_stat; keep the legacy stat alias for
+	// compatibility while ensuring the production message is persisted.
+	msg = []byte(`{"type":"container_stat","data":{"container_id":"c1","cpu":10.5}}`)
+	handleSpokeMessage("node1", msg)
+	var stat db.Stat
+	assert.NoError(t, db.GormDB.Where("node_id = ? AND container_id = ?", "node1", "c1").Last(&stat).Error)
+	assert.Equal(t, 10.5, stat.CPU)
 
 	// system_stat
 	msg = []byte(`{"type":"system_stat","data":{"cpu": 20.5}}`)

@@ -5,20 +5,20 @@
         <span class="hero-eyebrow">Fleet control</span>
         <h1>Container management</h1>
         <p class="hero-sub">
-          Start, stop, restart, and inspect workloads across your Docker host.
+          {{ isHubMode ? "Browse workloads by node. Remote operations are shown only when supported." : "Start, stop, restart, and inspect workloads on this Docker host." }}
         </p>
       </div>
       <div class="hero-stats">
         <div class="hero-stat">
-          <span class="hero-stat-val">{{ containers.length }}</span>
+          <span class="hero-stat-val">{{ scopedContainers.length }}</span>
           <span class="hero-stat-lbl">Total</span>
         </div>
         <div class="hero-stat success">
-          <span class="hero-stat-val">{{ runningCount }}</span>
+          <span class="hero-stat-val">{{ scopedRunningCount }}</span>
           <span class="hero-stat-lbl">Running</span>
         </div>
         <div class="hero-stat muted">
-          <span class="hero-stat-val">{{ stoppedCount }}</span>
+          <span class="hero-stat-val">{{ scopedStoppedCount }}</span>
           <span class="hero-stat-lbl">Stopped</span>
         </div>
       </div>
@@ -42,6 +42,13 @@
           </div>
         </div>
         <div class="toolbar-right">
+          <label v-if="isHubMode" class="node-filter">
+            <span>Node</span>
+            <select v-model="nodeFilter">
+              <option value="all">All nodes</option>
+              <option v-for="node in nodeOptions" :key="node" :value="node">{{ node }}</option>
+            </select>
+          </label>
           <div class="search-box">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5">
               <circle cx="11" cy="11" r="8"></circle>
@@ -74,6 +81,7 @@
       <ContainerTable
         :state-filter="stateFilter"
         :search-query="searchQuery"
+        :node-filter="nodeFilter"
         show-inline-stats
         embedded
       />
@@ -85,22 +93,45 @@
 // Container fleet management page: the searchable/filterable table of all
 // containers (list data and start/stop/restart/remove actions all live in
 // the shared useContainers() composable / ContainerTable component).
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import ContainerTable from "../components/ContainerTable.vue";
 import { useContainers } from "../composables/useContainers";
 import { sharedState } from "../utils/sharedState";
 
 const stateFilter = ref("all");
 const searchQuery = ref("");
+const route = useRoute();
+const router = useRouter();
+const nodeFilter = ref(typeof route.query.node === "string" ? route.query.node : "all");
 
-const { containers, loading, runningCount, stoppedCount, fetchContainers } =
-  useContainers();
+const { containers, loading, fetchContainers } = useContainers();
+
+const isHubMode = computed(() => sharedState.deploymentMode === "hub");
+const nodeOptions = computed(() => [...new Set(containers.value.map((container) => container.node_id).filter(Boolean))].sort());
+const scopedContainers = computed(() => nodeFilter.value === "all"
+  ? containers.value
+  : containers.value.filter((container) => container.node_id === nodeFilter.value));
+const scopedRunningCount = computed(() => scopedContainers.value.filter((container) => container.state === "running").length);
+const scopedStoppedCount = computed(() => scopedContainers.value.length - scopedRunningCount.value);
 
 const filters = computed(() => [
-  { label: "All", value: "all", count: containers.value.length },
-  { label: "Running", value: "running", count: runningCount.value },
-  { label: "Stopped", value: "stopped", count: stoppedCount.value },
+  { label: "All", value: "all", count: scopedContainers.value.length },
+  { label: "Running", value: "running", count: scopedRunningCount.value },
+  { label: "Stopped", value: "stopped", count: scopedStoppedCount.value },
 ]);
+
+watch(nodeFilter, (node) => {
+  const query = { ...route.query };
+  if (node === "all") delete query.node;
+  else query.node = node;
+  router.replace({ query });
+});
+
+watch(() => route.query.node, (node) => {
+  const nextNode = typeof node === "string" ? node : "all";
+  if (nodeFilter.value !== nextNode) nodeFilter.value = nextNode;
+});
 </script>
 
 <style scoped>
@@ -227,6 +258,27 @@ const filters = computed(() => [
   align-items: center;
   gap: 0.65rem;
   flex-wrap: wrap;
+}
+
+.node-filter {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text-mute);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.node-filter select {
+  min-height: 38px;
+  padding: 0 2rem 0 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--text-main);
+  font: inherit;
+  text-transform: none;
 }
 
 .filter-pills {

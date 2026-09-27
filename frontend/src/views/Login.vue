@@ -7,6 +7,10 @@
         </div>
         <h1>LightHouse</h1>
         <p class="login-subtitle">Container observability</p>
+        <div class="login-context">
+          <span>{{ sharedState.deploymentMode === "hub" ? "Hub control plane" : "Standalone node" }}</span>
+          <span v-if="sharedState.localNodeId" class="login-node-id">{{ sharedState.localNodeId }}</span>
+        </div>
       </div>
 
       <div class="login-form">
@@ -201,6 +205,28 @@ onMounted(() => {
 .login-header {
   text-align: center;
   margin-bottom: 2.5rem;
+}
+
+.login-context {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: 0.75rem;
+  padding: 0.28rem 0.55rem;
+  border: 1px solid rgba(var(--accent-rgb), 0.25);
+  border-radius: 5px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.66rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.login-node-id {
+  padding-left: 0.45rem;
+  border-left: 1px solid rgba(var(--accent-rgb), 0.25);
+  font-family: var(--font-mono);
+  text-transform: none;
 }
 
 .logo-box {

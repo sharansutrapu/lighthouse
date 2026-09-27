@@ -5,6 +5,7 @@
         <thead>
           <tr>
             <th>Container</th>
+            <th v-if="isHubMode">Node</th>
             <th>Image</th>
             <th>Created</th>
             <th>Status</th>
@@ -14,7 +15,7 @@
         </thead>
         <tbody v-if="loading">
           <tr>
-            <td colspan="6">
+            <td :colspan="columnCount">
               <div class="table-loading">
                 <div class="shimmer"></div>
               </div>
@@ -24,7 +25,7 @@
         <tbody v-else-if="displayContainers.length > 0">
           <tr
             v-for="c in displayContainers"
-            :key="c.id"
+            :key="`${c.node_id || sharedState.localNodeId || 'local'}:${c.id}`"
             class="container-row"
             :class="{
               'is-running': c.state === 'running',
@@ -34,7 +35,7 @@
             <td data-label="Container">
               <div
                 class="name-cell clickable"
-                @click="goToDetail(c.id)"
+                @click="openContainer(c)"
               >
                 <div class="container-avatar" :class="c.state === 'running' ? 'running' : 'stopped'">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -48,7 +49,7 @@
                   </span>
                   <span class="container-id">{{ c.id.substring(0, 12) }}</span>
                   <div
-                    v-if="showInlineStats && c.state === 'running'"
+                    v-if="showInlineStats && c.state === 'running' && !c.is_remote"
                     class="inline-stats"
                   >
                     <span class="stat-chip live">
@@ -58,8 +59,14 @@
                       {{ formatBytes(c.memory) }}
                     </span>
                   </div>
+                  <span v-else-if="showInlineStats && c.is_remote" class="remote-summary">Summary only</span>
                 </div>
               </div>
+            </td>
+            <td v-if="isHubMode" data-label="Node">
+              <span :class="['node-badge', { remote: c.is_remote }]">
+                {{ c.node_id || sharedState.localNodeId || "local" }}
+              </span>
             </td>
             <td data-label="Image">
               <div class="image-cell">
@@ -93,9 +100,10 @@
             </td>
             <td class="text-right" data-label="Actions" v-if="!embedded">
               <div class="action-group justify-end" @click.stop>
+                <span v-if="c.capabilities?.actions === false" class="remote-limited" data-tooltip="Remote operations are not available yet">Summary only</span>
                 <div class="action-cluster primary-actions">
                   <button
-                    v-if="userCanStart(sharedState.currentUser) && c.state !== 'running'"
+                    v-if="c.capabilities?.actions !== false && userCanStart(sharedState.currentUser) && c.state !== 'running'"
                     @click="triggerConfirm(c.id, 'start')"
                     class="icon-btn start"
                     data-tooltip="Start"
@@ -112,7 +120,7 @@
                   </svg>
                 </button>
                 <button
-                  v-if="!c.is_platform && userCanStop(sharedState.currentUser) && c.state === 'running'"
+                  v-if="c.capabilities?.actions !== false && !c.is_platform && userCanStop(sharedState.currentUser) && c.state === 'running'"
                   @click="triggerConfirm(c.id, 'stop')"
                   class="icon-btn stop"
                   data-tooltip="Stop"
@@ -129,7 +137,7 @@
                   </svg>
                 </button>
                 <button
-                  v-if="userCanRestart(sharedState.currentUser)"
+                  v-if="c.capabilities?.actions !== false && userCanRestart(sharedState.currentUser)"
                   @click="triggerConfirm(c.id, 'restart')"
                   class="icon-btn restart"
                   data-tooltip="Restart"
@@ -149,7 +157,7 @@
                 </div>
                 <div class="action-cluster secondary-actions">
                 <button
-                  v-if="!c.is_platform && userCanShell(sharedState.currentUser) && c.state === 'running'"
+                  v-if="c.capabilities?.shell !== false && !c.is_platform && userCanShell(sharedState.currentUser) && c.state === 'running'"
                   @click="goToShell(c.id)"
                   class="icon-btn shell"
                   type="button"
@@ -159,6 +167,7 @@
                   <AppIcon name="terminal" :size="16" :stroke-width="2.25" />
                 </button>
                 <button
+                  v-if="c.capabilities?.logs !== false"
                   @click="goToLogs(c.id)"
                   class="icon-btn logs"
                   data-tooltip="View logs"
@@ -178,7 +187,7 @@
                   </svg>
                 </button>
                 <button
-                  v-if="!c.is_platform && userCanDelete(sharedState.currentUser)"
+                  v-if="c.capabilities?.actions !== false && !c.is_platform && userCanDelete(sharedState.currentUser)"
                   @click="triggerConfirm(c.id, 'remove')"
                   class="icon-btn delete"
                   data-tooltip="Delete"
@@ -204,7 +213,7 @@
         </tbody>
         <tbody v-else>
           <tr>
-            <td colspan="6">
+            <td :colspan="columnCount">
               <div class="empty-state-wrapper">
                 <div class="empty-state-content">
                   <div class="empty-icon-box">
@@ -214,9 +223,9 @@
                       <line x1="12" y1="17" x2="12" y2="21"></line>
                     </svg>
                   </div>
-                  <h4 class="empty-title">No Containers Found</h4>
+                  <h4 class="empty-title">{{ emptyTitle }}</h4>
                   <p class="empty-text">
-                    No containers match your search or you may not have access to any yet.
+                    {{ emptyMessage }}
                   </p>
                 </div>
               </div>
@@ -279,7 +288,7 @@
 import { computed } from 'vue';
 import { useContainers } from '../composables/useContainers';
 import AppIcon from './AppIcon.vue';
-import { sharedState, userCanStart, userCanStop, userCanRestart, userCanDelete, userCanShell } from '../utils/sharedState';
+import { sharedState, showToast, userCanStart, userCanStop, userCanRestart, userCanDelete, userCanShell } from '../utils/sharedState';
 
 const props = defineProps({
   stateFilter: {
@@ -298,6 +307,10 @@ const props = defineProps({
     type: String,
     default: '',
   },
+  nodeFilter: {
+    type: String,
+    default: 'all',
+  },
 });
 
 const {
@@ -312,6 +325,9 @@ const {
 // LightHouse platform container always pinned first.
 const displayContainers = computed(() => {
   let list = containers.value || [];
+  if (props.nodeFilter !== 'all') {
+    list = list.filter((container) => container.node_id === props.nodeFilter);
+  }
   if (props.searchQuery) {
     const q = props.searchQuery.toLowerCase();
     list = list.filter(c => 
@@ -331,6 +347,21 @@ const displayContainers = computed(() => {
     return a.name.localeCompare(b.name);
   });
 });
+
+const isHubMode = computed(() => sharedState.deploymentMode === 'hub');
+const columnCount = computed(() => 5 + (isHubMode.value ? 1 : 0) + (props.embedded ? 0 : 1));
+const emptyTitle = computed(() => props.stateFilter === 'stopped' && !props.searchQuery ? 'No anomalies' : 'No containers found');
+const emptyMessage = computed(() => props.stateFilter === 'stopped' && !props.searchQuery
+  ? 'All visible workloads are currently running.'
+  : 'No containers match the active node, state, or search filters.');
+
+const openContainer = (container) => {
+  if (container.capabilities?.inspect === false) {
+    showToast('Remote workload', `Detailed inspection for ${container.node_id} is not available yet.`, 'info');
+    return;
+  }
+  goToDetail(container.id);
+};
 </script>
 
 <style>
@@ -525,6 +556,27 @@ const displayContainers = computed(() => {
   color: var(--success);
   border-color: rgba(var(--success-rgb), 0.35);
   background: rgba(var(--success-rgb), 0.08);
+}
+
+.remote-summary,
+.remote-limited,
+.node-badge {
+  display: inline-flex;
+  width: fit-content;
+  padding: 0.18rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-input);
+  color: var(--text-mute);
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 700;
+}
+
+.node-badge.remote {
+  border-color: rgba(var(--accent-rgb), 0.3);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .name-cell {

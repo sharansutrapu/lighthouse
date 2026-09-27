@@ -58,6 +58,8 @@ export const sharedState = reactive({
     type: 'success'
   },
   configLoaded: false,
+  deploymentMode: 'standalone',
+  localNodeId: '',
   envStartPermission: false,
   envStopPermission: false,
   envRestartPermission: false,

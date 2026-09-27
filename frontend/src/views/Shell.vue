@@ -280,6 +280,11 @@ onMounted(async () => {
 
   await fetchContainers();
 
+  if (container.value?.capabilities?.shell === false) {
+    errorMessage.value = `Shell access through ${container.value.node_id} is not available yet.`;
+    return;
+  }
+
   if (!userCanShell(sharedState.currentUser)) {
     errorMessage.value = "Shell access is not enabled for your account on this server.";
     return;

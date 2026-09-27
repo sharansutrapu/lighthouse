@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
@@ -35,8 +37,17 @@ type Hub struct {
 	sync.RWMutex
 	Spokes          map[string]WSConn
 	SpokeContainers map[string][]map[string]interface{}
-	ExecStreams     map[string]WSConn // maps exec_id to UI websocket
+	SpokeLastSeen   map[string]time.Time
+	ExecStreams     map[string]WSConn        // maps exec_id to UI websocket
 	CommandResults  map[string]CommandResult // container_id -> most recent dispatched command outcome
+}
+
+// NodeStatus is the read-only topology snapshot exposed by the Hub API.
+type NodeStatus struct {
+	ID             string    `json:"id"`
+	Connected      bool      `json:"connected"`
+	LastSeen       time.Time `json:"last_seen"`
+	ContainerCount int       `json:"container_count"`
 }
 
 // CommandResult is the outcome of a command dispatched to a Spoke, reported
@@ -50,6 +61,7 @@ type CommandResult struct {
 var GlobalHub = &Hub{
 	Spokes:          make(map[string]WSConn),
 	SpokeContainers: make(map[string][]map[string]interface{}),
+	SpokeLastSeen:   make(map[string]time.Time),
 	ExecStreams:     make(map[string]WSConn),
 	CommandResults:  make(map[string]CommandResult),
 }
@@ -74,6 +86,7 @@ func RegisterHubRoutes(e *echo.Echo, hubToken string) {
 
 		GlobalHub.Lock()
 		GlobalHub.Spokes[nodeID] = ws
+		GlobalHub.SpokeLastSeen[nodeID] = time.Now()
 		GlobalHub.Unlock()
 
 		log.Printf("[Hub] Spoke %s connected", nodeID)
@@ -85,6 +98,7 @@ func RegisterHubRoutes(e *echo.Echo, hubToken string) {
 				GlobalHub.Lock()
 				delete(GlobalHub.Spokes, nodeID)
 				delete(GlobalHub.SpokeContainers, nodeID)
+				GlobalHub.SpokeLastSeen[nodeID] = time.Now()
 				GlobalHub.Unlock()
 				break
 			}
@@ -106,6 +120,10 @@ func handleSpokeMessage(nodeID string, msg []byte) {
 		return
 	}
 
+	GlobalHub.Lock()
+	GlobalHub.SpokeLastSeen[nodeID] = time.Now()
+	GlobalHub.Unlock()
+
 	switch payload.Type {
 	case "containers":
 		var containers []map[string]interface{}
@@ -114,7 +132,7 @@ func handleSpokeMessage(nodeID string, msg []byte) {
 		GlobalHub.SpokeContainers[nodeID] = containers
 		GlobalHub.Unlock()
 
-	case "stat":
+	case "stat", "container_stat":
 		var stat db.Stat
 		json.Unmarshal(payload.Data, &stat)
 		stat.NodeID = nodeID
@@ -154,6 +172,25 @@ func handleSpokeMessage(nodeID string, msg []byte) {
 		GlobalHub.CommandResults[result.ContainerID] = CommandResult{Action: result.Action, Status: result.Status, Error: result.Error}
 		GlobalHub.Unlock()
 	}
+}
+
+// SnapshotSpokes returns a stable, sorted copy of the Hub's known spoke state.
+func SnapshotSpokes() []NodeStatus {
+	GlobalHub.RLock()
+	defer GlobalHub.RUnlock()
+
+	nodes := make([]NodeStatus, 0, len(GlobalHub.SpokeLastSeen))
+	for nodeID, lastSeen := range GlobalHub.SpokeLastSeen {
+		_, connected := GlobalHub.Spokes[nodeID]
+		nodes = append(nodes, NodeStatus{
+			ID:             nodeID,
+			Connected:      connected,
+			LastSeen:       lastSeen,
+			ContainerCount: len(GlobalHub.SpokeContainers[nodeID]),
+		})
+	}
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
+	return nodes
 }
 
 // SendCommandToSpoke sends an action like start/stop/restart

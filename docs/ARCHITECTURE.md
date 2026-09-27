@@ -34,6 +34,25 @@ graph TD
     Spoke2 -->|Unix Socket| DS2[Docker Socket]
 ```
 
+#### Topology-aware API and UI
+
+In hub mode, `GET /api/config` identifies the runtime `mode` and local
+`node_id`. Each `GET /api/containers` item includes its `node_id`, whether it
+is remote, and explicit capabilities for inspect, logs, shell, statistics,
+actions, and scanning. The frontend uses these fields to group and filter the
+fleet by node and to avoid presenting unsupported operations as working.
+
+Administrators can inspect current node connection state through
+`GET /api/admin/nodes` and the hub-only **Nodes** view. The view reports the
+hub, connected spokes, recently disconnected spokes, last-seen timestamps,
+and workload counts.
+
+Remote spoke workloads are currently summary-only in the web UI. Container
+inventory and persisted metric samples flow to the hub, but remote inspect,
+logs, shell, actions, scans, and GitOps remain disabled until those protocols
+are fully routed through the hub. Standalone mode retains the existing
+single-host interface.
+
 ### 1. The Backend (Go)
 The backend is the core of the application. It handles:
 - **Authentication**: JWT-based auth with `SECRET_KEY` signing, and OAuth 2.0 integrations (Google SSO).

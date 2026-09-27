@@ -96,22 +96,36 @@ func generateSecureCode() string {
 // Container is the API-facing shape of a Docker container returned to the
 // frontend, combining Docker inspect data with live CPU/Memory usage.
 type Container struct {
-	ID         string      `json:"id"`
-	Name       string      `json:"name"`
-	Image      string      `json:"image"`
-	ImageID    string      `json:"image_id"`
-	State      string      `json:"state"`
-	Created    int64       `json:"created"`
-	Status     string      `json:"status"`
-	CPULimit   float64     `json:"cpu_limit"`
-	MemLimit   int64       `json:"mem_limit"`
-	CPU        float64     `json:"cpu"`
-	Memory     int64       `json:"memory"`
-	SizeRw     int64       `json:"size_rw"`
-	SizeRootFs int64       `json:"size_root_fs"`
-	IsPlatform bool        `json:"is_platform"`
-	Mounts     interface{} `json:"mounts,omitempty"`
-	Networks   interface{} `json:"networks,omitempty"`
+	ID           string                `json:"id"`
+	Name         string                `json:"name"`
+	Image        string                `json:"image"`
+	ImageID      string                `json:"image_id"`
+	NodeID       string                `json:"node_id"`
+	IsRemote     bool                  `json:"is_remote"`
+	Capabilities ContainerCapabilities `json:"capabilities"`
+	State        string                `json:"state"`
+	Created      int64                 `json:"created"`
+	Status       string                `json:"status"`
+	CPULimit     float64               `json:"cpu_limit"`
+	MemLimit     int64                 `json:"mem_limit"`
+	CPU          float64               `json:"cpu"`
+	Memory       int64                 `json:"memory"`
+	SizeRw       int64                 `json:"size_rw"`
+	SizeRootFs   int64                 `json:"size_root_fs"`
+	IsPlatform   bool                  `json:"is_platform"`
+	Mounts       interface{}           `json:"mounts,omitempty"`
+	Networks     interface{}           `json:"networks,omitempty"`
+}
+
+// ContainerCapabilities describes which detail operations the current node
+// can serve for a listed container. User permissions remain a separate check.
+type ContainerCapabilities struct {
+	Inspect bool `json:"inspect"`
+	Logs    bool `json:"logs"`
+	Shell   bool `json:"shell"`
+	Stats   bool `json:"stats"`
+	Actions bool `json:"actions"`
+	Scan    bool `json:"scan"`
 }
 
 // UserClaims is the JWT payload used to authenticate every API/WebSocket
@@ -620,6 +634,8 @@ func main() {
 	admin.DELETE("/teams/:id", handleDELETETeamsId())
 
 	admin.GET("/users", handleGETUsers())
+
+	admin.GET("/nodes", handleGETNodes())
 
 	admin.PUT("/users/:id/active", handlePUTUsersIdActive())
 
@@ -1223,6 +1239,7 @@ func collectStats(cli *client.Client) {
 	prevStatsMu.Unlock()
 
 	sysStat := db.SystemStat{
+		NodeID:         NodeID,
 		CPU:            cpVal,
 		Memory:         int64(v.Used),
 		NetRxBytes:     int64(sysRxDelta),
@@ -1269,6 +1286,7 @@ func collectStats(cli *client.Client) {
 		prevStatsMu.Unlock()
 
 		stat := db.Stat{
+			NodeID:         NodeID,
 			ContainerID:    id,
 			CPU:            stats.CPU,
 			Memory:         stats.Memory,
@@ -1793,6 +1811,8 @@ func handleGETApiConfig() echo.HandlerFunc {
 			"allow_restart": CanRestart,
 			"allow_delete":  CanDelete,
 			"allow_shell":   AllowShell,
+			"mode":          LighthouseMode,
+			"node_id":       NodeID,
 			"client_access": clientAccessConfig(),
 		})
 	}
@@ -1916,15 +1936,21 @@ func handleGETContainers(cli *client.Client) echo.HandlerFunc {
 				// both return the same underlying map objects to every
 				// caller), so writing "_parsed_*" keys directly into it is a
 				// data race the moment two requests overlap.
-				parsed := make(map[string]interface{}, len(ctr)+5)
+				parsed := make(map[string]interface{}, len(ctr)+7)
 				for k, v := range ctr {
 					parsed[k] = v
+				}
+				nodeID, _ := ctr["NodeID"].(string)
+				if nodeID == "" {
+					nodeID = NodeID
 				}
 				parsed["_parsed_name"] = name
 				parsed["_parsed_image"] = image
 				parsed["_parsed_image_id"] = imageID
 				parsed["_parsed_id"] = id
 				parsed["_is_platform"] = isPlatform
+				parsed["_node_id"] = nodeID
+				parsed["_is_remote"] = LighthouseMode == "hub" && nodeID != "" && nodeID != NodeID
 				visibleContainers = append(visibleContainers, parsed)
 			}
 		}
@@ -1943,6 +1969,8 @@ func handleGETContainers(cli *client.Client) echo.HandlerFunc {
 				image := c["_parsed_image"].(string)
 				imageID := c["_parsed_image_id"].(string)
 				isPlatform := c["_is_platform"].(bool)
+				nodeID := c["_node_id"].(string)
+				isRemote := c["_is_remote"].(bool)
 
 				shortID := id
 				if len(id) > 12 {
@@ -1967,7 +1995,7 @@ func handleGETContainers(cli *client.Client) echo.HandlerFunc {
 				}
 				containerLimitsMu.RUnlock()
 
-				if needsFetch {
+				if needsFetch && !isRemote {
 					inspect, _ := cli.ContainerInspect(context.Background(), id, client.ContainerInspectOptions{})
 					if inspect.Container.HostConfig != nil {
 						if inspect.Container.HostConfig.NanoCPUs > 0 {
@@ -1992,13 +2020,18 @@ func handleGETContainers(cli *client.Client) echo.HandlerFunc {
 				var lastCPU float64
 				var lastMem float64
 				liveStatsMu.RLock()
-				if st, ok := liveStatsCache[id]; ok {
+				if st, ok := liveStatsCache[id]; ok && !isRemote {
 					lastCPU = st.CPU
 					lastMem = float64(st.Memory)
 				} else {
-					// Fallback to DB if live cache isn't populated yet
+					// Remote metrics are persisted by the Hub; local metrics use the
+					// database only until the in-memory poller has produced a sample.
 					var stat db.Stat
-					if err := db.GormDB.Where("container_id = ?", id).Order("timestamp DESC").First(&stat).Error; err == nil {
+					query := db.GormDB.Where("container_id = ?", id)
+					if isRemote {
+						query = query.Where("node_id = ?", nodeID)
+					}
+					if err := query.Order("timestamp DESC").First(&stat).Error; err == nil {
 						lastCPU = stat.CPU
 						lastMem = float64(stat.Memory)
 					}
@@ -2020,10 +2053,20 @@ func handleGETContainers(cli *client.Client) echo.HandlerFunc {
 
 				listMu.Lock()
 				list = append(list, Container{
-					ID:         shortID,
-					Name:       name,
-					Image:      image,
-					ImageID:    imageID,
+					ID:       shortID,
+					Name:     name,
+					Image:    image,
+					ImageID:  imageID,
+					NodeID:   nodeID,
+					IsRemote: isRemote,
+					Capabilities: ContainerCapabilities{
+						Inspect: !isRemote,
+						Logs:    !isRemote,
+						Shell:   !isRemote,
+						Stats:   !isRemote,
+						Actions: !isRemote,
+						Scan:    !isRemote,
+					},
 					State:      state,
 					Created:    int64(createdVal),
 					Status:     statusVal,
@@ -2869,9 +2912,17 @@ func handleGETSystemHistory() echo.HandlerFunc {
 		from := c.QueryParam("from")
 		to := c.QueryParam("to")
 		daysStr := c.QueryParam("days")
+		targetNodeID := c.QueryParam("node_id")
 
 		var systemStats []db.SystemStat
 		query := db.GormDB
+		if LighthouseMode == "hub" {
+			if targetNodeID == "" || targetNodeID == NodeID {
+				query = query.Where("node_id = ? OR node_id = ''", NodeID)
+			} else {
+				query = query.Where("node_id = ?", targetNodeID)
+			}
+		}
 
 		if from != "" && to != "" {
 			query = query.Where("timestamp BETWEEN ? AND ?", from, to)
@@ -2896,6 +2947,7 @@ func handleGETSystemHistory() echo.HandlerFunc {
 		var history []map[string]interface{}
 		for _, stat := range systemStats {
 			history = append(history, map[string]interface{}{
+				"node_id":    stat.NodeID,
 				"cpu":        stat.CPU,
 				"memory":     stat.Memory,
 				"net_rx":     stat.NetRxBytes,

@@ -18,6 +18,9 @@
         <router-link to="/dashboard" class="sidebar-logo">
           <img :src="logoSrc" alt="LightHouse" class="logo-img-sidebar" />
           <span class="logo-text">LightHouse</span>
+          <span v-if="!isSidebarCollapsed" class="deployment-mode-badge">
+            {{ sharedState.deploymentMode === "hub" ? "HUB" : "LOCAL" }}
+          </span>
         </router-link>
 
         <button
@@ -105,6 +108,21 @@
             <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
           </svg>
           Containers
+        </router-link>
+
+        <router-link
+          v-if="sharedState.deploymentMode === 'hub' && sharedState.currentUser?.is_admin"
+          to="/nodes"
+          class="nav-link"
+          :class="{ active: route.path === '/nodes' }"
+          :data-tooltip="isSidebarCollapsed ? 'Nodes' : null"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <rect x="3" y="3" width="18" height="6" rx="2"></rect>
+            <rect x="3" y="15" width="18" height="6" rx="2"></rect>
+            <path d="M7 6h.01M7 18h.01M12 9v6"></path>
+          </svg>
+          Nodes
         </router-link>
 
         <router-link
@@ -309,13 +327,16 @@
 
           <div class="title-group desktop-only">
             <h2>{{ route.name || "LightHouse" }}</h2>
+            <span v-if="sharedState.deploymentMode === 'hub'" class="header-node-scope">
+              {{ sharedState.localNodeId || "hub" }}
+            </span>
           </div>
         </div>
 
         <div class="header-right">
           <div class="system-stats-global desktop-only">
             <div class="h-stat-global" v-if="sharedState.systemStats">
-              <span class="h-label">SYS CPU</span>
+              <span class="h-label">{{ sharedState.deploymentMode === "hub" ? "HUB CPU" : "SYS CPU" }}</span>
               <span
                 class="h-value"
                 :style="{
@@ -331,7 +352,7 @@
               </span>
             </div>
             <div class="h-stat-global" v-if="sharedState.systemStats">
-              <span class="h-label">SYS MEM</span>
+              <span class="h-label">{{ sharedState.deploymentMode === "hub" ? "HUB MEM" : "SYS MEM" }}</span>
               <span class="h-value">
                 {{ formatBytes(sharedState.systemStats.memory || 0) }} / 
                 {{ formatBytes(sharedState.systemStats.total_memory || 0) }}
@@ -585,6 +606,7 @@ const toggleDashboardSidebar = () => {
 // logout clears the stored session and returns to the login page.
 const logout = () => {
   secureStorage.removeItem("token");
+  secureStorage.removeItem("refresh_token");
   secureStorage.removeItem("user");
   sharedState.currentUser = null;
   sharedState.showPasswordModal = false;
@@ -632,12 +654,14 @@ const updatePassword = async () => {
       body: formData,
     });
     if (res.ok) {
+      secureStorage.removeItem("token");
+      secureStorage.removeItem("refresh_token");
+      secureStorage.removeItem("user");
+      sharedState.currentUser = null;
       sharedState.showPasswordModal = false;
-      showToast("Success", "Password updated successfully", "success");
-      // If forced, clear the flag
-      if (sharedState.forcePasswordChange) {
-        sharedState.forcePasswordChange = false;
-      }
+      showToast("Password updated", "Sign in again with your new password.", "success");
+      router.replace("/login");
+      return;
     } else {
       const data = await res.json();
       passwordError.value = data.error || "Failed to update password";
@@ -791,6 +815,28 @@ onUnmounted(() => {
 <style scoped>
 .modal-content h3 {
   margin-bottom: 0.5rem;
+}
+
+.deployment-mode-badge,
+.header-node-scope {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0.15rem 0.45rem;
+  border-radius: 5px;
+  border: 1px solid rgba(var(--accent-rgb), 0.28);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 800;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.header-node-scope {
+  margin-left: 0.55rem;
+  text-transform: none;
 }
 
 .force-text-new {

@@ -6,11 +6,12 @@
         <div class="hero-copy">
           <span class="hero-eyebrow">
             <span class="live-dot" aria-hidden="true"></span>
-            Live overview
+            {{ isHubMode ? "Cluster overview" : "Live overview" }}
           </span>
           <h1 class="hero-title">{{ greeting }}, {{ username }}</h1>
           <p class="hero-sub">
-            {{ containers.length }} container{{ containers.length === 1 ? "" : "s" }} across your fleet
+            {{ containers.length }} container{{ containers.length === 1 ? "" : "s" }}
+            across {{ isHubMode ? `${nodeSummaries.length} nodes` : "your Docker host" }}
             <span v-if="runningCount" class="hero-accent"> · {{ runningCount }} running</span>
           </p>
         </div>
@@ -128,7 +129,7 @@
           <div class="metric-icon">
             <AppIcon name="server" />
           </div>
-          <span class="metric-badge">Host</span>
+          <span class="metric-badge">{{ isHubMode ? "Hub node" : "Host" }}</span>
         </div>
         <div class="metric-body host-body">
           <div class="host-stat">
@@ -155,17 +156,42 @@
           </div>
         </div>
         <div class="metric-footer">
-          {{ hostStatusLabel }}
+          {{ isHubMode ? `Local control plane · ${sharedState.localNodeId || "hub"}` : hostStatusLabel }}
         </div>
       </article>
+    </section>
+
+    <section v-if="isHubMode" class="topology-panel animate-slide-up" style="animation-delay: 0.07s">
+      <div class="panel-toolbar">
+        <div class="toolbar-left">
+          <h2>Node topology</h2>
+          <p class="toolbar-sub">Connected control-plane and spoke workloads</p>
+        </div>
+        <router-link to="/nodes" class="dash-action-btn">Manage nodes</router-link>
+      </div>
+      <div class="node-strip">
+        <router-link
+          v-for="node in nodeSummaries"
+          :key="node.id"
+          :to="{ path: '/containers', query: { node: node.id } }"
+          class="node-summary-item"
+        >
+          <span class="node-summary-status"></span>
+          <span class="node-summary-copy">
+            <strong>{{ node.id }}</strong>
+            <small>{{ node.isLocal ? "Hub" : "Spoke" }} · {{ node.running }}/{{ node.total }} running</small>
+          </span>
+          <AppIcon name="chevronLeft" class="node-summary-arrow" />
+        </router-link>
+      </div>
     </section>
 
     <!-- Top Consumers -->
     <section class="top-consumers animate-slide-up" style="animation-delay: 0.08s" v-if="topConsumers.length > 0">
       <div class="panel-toolbar" style="margin-bottom: 0.75rem;">
         <div class="toolbar-left">
-          <h2>Top Consumers</h2>
-          <p class="toolbar-sub">Containers using the most resources</p>
+          <h2>{{ isHubMode ? "Hub Top Consumers" : "Top Consumers" }}</h2>
+          <p class="toolbar-sub">{{ isHubMode ? "Local control-plane workloads with live telemetry" : "Containers using the most resources" }}</p>
         </div>
       </div>
       <div class="consumers-grid">
@@ -240,8 +266,8 @@
     <section class="top-consumers animate-slide-up" style="animation-delay: 0.095s">
       <div class="panel-toolbar" style="margin-bottom: 0.75rem;">
         <div class="toolbar-left">
-          <h2>Storage & Networking</h2>
-          <p class="toolbar-sub">Docker engine resources overview</p>
+          <h2>{{ isHubMode ? "Hub Engine Resources" : "Storage & Networking" }}</h2>
+          <p class="toolbar-sub">{{ isHubMode ? "Images, volumes, and networks on the control-plane host only" : "Docker engine resources overview" }}</p>
         </div>
       </div>
       <div class="consumers-grid">
@@ -381,6 +407,23 @@ const searchQuery = ref("");
 
 const { containers, loading, runningCount, stoppedCount, fetchContainers } = useContainers();
 
+const isHubMode = computed(() => sharedState.deploymentMode === "hub");
+const nodeSummaries = computed(() => {
+  const localNodeId = sharedState.localNodeId || "hub";
+  const nodes = new Map();
+  nodes.set(localNodeId, { id: localNodeId, total: 0, running: 0, isLocal: true });
+
+  for (const container of containers.value) {
+    const id = container.node_id || localNodeId;
+    const node = nodes.get(id) || { id, total: 0, running: 0, isLocal: id === localNodeId };
+    node.total += 1;
+    if (container.state === "running") node.running += 1;
+    nodes.set(id, node);
+  }
+
+  return [...nodes.values()].sort((a, b) => Number(b.isLocal) - Number(a.isLocal) || a.id.localeCompare(b.id));
+});
+
 // initialLoading gates the metric-card skeleton so it only appears on the
 // very first load, not on background polling refreshes.
 const initialLoading = computed(() => loading.value && containers.value.length === 0);
@@ -452,7 +495,10 @@ const filters = computed(() => [
 // topConsumers ranks containers by a combined CPU% + memory-share score, for
 // the "top resource consumers" panel.
 const topConsumers = computed(() => {
-  const sorted = [...containers.value].sort((a, b) => {
+  const candidates = isHubMode.value
+    ? containers.value.filter((container) => !container.is_remote)
+    : containers.value;
+  const sorted = [...candidates].sort((a, b) => {
     const aScore = (a.cpu || 0) + ((a.memory || 0) / (memTotal.value || 1)) * 100;
     const bScore = (b.cpu || 0) + ((b.memory || 0) / (memTotal.value || 1)) * 100;
     return bScore - aScore;
@@ -499,7 +545,7 @@ const parseScanResults = (data) => {
 // container's image (best-effort; a missing/failed scan is silently skipped).
 const loadScans = async () => {
   const token = secureStorage.getItem('token');
-  const promises = containers.value.map(async (c) => {
+  const promises = containers.value.filter((c) => c.capabilities?.scan !== false).map(async (c) => {
     try {
       const res = await apiFetch(`/api/images/scans?image=${encodeURIComponent(c.image)}`, {
         headers: { Authorization: `Bearer ${token}` }
@@ -609,6 +655,39 @@ const refresh = async () => {
   gap: 1.5rem;
   padding-bottom: 2rem;
 }
+
+.topology-panel {
+  padding: 1.15rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--bg-card);
+}
+
+.node-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.65rem;
+}
+
+.node-summary-item {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  min-width: 0;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: inherit;
+  text-decoration: none;
+}
+
+.node-summary-item:hover { border-color: rgba(var(--accent-rgb), 0.4); }
+.node-summary-status { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 3px rgba(var(--success-rgb), 0.15); }
+.node-summary-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 0.2rem; }
+.node-summary-copy strong { overflow: hidden; color: var(--text-main); text-overflow: ellipsis; white-space: nowrap; }
+.node-summary-copy small { color: var(--text-mute); }
+.node-summary-arrow { width: 15px; transform: rotate(180deg); color: var(--text-mute); }
 
 /* Hero */
 .dash-hero {

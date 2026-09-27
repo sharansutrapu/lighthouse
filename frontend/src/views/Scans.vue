@@ -37,7 +37,7 @@
           v-if="sharedState.currentUser?.is_admin || sharedState.currentUser?.can_run_scans"
           class="page-btn primary" 
           @click="scanAll" 
-          :disabled="isScanningAll || containers.length === 0"
+          :disabled="isScanningAll || scannableContainers.length === 0"
         >
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" :class="{ spinning: isScanningAll }">
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
@@ -59,7 +59,7 @@
     </div>
 
     <div v-else class="scans-grid">
-      <article v-for="c in sortedContainers" :key="c.id" class="scan-card shadow-lg" :class="{ 'is-platform': c.is_platform }">
+      <article v-for="c in sortedContainers" :key="`${c.node_id || sharedState.localNodeId || 'local'}:${c.id}`" class="scan-card shadow-lg" :class="{ 'is-platform': c.is_platform }">
         <div class="card-header">
           <h3>
             {{ c.name.replace(/^\//, '') }}
@@ -73,7 +73,15 @@
             <span class="value mono" style="word-break: break-all;">{{ c.image }}</span>
           </div>
 
-          <div v-if="scanResults[c.id]" class="scan-result-summary">
+          <div v-if="sharedState.deploymentMode === 'hub'" class="info-row">
+            <span class="label">Node</span>
+            <span class="value mono">{{ c.node_id || sharedState.localNodeId }}</span>
+          </div>
+
+          <div v-if="c.capabilities?.scan === false" class="scan-result-summary pending">
+            <span>Remote scanning is not available yet</span>
+          </div>
+          <div v-else-if="scanResults[c.id]" class="scan-result-summary">
             <div class="severity-badges">
                <span class="sev-badge critical" v-if="scanResults[c.id].error" :title="scanResults[c.id].error">
                  Scan failed
@@ -115,7 +123,7 @@
             Details
           </button>
           <button 
-            v-if="sharedState.currentUser?.is_admin || sharedState.currentUser?.can_run_scans"
+            v-if="c.capabilities?.scan !== false && (sharedState.currentUser?.is_admin || sharedState.currentUser?.can_run_scans)"
             class="page-btn primary sm" 
             :disabled="scanning[c.id]"
             @click="triggerScan(c)"
@@ -231,6 +239,7 @@ import { showToast, sharedState } from '../utils/sharedState';
 const { containers, loading, fetchContainers } = useContainers();
 
 const searchQuery = ref('');
+const scannableContainers = computed(() => containers.value.filter((container) => container.capabilities?.scan !== false));
 
 const sortedContainers = computed(() => {
   let list = containers.value;
@@ -337,9 +346,9 @@ const activeContainerName = ref('');
 // scanAll triggers a scan for every container that isn't already scanning.
 const scanAll = async () => {
   isScanningAll.value = true;
-  showToast('Scan All Started', `Initiated vulnerability scans for ${containers.value.length} containers`, 'info');
+  showToast('Scan All Started', `Initiated vulnerability scans for ${scannableContainers.value.length} containers`, 'info');
   
-  const promises = containers.value.map(c => {
+  const promises = scannableContainers.value.map(c => {
     // Only trigger if not already scanning
     if (!scanning.value[c.id]) {
       return triggerScan(c);
@@ -417,7 +426,7 @@ const loadScanForContainer = async (c, oldDate = null) => {
 // loadAllScanHistories loads the latest stored scan (if any) for every
 // container in parallel, on mount.
 const loadAllScanHistories = async () => {
-  const promises = containers.value.map(async (c) => {
+  const promises = scannableContainers.value.map(async (c) => {
     if (c.image) {
       await loadScanForContainer(c);
     }
@@ -428,6 +437,10 @@ const loadAllScanHistories = async () => {
 // triggerScan starts a background scan for one container and polls (every
 // 10s, up to 5 minutes) until a new result appears.
 const triggerScan = async (c) => {
+  if (c.capabilities?.scan === false) {
+    showToast('Remote workload', `Scanning on ${c.node_id} is not available yet.`, 'info');
+    return;
+  }
   // Capture the old scan date before we clear it
   const oldDate = scanResults.value[c.id] ? new Date(scanResults.value[c.id].createdAt) : new Date(0);
   

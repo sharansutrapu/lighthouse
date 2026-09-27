@@ -20,6 +20,12 @@ const routes = [
     meta: { requiresAuth: true, layout: 'main', title: 'Container Management' }
   },
   {
+    path: '/nodes',
+    name: 'Nodes',
+    component: () => import('../views/Nodes.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, requiresHub: true, layout: 'main', title: 'Nodes' }
+  },
+  {
     path: '/containers/:id',
     name: 'ContainerDetail',
     component: () => import('../views/ContainerDetail.vue'),
@@ -121,6 +127,8 @@ router.beforeEach(async (to, from, next) => {
         sharedState.envRestartPermission = data.allow_restart !== false;
         sharedState.envDeletePermission = data.allow_delete !== false;
         sharedState.envShellPermission = data.allow_shell === true;
+        sharedState.deploymentMode = data.mode || 'standalone';
+        sharedState.localNodeId = data.node_id || '';
       }
     } catch (e) {
       console.error('Failed to load auth config:', e);
@@ -173,6 +181,8 @@ router.beforeEach(async (to, from, next) => {
     }
     next({ path: '/login', query: to.query });
   } else if (to.meta.requiresAdmin && !isAdmin) {
+    next('/dashboard');
+  } else if (to.meta.requiresHub && sharedState.deploymentMode !== 'hub') {
     next('/dashboard');
   } else if (to.path === '/health' && !isAdmin) {
     next('/dashboard');

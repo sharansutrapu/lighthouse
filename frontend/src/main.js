@@ -11,6 +11,7 @@ import { secureStorage } from './utils/storage';
 // forceLogout clears the stored session and sends the user back to /login.
 const forceLogout = () => {
   secureStorage.removeItem('token');
+  secureStorage.removeItem('refresh_token');
   secureStorage.removeItem('user');
   sharedState.currentUser = null;
   sharedState.showPasswordModal = false;
