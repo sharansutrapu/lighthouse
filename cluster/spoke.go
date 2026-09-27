@@ -33,7 +33,7 @@ func StartSpokeAgent(hubURL, hubToken, nodeID string, cli *client.Client) {
 	connectURL := hubURL + "/api/spoke/connect?token=" + url.QueryEscape(hubToken) + "&node_id=" + url.QueryEscape(nodeID)
 
 	for agentRunning {
-		log.Printf("[Spoke] Dialing Hub at %s", connectURL)
+		log.Printf("[Spoke] Connecting to Hub as node %s", nodeID)
 		ws, err := dialFunc(connectURL)
 		if err != nil {
 			log.Printf("[Spoke] Dial error: %v. Retrying in 5s...", err)
