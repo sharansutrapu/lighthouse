@@ -203,6 +203,7 @@
             </div>
           </div>
           <span v-else-if="c.capabilities?.logs === false" class="remote-unavailable">Summary only</span>
+          <span v-else-if="c.capabilities?.stats === false" class="remote-unavailable">Remote stream</span>
         </div>
         <div v-if="filteredContainers.length === 0" class="empty-search-msg">
           <p class="text-mute">No containers found</p>

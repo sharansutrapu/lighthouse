@@ -165,6 +165,34 @@ func TestHandleHubMessage(t *testing.T) {
 	dockerClient = getMockDockerClient()
 	handleHubMessage([]byte(`invalid json`))
 	handleHubMessage([]byte(`{"type":"command","action":"invalid","container_id":"c1"}`))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	activeLogStreams.Lock()
+	activeLogStreams.cancels["logs1"] = cancel
+	activeLogStreams.Unlock()
+	handleHubMessage([]byte(`{"type":"log_stop","stream_id":"logs1"}`))
+	assert.Error(t, ctx.Err())
+}
+
+func TestHubLogWriter(t *testing.T) {
+	mws := &mockSpokeWSConn{}
+	spokeWriteMu.Lock()
+	spokeWs = mws
+	spokeWriteMu.Unlock()
+	t.Cleanup(func() {
+		spokeWriteMu.Lock()
+		spokeWs = nil
+		spokeWriteMu.Unlock()
+	})
+
+	writer := &hubLogWriter{streamID: "logs1"}
+	written, err := writer.Write([]byte("hello"))
+	assert.NoError(t, err)
+	assert.Equal(t, 5, written)
+	if assert.Len(t, mws.writes, 1) {
+		payload := mws.writes[0].(map[string]interface{})
+		assert.Equal(t, "log_output", payload["type"])
+	}
 }
 
 func TestHandleCommand(t *testing.T) {

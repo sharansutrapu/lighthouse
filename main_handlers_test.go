@@ -130,6 +130,7 @@ func TestHandleGETContainersIncludesRemoteTopology(t *testing.T) {
 		assert.Equal(t, "spoke-1", containers[0].NodeID)
 		assert.True(t, containers[0].IsRemote)
 		assert.False(t, containers[0].Capabilities.Inspect)
+		assert.True(t, containers[0].Capabilities.Logs)
 		assert.False(t, containers[0].Capabilities.Actions)
 	}
 }

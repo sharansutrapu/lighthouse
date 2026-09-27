@@ -617,12 +617,12 @@ func main() {
 		return func(c echo.Context) error {
 			token := c.Get("user").(*jwt.Token)
 			user := token.Claims.(*UserClaims)
-			var isAdmin bool
-			err := db.GormDB.Raw("SELECT is_admin FROM users WHERE id = ? AND is_active = 1", user.ID).Scan(&isAdmin).Error
-			if err != nil || !isAdmin {
+			var activeAdmin db.User
+			err := db.GormDB.Select("is_admin").Where("id = ? AND is_active = ?", user.ID, true).First(&activeAdmin).Error
+			if err != nil || !activeAdmin.IsAdmin {
 				return c.JSON(http.StatusForbidden, map[string]string{"error": "Admin access required"})
 			}
-			user.IsAdmin = isAdmin
+			user.IsAdmin = true
 			return next(c)
 		}
 	})
@@ -715,6 +715,7 @@ func main() {
 
 	// Serve Frontend (skipped in agent-only mode)
 	if serveFrontend {
+		e.Use(frontendCacheHeadersMiddleware())
 		e.Use(middleware.StaticWithConfig(middleware.StaticConfig{
 			Root:   "frontend/dist",
 			Browse: false,
@@ -2062,7 +2063,7 @@ func handleGETContainers(cli *client.Client) echo.HandlerFunc {
 					IsRemote: isRemote,
 					Capabilities: ContainerCapabilities{
 						Inspect: !isRemote,
-						Logs:    !isRemote,
+						Logs:    true,
 						Shell:   !isRemote,
 						Stats:   !isRemote,
 						Actions: !isRemote,
@@ -2395,7 +2396,10 @@ func handleGETImagesScans() echo.HandlerFunc {
 		}
 		var result db.ImageScanResult
 		if err := db.GormDB.Where("image = ?", imageName).Order("created_at desc").First(&result).Error; err != nil {
-			return c.JSON(http.StatusNotFound, map[string]string{"error": "No scan results found"})
+			if err == gorm.ErrRecordNotFound {
+				return c.NoContent(http.StatusNoContent)
+			}
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to query scan results"})
 		}
 		return c.JSON(http.StatusOK, result)
 	}
@@ -4606,6 +4610,50 @@ func handleGETWsLogsId(cli *client.Client) echo.HandlerFunc {
 			return wsAuthError(c, err)
 		}
 
+		if LighthouseMode == "hub" {
+			nodeID, containerName, imageName, remote := cluster.FindSpokeContainer(id)
+			if remote {
+				if inspectContainerExcluded(userClaims.IsAdmin, containerName, imageName) {
+					return c.NoContent(http.StatusNotFound)
+				}
+				if !userClaims.IsAdmin {
+					authorized := false
+					for _, pattern := range getAuthorizedPatterns(userClaims.ID) {
+						if pattern.MatchString(containerName) {
+							authorized = true
+							break
+						}
+					}
+					if !authorized {
+						return c.JSON(http.StatusForbidden, map[string]string{"error": "Access Denied: You do not have permission to view logs for this resource."})
+					}
+				}
+
+				ws, err := upgradeAuthenticatedWS(c)
+				if err != nil {
+					log.Printf("WebSocket upgrade failed: %v", err)
+					return nil
+				}
+				defer ws.Close()
+
+				streamID := generateSecureCode()
+				cluster.RegisterLogStream(streamID, ws)
+				defer cluster.UnregisterLogStream(streamID)
+				defer cluster.SendLogStop(nodeID, streamID)
+
+				if err := cluster.SendLogStart(nodeID, streamID, id); err != nil {
+					_ = ws.WriteMessage(websocket.TextMessage, []byte("\r\n[LightHouse] Remote spoke is not connected\r\n"))
+					return nil
+				}
+
+				for {
+					if _, _, err := ws.ReadMessage(); err != nil {
+						return nil
+					}
+				}
+			}
+		}
+
 		container, err := cli.ContainerInspect(context.Background(), id, client.ContainerInspectOptions{})
 		if err != nil {
 			return c.NoContent(http.StatusNotFound)
@@ -4701,7 +4749,7 @@ func handleGETWsShellId(cli *client.Client) echo.HandlerFunc {
 		}
 
 		var canShell bool
-		err = db.DB.QueryRow("SELECT can_shell FROM users WHERE id = ? AND is_active = 1", userClaims.ID).Scan(&canShell)
+		err = db.DB.QueryRow("SELECT can_shell FROM users WHERE id = ? AND is_active = ?", userClaims.ID, true).Scan(&canShell)
 		if err != nil || !canShell {
 			return c.JSON(http.StatusForbidden, map[string]string{"error": "Shell access is not permitted for this account."})
 		}

@@ -555,7 +555,7 @@ func TestHandleGETImagesScans_Table(t *testing.T) {
 		wantStatus int
 	}{
 		{name: "hostile: missing image param", image: "", wantStatus: http.StatusBadRequest},
-		{name: "infra: no scan result found", image: "never-scanned", wantStatus: http.StatusNotFound},
+		{name: "empty: no scan result found", image: "never-scanned", wantStatus: http.StatusNoContent},
 		{name: "happy path: scan result found", image: "alpine", seed: true, wantStatus: http.StatusOK},
 	}
 

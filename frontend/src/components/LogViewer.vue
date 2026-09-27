@@ -18,7 +18,7 @@
 
       <div class="header-right">
         <!-- Live Stats in Header -->
-        <div v-if="container.state === 'running'" class="header-stats-live">
+        <div v-if="container.state === 'running' && container.capabilities?.stats !== false" class="header-stats-live">
           <div class="h-stat">
             <span class="h-label">CPU</span>
             <span
@@ -37,6 +37,7 @@
             <span class="h-value">{{ stats.memory || "0B / 0B" }}</span>
           </div>
         </div>
+        <span v-else-if="container.is_remote" class="remote-stream-badge">Remote stream</span>
 
         <div class="log-search glass">
           <svg
@@ -166,6 +167,7 @@
                   JSON
                 </button>
                 <button
+                  v-if="container.capabilities?.logs !== false && !container.is_remote"
                   @click="downloadFullLogs"
                   class="modal-btn confirm full-width mt-2"
                 >
@@ -216,7 +218,7 @@
           </div>
         </div>
         <div v-else-if="logs.length > 0" class="history-end-msg">
-          Beginning of history reached ({{ totalLogs }} logs)
+          {{ container.is_remote ? "Remote stream · last 100 lines and live output" : `Beginning of history reached (${totalLogs} logs)` }}
         </div>
 
         <div v-for="(log, i) in displayLogs" :key="logLineKey(log, i)" class="log-line">
@@ -356,6 +358,10 @@ const scrollToBottom = () => {
 // currently-earliest visible line ("infinite scroll upward"), de-duplicating
 // against already-loaded lines and preserving scroll position afterward.
 const fetchHistoricalLogs = async () => {
+  if (props.container.is_remote) {
+    hasMoreHistory.value = false;
+    return;
+  }
   if (isLoadingHistory.value || !hasMoreHistory.value) return;
 
   const earliestLog = logs.value[0];
@@ -529,6 +535,7 @@ const downloadLogs = (format) => {
 // downloadFullLogs streams the container's entire log history from the
 // backend as a downloaded file, instead of only what's currently buffered client-side.
 const downloadFullLogs = async () => {
+  if (props.container.is_remote) return;
   try {
     const token = secureStorage.getItem("token");
     const res = await apiFetch(
@@ -555,6 +562,7 @@ const downloadFullLogs = async () => {
 // stats`'s own formula), since the API returns raw deltas rather than
 // pre-computed percentages. Auto-retries after 5s on any non-abort error.
 const fetchStats = async () => {
+  if (props.container.capabilities?.stats === false) return;
   if (statsController) statsController.abort();
   statsController = new AbortController();
   try {
@@ -626,6 +634,10 @@ const fetchStats = async () => {
 
 // fetchLogCount loads the total available log-line count, shown in the header.
 const fetchLogCount = async () => {
+  if (props.container.is_remote) {
+    hasMoreHistory.value = false;
+    return;
+  }
   try {
     const token = secureStorage.getItem("token");
     const res = await apiFetch(
@@ -676,8 +688,9 @@ const connect = () => {
 onMounted(() => {
   viewerMounted = true;
   connect();
-  fetchStats();
-  fetchLogCount();
+  if (props.container.capabilities?.stats !== false) fetchStats();
+  if (!props.container.is_remote) fetchLogCount();
+  else hasMoreHistory.value = false;
   nextTick(setupObserver);
 });
 onUnmounted(() => {
@@ -701,8 +714,9 @@ watch(
     logs.value = [];
     totalLogs.value = 0;
     connect();
-    fetchStats();
-    fetchLogCount();
+    if (props.container.capabilities?.stats !== false) fetchStats();
+    if (!props.container.is_remote) fetchLogCount();
+    else hasMoreHistory.value = false;
   },
 );
 </script>
@@ -725,6 +739,18 @@ watch(
   background: var(--glass-bg);
   border-bottom: 1px solid var(--border);
   backdrop-filter: blur(20px);
+}
+
+.remote-stream-badge {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid rgba(var(--accent-rgb), 0.3);
+  border-radius: 5px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 800;
+  text-transform: uppercase;
 }
 
 .header-left {

@@ -159,6 +159,15 @@ func TestHandleSpokeMessage(t *testing.T) {
 	handleSpokeMessage("node1", msg)
 	assert.Len(t, uiWs.writes, 1)
 
+	// remote log output
+	logWs := &mockWSConn{}
+	RegisterLogStream("logs1", logWs)
+	msg = []byte(`{"type":"log_output","data":{"stream_id":"logs1","data":"hello logs"}}`)
+	handleSpokeMessage("node1", msg)
+	assert.Len(t, logWs.writes, 1)
+	assert.Equal(t, []byte("hello logs"), logWs.writes[0])
+	UnregisterLogStream("logs1")
+
 	// invalid payload
 	handleSpokeMessage("node1", []byte(`invalid json`))
 }
@@ -177,6 +186,32 @@ func TestSendCommandToSpoke(t *testing.T) {
 	err = SendCommandToSpoke("node_cmd", "start", "c1")
 	assert.NoError(t, err)
 	assert.Len(t, mws.writes, 1)
+}
+
+func TestRemoteLogRouting(t *testing.T) {
+	mws := &mockWSConn{}
+	GlobalHub.Lock()
+	GlobalHub.Spokes["logs-node"] = mws
+	GlobalHub.SpokeContainers["logs-node"] = []map[string]interface{}{
+		{"ID": "abcdef1234567890", "Names": []interface{}{`/remote-api`}, "Image": "api:latest"},
+	}
+	GlobalHub.Unlock()
+	t.Cleanup(func() {
+		GlobalHub.Lock()
+		delete(GlobalHub.Spokes, "logs-node")
+		delete(GlobalHub.SpokeContainers, "logs-node")
+		GlobalHub.Unlock()
+	})
+
+	nodeID, name, image, found := FindSpokeContainer("abcdef123456")
+	assert.True(t, found)
+	assert.Equal(t, "logs-node", nodeID)
+	assert.Equal(t, "remote-api", name)
+	assert.Equal(t, "api:latest", image)
+
+	assert.NoError(t, SendLogStart(nodeID, "stream1", "abcdef123456"))
+	assert.NoError(t, SendLogStop(nodeID, "stream1"))
+	assert.Len(t, mws.writes, 2)
 }
 
 func TestSendExecInput(t *testing.T) {

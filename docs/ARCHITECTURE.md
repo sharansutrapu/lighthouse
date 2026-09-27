@@ -47,11 +47,10 @@ Administrators can inspect current node connection state through
 hub, connected spokes, recently disconnected spokes, last-seen timestamps,
 and workload counts.
 
-Remote spoke workloads are currently summary-only in the web UI. Container
-inventory and persisted metric samples flow to the hub, but remote inspect,
-logs, shell, actions, scans, and GitOps remain disabled until those protocols
-are fully routed through the hub. Standalone mode retains the existing
-single-host interface.
+Remote spoke workloads currently provide inventory, persisted metric samples,
+and live log streaming through the hub. Remote inspect, shell, actions, scans,
+and GitOps remain disabled until those protocols are fully routed through the
+hub. Standalone mode retains the existing single-host interface.
 
 ### 1. The Backend (Go)
 The backend is the core of the application. It handles:

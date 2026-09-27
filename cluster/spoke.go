@@ -3,12 +3,15 @@ package cluster
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/client"
 
 	"lighthouse/db"
@@ -21,6 +24,12 @@ var dialFunc = func(url string, requestHeader http.Header) (WSConn, error) {
 	return ws, err
 }
 var dockerClient *client.Client
+var spokeWriteMu sync.Mutex
+
+var activeLogStreams = struct {
+	sync.Mutex
+	cancels map[string]context.CancelFunc
+}{cancels: make(map[string]context.CancelFunc)}
 
 var syncInterval = 5 * time.Second
 var reconnectInterval = 5 * time.Second
@@ -44,7 +53,9 @@ func StartSpokeAgent(hubURL, hubToken, nodeID string, cli *client.Client) {
 			continue
 		}
 
+		spokeWriteMu.Lock()
 		spokeWs = ws
+		spokeWriteMu.Unlock()
 		log.Printf("[Spoke] Connected to Hub successfully")
 
 		// Start background syncer for container list
@@ -74,6 +85,12 @@ func StartSpokeAgent(hubURL, hubToken, nodeID string, cli *client.Client) {
 		}
 
 		cancel()
+		cancelAllLogStreams()
+		spokeWriteMu.Lock()
+		if spokeWs == ws {
+			spokeWs = nil
+		}
+		spokeWriteMu.Unlock()
 		ws.Close()
 		time.Sleep(reconnectInterval)
 	}
@@ -81,9 +98,6 @@ func StartSpokeAgent(hubURL, hubToken, nodeID string, cli *client.Client) {
 
 // PushToHub allows other packages (like collectStats) to push JSON messages
 func PushToHub(msgType string, data interface{}) {
-	if spokeWs == nil {
-		return
-	}
 	b, err := json.Marshal(data)
 	if err != nil {
 		return
@@ -101,6 +115,11 @@ func PushToHub(msgType string, data interface{}) {
 		"data": json.RawMessage(b),
 	}
 
+	spokeWriteMu.Lock()
+	defer spokeWriteMu.Unlock()
+	if spokeWs == nil {
+		return
+	}
 	err = spokeWs.WriteJSON(payload)
 	if err != nil {
 		log.Printf("[Spoke] Write error: %v", err)
@@ -116,6 +135,7 @@ func handleHubMessage(msg []byte) {
 		Action      string `json:"action,omitempty"`
 		ContainerID string `json:"container_id,omitempty"`
 		ExecID      string `json:"exec_id,omitempty"`
+		StreamID    string `json:"stream_id,omitempty"`
 		Data        []byte `json:"data,omitempty"`
 	}
 	if err := json.Unmarshal(msg, &payload); err != nil {
@@ -130,6 +150,100 @@ func handleHubMessage(msg []byte) {
 		go handleExecSession(payload.ExecID, payload.ContainerID)
 	} else if payload.Type == "exec_input" {
 		// TODO: write to exec stdin
+	} else if payload.Type == "log_start" {
+		go handleLogStream(payload.StreamID, payload.ContainerID)
+	} else if payload.Type == "log_stop" {
+		stopLogStream(payload.StreamID)
+	}
+}
+
+type logStreamMessage struct {
+	StreamID string `json:"stream_id"`
+	Data     string `json:"data,omitempty"`
+	Error    string `json:"error,omitempty"`
+}
+
+type hubLogWriter struct {
+	streamID string
+}
+
+func (w *hubLogWriter) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		PushToHub("log_output", logStreamMessage{StreamID: w.streamID, Data: string(p)})
+	}
+	return len(p), nil
+}
+
+func handleLogStream(streamID, containerID string) {
+	if streamID == "" || containerID == "" || dockerClient == nil {
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	activeLogStreams.Lock()
+	if previous := activeLogStreams.cancels[streamID]; previous != nil {
+		previous()
+	}
+	activeLogStreams.cancels[streamID] = cancel
+	activeLogStreams.Unlock()
+	defer func() {
+		cancel()
+		activeLogStreams.Lock()
+		delete(activeLogStreams.cancels, streamID)
+		activeLogStreams.Unlock()
+		PushToHub("log_end", logStreamMessage{StreamID: streamID})
+	}()
+
+	inspect, err := dockerClient.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
+	if err != nil {
+		PushToHub("log_error", logStreamMessage{StreamID: streamID, Error: "Container not found on spoke"})
+		return
+	}
+
+	out, err := dockerClient.ContainerLogs(ctx, containerID, client.ContainerLogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Follow:     true,
+		Tail:       "100",
+		Timestamps: true,
+	})
+	if err != nil {
+		PushToHub("log_error", logStreamMessage{StreamID: streamID, Error: "Failed to fetch container logs"})
+		return
+	}
+	defer out.Close()
+
+	writer := &hubLogWriter{streamID: streamID}
+	if inspect.Container.Config != nil && inspect.Container.Config.Tty {
+		_, err = io.Copy(writer, out)
+	} else {
+		_, err = stdcopy.StdCopy(writer, writer, out)
+	}
+	if err != nil && ctx.Err() == nil {
+		PushToHub("log_error", logStreamMessage{StreamID: streamID, Error: "Remote log stream ended unexpectedly"})
+	}
+}
+
+func stopLogStream(streamID string) {
+	activeLogStreams.Lock()
+	cancel := activeLogStreams.cancels[streamID]
+	delete(activeLogStreams.cancels, streamID)
+	activeLogStreams.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func cancelAllLogStreams() {
+	activeLogStreams.Lock()
+	cancels := make([]context.CancelFunc, 0, len(activeLogStreams.cancels))
+	for streamID, cancel := range activeLogStreams.cancels {
+		cancels = append(cancels, cancel)
+		delete(activeLogStreams.cancels, streamID)
+	}
+	activeLogStreams.Unlock()
+	for _, cancel := range cancels {
+		cancel()
 	}
 }
 

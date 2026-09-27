@@ -45,7 +45,7 @@ func handleGETNodes() echo.HandlerFunc {
 					Connected:      spoke.Connected,
 					LastSeen:       spoke.LastSeen,
 					ContainerCount: spoke.ContainerCount,
-					Capabilities:   []string{"list", "metrics"},
+					Capabilities:   []string{"list", "metrics", "logs"},
 				})
 			}
 		}

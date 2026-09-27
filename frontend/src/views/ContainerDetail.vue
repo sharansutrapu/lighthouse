@@ -124,7 +124,7 @@
         <AppIcon name="server" :size="20" />
         <div>
           <strong>Remote workload on {{ container.node_id }}</strong>
-          <p>This spoke currently provides fleet presence only. Inspection, logs, shell, actions, and scans will appear when the remote transport supports them.</p>
+          <p>Live logs are available from this spoke. Inspection, shell, actions, and scans remain unavailable until those remote transports are implemented.</p>
         </div>
       </section>
 

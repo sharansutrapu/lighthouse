@@ -40,8 +40,11 @@ type Hub struct {
 	SpokeContainers map[string][]map[string]interface{}
 	SpokeLastSeen   map[string]time.Time
 	ExecStreams     map[string]WSConn        // maps exec_id to UI websocket
+	LogStreams      map[string]WSConn        // maps stream_id to UI websocket
 	CommandResults  map[string]CommandResult // container_id -> most recent dispatched command outcome
 }
+
+var hubSpokeWriteMu sync.Mutex
 
 // NodeStatus is the read-only topology snapshot exposed by the Hub API.
 type NodeStatus struct {
@@ -64,6 +67,7 @@ var GlobalHub = &Hub{
 	SpokeContainers: make(map[string][]map[string]interface{}),
 	SpokeLastSeen:   make(map[string]time.Time),
 	ExecStreams:     make(map[string]WSConn),
+	LogStreams:      make(map[string]WSConn),
 	CommandResults:  make(map[string]CommandResult),
 }
 
@@ -158,6 +162,30 @@ func handleSpokeMessage(nodeID string, msg []byte) {
 			uiWs.WriteMessage(websocket.TextMessage, payload.Data)
 		}
 
+	case "log_output", "log_error", "log_end":
+		var output struct {
+			StreamID string `json:"stream_id"`
+			Data     string `json:"data"`
+			Error    string `json:"error,omitempty"`
+		}
+		if err := json.Unmarshal(payload.Data, &output); err != nil || output.StreamID == "" {
+			return
+		}
+		GlobalHub.RLock()
+		uiWs, ok := GlobalHub.LogStreams[output.StreamID]
+		GlobalHub.RUnlock()
+		if !ok {
+			return
+		}
+		if payload.Type == "log_output" {
+			_ = uiWs.WriteMessage(websocket.TextMessage, []byte(output.Data))
+		} else if payload.Type == "log_error" {
+			_ = uiWs.WriteMessage(websocket.TextMessage, []byte("\r\n[LightHouse] "+output.Error+"\r\n"))
+		} else {
+			_ = uiWs.Close()
+			UnregisterLogStream(output.StreamID)
+		}
+
 	case "command_result":
 		var result struct {
 			Action      string `json:"action"`
@@ -199,38 +227,94 @@ func SnapshotSpokes() []NodeStatus {
 	return nodes
 }
 
-// SendCommandToSpoke sends an action like start/stop/restart
-func SendCommandToSpoke(nodeID, action, containerID string) error {
+// FindSpokeContainer resolves a full or short Docker container ID to its
+// connected spoke and returns the fields required for authorization.
+func FindSpokeContainer(containerID string) (nodeID, name, image string, found bool) {
+	GlobalHub.RLock()
+	defer GlobalHub.RUnlock()
+	for currentNodeID, containers := range GlobalHub.SpokeContainers {
+		for _, container := range containers {
+			id, _ := container["ID"].(string)
+			if id == "" {
+				id, _ = container["Id"].(string)
+			}
+			if id == "" {
+				continue
+			}
+			if id != containerID && !strings.HasPrefix(id, containerID) && !strings.HasPrefix(containerID, id) {
+				continue
+			}
+			name = id
+			if names, ok := container["Names"].([]interface{}); ok && len(names) > 0 {
+				name, _ = names[0].(string)
+			}
+			name = strings.TrimPrefix(name, "/")
+			image, _ = container["Image"].(string)
+			return currentNodeID, name, image, true
+		}
+	}
+	return "", "", "", false
+}
+
+// RegisterLogStream binds a browser WebSocket to one remote stream ID.
+func RegisterLogStream(streamID string, ws WSConn) {
+	GlobalHub.Lock()
+	GlobalHub.LogStreams[streamID] = ws
+	GlobalHub.Unlock()
+}
+
+// UnregisterLogStream releases a browser WebSocket binding.
+func UnregisterLogStream(streamID string) {
+	GlobalHub.Lock()
+	delete(GlobalHub.LogStreams, streamID)
+	GlobalHub.Unlock()
+}
+
+func writeToSpoke(nodeID string, payload interface{}) error {
 	GlobalHub.RLock()
 	ws, ok := GlobalHub.Spokes[nodeID]
 	GlobalHub.RUnlock()
-
 	if !ok {
 		return fmt.Errorf("spoke not connected")
 	}
+	hubSpokeWriteMu.Lock()
+	defer hubSpokeWriteMu.Unlock()
+	return ws.WriteJSON(payload)
+}
 
+// SendLogStart asks a spoke to start following one container's logs.
+func SendLogStart(nodeID, streamID, containerID string) error {
+	return writeToSpoke(nodeID, map[string]string{
+		"type":         "log_start",
+		"stream_id":    streamID,
+		"container_id": containerID,
+	})
+}
+
+// SendLogStop cancels a previously started spoke log stream.
+func SendLogStop(nodeID, streamID string) error {
+	return writeToSpoke(nodeID, map[string]string{
+		"type":      "log_stop",
+		"stream_id": streamID,
+	})
+}
+
+// SendCommandToSpoke sends an action like start/stop/restart
+func SendCommandToSpoke(nodeID, action, containerID string) error {
 	payload := map[string]string{
 		"type":         "command",
 		"action":       action,
 		"container_id": containerID,
 	}
-	return ws.WriteJSON(payload)
+	return writeToSpoke(nodeID, payload)
 }
 
 // SendExecInput sends terminal input to a Spoke container
 func SendExecInput(nodeID, execID string, input []byte) error {
-	GlobalHub.RLock()
-	ws, ok := GlobalHub.Spokes[nodeID]
-	GlobalHub.RUnlock()
-
-	if !ok {
-		return fmt.Errorf("spoke not connected")
-	}
-
 	payload := map[string]interface{}{
 		"type":    "exec_input",
 		"exec_id": execID,
 		"data":    input,
 	}
-	return ws.WriteJSON(payload)
+	return writeToSpoke(nodeID, payload)
 }

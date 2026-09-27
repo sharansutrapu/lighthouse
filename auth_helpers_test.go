@@ -485,6 +485,34 @@ func TestClientAccessMiddleware(t *testing.T) {
 	}
 }
 
+func TestFrontendCacheHeadersMiddleware(t *testing.T) {
+	e := echo.New()
+	handler := frontendCacheHeadersMiddleware()(func(c echo.Context) error {
+		return c.NoContent(http.StatusOK)
+	})
+
+	tests := []struct {
+		path      string
+		wantCache string
+	}{
+		{path: "/dashboard", wantCache: "no-cache, no-store, must-revalidate"},
+		{path: "/assets/app-hash.css", wantCache: "public, max-age=31536000, immutable"},
+		{path: "/api/config", wantCache: ""},
+	}
+
+	for _, tc := range tests {
+		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		if err := handler(c); err != nil {
+			t.Fatalf("middleware returned error for %s: %v", tc.path, err)
+		}
+		if got := rec.Header().Get("Cache-Control"); got != tc.wantCache {
+			t.Errorf("Cache-Control for %s = %q, want %q", tc.path, got, tc.wantCache)
+		}
+	}
+}
+
 func TestLoginRateLimiter(t *testing.T) {
 	rl := loginRateLimiter{}
 	if rl.isLimited("test", 2, time.Second) {

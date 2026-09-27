@@ -509,6 +509,7 @@ const topConsumers = computed(() => {
 // vulnerableContainers surfaces the top 3 running containers whose most
 // recent scan (from vulnScanData) found CRITICAL or HIGH findings.
 const vulnScanData = ref({});
+const queriedScanImages = new Set();
 const vulnerableContainers = computed(() => {
   const list = [];
   for (const c of containers.value) {
@@ -545,7 +546,9 @@ const parseScanResults = (data) => {
 // container's image (best-effort; a missing/failed scan is silently skipped).
 const loadScans = async () => {
   const token = secureStorage.getItem('token');
-  const promises = containers.value.filter((c) => c.capabilities?.scan !== false).map(async (c) => {
+  const candidates = containers.value.filter((c) => c.capabilities?.scan !== false && !queriedScanImages.has(c.image));
+  const promises = candidates.map(async (c) => {
+    queriedScanImages.add(c.image);
     try {
       const res = await apiFetch(`/api/images/scans?image=${encodeURIComponent(c.image)}`, {
         headers: { Authorization: `Bearer ${token}` }
@@ -554,7 +557,10 @@ const loadScans = async () => {
         const text = await res.text();
         if (text && text.trim() !== '') {
           const wrapper = JSON.parse(text);
-          vulnScanData.value[c.id] = parseScanResults(JSON.parse(wrapper.result));
+          const parsed = parseScanResults(JSON.parse(wrapper.result));
+          for (const matchingContainer of containers.value.filter((item) => item.image === c.image)) {
+            vulnScanData.value[matchingContainer.id] = parsed;
+          }
         }
       }
     } catch(e) {}
@@ -564,7 +570,7 @@ const loadScans = async () => {
 
 // Load vulnerability scan data once, the first time the container list becomes non-empty.
 watch(containers, (newVal) => {
-  if (newVal && newVal.length > 0 && Object.keys(vulnScanData.value).length === 0) {
+  if (newVal && newVal.length > 0) {
     loadScans();
   }
 }, { immediate: true });

@@ -521,13 +521,13 @@ func clampStaffActionPermissions(canStart, canStop, canRestart, canDelete, canSh
 func staffContainerActionQuery(action string) string {
 	switch action {
 	case "start":
-		return "SELECT can_start FROM users WHERE id = ? AND is_active = 1"
+		return "SELECT can_start FROM users WHERE id = ? AND is_active = ?"
 	case "stop":
-		return "SELECT can_stop FROM users WHERE id = ? AND is_active = 1"
+		return "SELECT can_stop FROM users WHERE id = ? AND is_active = ?"
 	case "restart":
-		return "SELECT can_restart FROM users WHERE id = ? AND is_active = 1"
+		return "SELECT can_restart FROM users WHERE id = ? AND is_active = ?"
 	case "remove":
-		return "SELECT can_delete FROM users WHERE id = ? AND is_active = 1"
+		return "SELECT can_delete FROM users WHERE id = ? AND is_active = ?"
 	default:
 		return ""
 	}
@@ -542,7 +542,7 @@ func staffHasContainerActionPermission(action string, userID int) (bool, error) 
 	}
 
 	var can bool
-	err := db.DB.QueryRow(query, userID).Scan(&can)
+	err := db.DB.QueryRow(query, userID, true).Scan(&can)
 	if err != nil {
 		return false, err
 	}
@@ -782,6 +782,25 @@ func securityHeadersMiddleware() echo.MiddlewareFunc {
 			h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
 			if c.Scheme() == "https" {
 				h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+			}
+			return next(c)
+		}
+	}
+}
+
+// frontendCacheHeadersMiddleware prevents a cached SPA shell from referring
+// to hashed bundles that were removed by a later deployment. Hashed assets
+// are immutable; HTML routes must be revalidated on every navigation.
+func frontendCacheHeadersMiddleware() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			path := c.Request().URL.Path
+			if strings.HasPrefix(path, "/assets/") {
+				c.Response().Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			} else if !strings.HasPrefix(path, "/api") && !strings.HasPrefix(path, "/ws") {
+				c.Response().Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+				c.Response().Header().Set("Pragma", "no-cache")
+				c.Response().Header().Set("Expires", "0")
 			}
 			return next(c)
 		}
