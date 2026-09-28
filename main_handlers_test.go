@@ -1196,6 +1196,27 @@ func TestHandleGETApiConfig(t *testing.T) {
 	assert.Equal(t, "hub-1", response["node_id"])
 }
 
+func TestFrontendRoutesDoNotRewriteMissingAssets(t *testing.T) {
+	e := echo.New()
+	registerFrontendRoutes(e)
+
+	for _, requestPath := range []string{"/assets/removed-build.css", "/missing-icon.svg", "/api/missing"} {
+		req := httptest.NewRequest(http.MethodGet, requestPath, nil)
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusNotFound, rec.Code, requestPath)
+		assert.NotContains(t, rec.Body.String(), "<html", requestPath)
+		assert.Equal(t, "no-cache, no-store, must-revalidate", rec.Header().Get("Cache-Control"), requestPath)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/containers/example", nil)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `<div id="app"></div>`)
+	assert.Equal(t, "no-cache, no-store, must-revalidate", rec.Header().Get("Cache-Control"))
+}
+
 func TestExtractContainers(t *testing.T) {
 	input := []map[string]interface{}{
 		{"Id": "123", "Names": []interface{}{"/test"}},

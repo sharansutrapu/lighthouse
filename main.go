@@ -715,15 +715,7 @@ func main() {
 
 	// Serve Frontend (skipped in agent-only mode)
 	if serveFrontend {
-		e.Use(frontendCacheHeadersMiddleware())
-		e.Use(middleware.StaticWithConfig(middleware.StaticConfig{
-			Root:   "frontend/dist",
-			Browse: false,
-			HTML5:  true,
-			Skipper: func(c echo.Context) bool {
-				return strings.HasPrefix(c.Path(), "/api") || strings.HasPrefix(c.Path(), "/ws")
-			},
-		}))
+		registerFrontendRoutes(e)
 	}
 
 	port := os.Getenv("PORT")
@@ -736,6 +728,26 @@ func main() {
 
 	log.Printf("LightHouse %s listening on %s\n", Version, port)
 	e.Logger.Fatal(e.Start(port))
+}
+
+func registerFrontendRoutes(e *echo.Echo) {
+	e.Use(frontendCacheHeadersMiddleware())
+	e.Use(middleware.StaticWithConfig(middleware.StaticConfig{
+		Root:   "frontend/dist",
+		Browse: false,
+		HTML5:  false,
+		Skipper: func(c echo.Context) bool {
+			return strings.HasPrefix(c.Path(), "/api") || strings.HasPrefix(c.Path(), "/ws")
+		},
+	}))
+	e.GET("/*", func(c echo.Context) error {
+		requestPath := c.Request().URL.Path
+		if strings.HasPrefix(requestPath, "/api") || strings.HasPrefix(requestPath, "/ws") || filepath.Ext(requestPath) != "" {
+			c.Response().Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			return c.NoContent(http.StatusNotFound)
+		}
+		return c.File("frontend/dist/index.html")
+	})
 }
 
 // extractContainers converts the Docker client's typed container list into the
@@ -4832,9 +4844,9 @@ func handleGETWsShellId(cli *client.Client) echo.HandlerFunc {
 			return c.JSON(http.StatusForbidden, map[string]string{"error": "Shell access is disabled on this server."})
 		}
 
-		var canShell bool
-		err = db.DB.QueryRow("SELECT can_shell FROM users WHERE id = ? AND is_active = ?", userClaims.ID, true).Scan(&canShell)
-		if err != nil || !canShell {
+		var shellUser db.User
+		err = db.GormDB.Select("can_shell").Where("id = ? AND is_active = ?", userClaims.ID, true).First(&shellUser).Error
+		if err != nil || !shellUser.CanShell {
 			return c.JSON(http.StatusForbidden, map[string]string{"error": "Shell access is not permitted for this account."})
 		}
 
