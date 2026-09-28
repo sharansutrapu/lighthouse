@@ -61,7 +61,7 @@ const router = useRouter();
 const { containers, fetchContainers } = useContainers({ autoPoll: false });
 
 const terminalHost = ref(null);
-const selectedShell = ref("/bin/bash");
+const selectedShell = ref("/bin/sh");
 const isConnecting = ref(false);
 const isConnected = ref(false);
 const sessionEnded = ref(false);

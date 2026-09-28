@@ -41,7 +41,7 @@ func (w *wireWSConn) WriteJSON(v interface{}) error {
 	return nil
 }
 func (w *wireWSConn) WriteMessage(messageType int, data []byte) error { return nil }
-func (w *wireWSConn) Close() error                                   { return nil }
+func (w *wireWSConn) Close() error                                    { return nil }
 
 func setupCommandResultTestDB(t *testing.T) {
 	t.Helper()
@@ -235,10 +235,29 @@ func TestHandleCommand_EndToEnd_ScanReportsResultToHub(t *testing.T) {
 			handleCommand("scan", containerID)
 			time.Sleep(100 * time.Millisecond) // scan runs in its own goroutine
 
-			if len(ws.sent) != 1 {
-				t.Fatalf("expected exactly 1 command_result message for scan, got %d", len(ws.sent))
+			var commandMessages [][]byte
+			var scanMessages [][]byte
+			for _, message := range ws.sent {
+				var envelope struct {
+					Type string `json:"type"`
+				}
+				if err := json.Unmarshal(message, &envelope); err != nil {
+					continue
+				}
+				switch envelope.Type {
+				case "command_result":
+					commandMessages = append(commandMessages, message)
+				case "scan_result":
+					scanMessages = append(scanMessages, message)
+				}
 			}
-			handleSpokeMessage("test-node", ws.sent[0])
+			if len(commandMessages) != 1 {
+				t.Fatalf("expected exactly 1 command_result message for scan, got %d", len(commandMessages))
+			}
+			if tc.wantStatus == "success" {
+				assert.Len(t, scanMessages, 1, "a successful spoke scan should return its result to the hub")
+			}
+			handleSpokeMessage("test-node", commandMessages[0])
 
 			GlobalHub.RLock()
 			result, ok := GlobalHub.CommandResults[containerID]

@@ -27,8 +27,8 @@ graph TD
     HubFE -->|API/WebSockets| HubBE[Hub Backend]
     HubBE -->|PostgreSQL| HubDB[(PostgreSQL)]
     
-    Spoke1[Spoke Node 1] -->|WebSocket WSS| HubBE
-    Spoke2[Spoke Node 2] -->|WebSocket WSS| HubBE
+    Spoke1[Spoke Node 1] <-->|Persistent multiplexed WSS| HubBE
+    Spoke2[Spoke Node 2] <-->|Persistent multiplexed WSS| HubBE
     
     Spoke1 -->|Unix Socket| DS1[Docker Socket]
     Spoke2 -->|Unix Socket| DS2[Docker Socket]
@@ -47,10 +47,37 @@ Administrators can inspect current node connection state through
 hub, connected spokes, recently disconnected spokes, last-seen timestamps,
 and workload counts.
 
-Remote spoke workloads currently provide inventory, persisted metric samples,
-and live log streaming through the hub. Remote inspect, shell, actions, scans,
-and GitOps remain disabled until those protocols are fully routed through the
-hub. Standalone mode retains the existing single-host interface.
+Remote spoke workloads provide inventory, inspection, live logs, interactive
+shells, lifecycle actions, and vulnerability scans through the hub. Image,
+volume, and network lists are aggregated across connected nodes; each resource
+retains its owning `node_id`, and destructive operations are sent only to the
+selected node. Per-container live-stat charts remain local-only, while metric
+samples pushed by spokes are available to hub-level history and health views.
+GitOps execution remains local to the hub. Standalone mode retains the existing
+single-host interface.
+
+#### Control protocol
+
+Each spoke opens one outbound authenticated WebSocket to the hub. The
+connection multiplexes inventory and metric events, correlated request/response
+RPC, log streams, and terminal streams:
+
+- RPC messages carry a generated `request_id`; the HTTP request succeeds only
+    after the spoke reports Docker's result or fails on timeout/disconnect.
+- Log and terminal messages carry independent `stream_id` or `exec_id` values,
+    allowing concurrent browser sessions over the same spoke connection.
+- Terminal input received while Docker creates the exec attachment is buffered,
+    and disconnecting either side cancels the Docker stream.
+- Upgraded spokes announce protocol capabilities on connect. During a hub-first
+    rollout, legacy spokes remain available for inventory, metrics, and logs;
+    RPC, shell, and remote resource controls appear only after that spoke is
+    upgraded.
+- Spokes authenticate with `Authorization: Bearer <HUB_TOKEN>`. Query-token
+    authentication is retained only for compatibility during rolling upgrades.
+
+Upgrade the hub first, then upgrade each spoke. The newer hub accepts the
+previous spoke handshake while spokes are replaced; spoke-first upgrades are
+not guaranteed to be understood by an older hub.
 
 ### 1. The Backend (Go)
 The backend is the core of the application. It handles:

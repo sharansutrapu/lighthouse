@@ -510,8 +510,6 @@ func TestHandlePOSTContainersIdScan_Table(t *testing.T) {
 
 // TestHandlePOSTContainersIdScan_HubModeSpokeDispatch covers the hub-mode
 // branch that dispatches a scan to a Spoke node instead of scanning locally.
-// SendCommandToSpoke's return error is intentionally ignored by the handler,
-// so this always reports 200 even though no spoke is actually connected.
 func TestHandlePOSTContainersIdScan_HubModeSpokeDispatch(t *testing.T) {
 	assert.NoError(t, db.InitDB(":memory:"))
 	origMode := LighthouseMode
@@ -519,10 +517,14 @@ func TestHandlePOSTContainersIdScan_HubModeSpokeDispatch(t *testing.T) {
 	t.Cleanup(func() { LighthouseMode = origMode })
 
 	cluster.GlobalHub.Lock()
+	cluster.GlobalHub.Spokes["node1"] = &mockNodeWSConn{}
+	cluster.GlobalHub.SpokeCapabilities["node1"] = map[string]bool{"scan": true}
 	cluster.GlobalHub.SpokeContainers["node1"] = []map[string]interface{}{{"Id": "spoke-c1"}}
 	cluster.GlobalHub.Unlock()
 	t.Cleanup(func() {
 		cluster.GlobalHub.Lock()
+		delete(cluster.GlobalHub.Spokes, "node1")
+		delete(cluster.GlobalHub.SpokeCapabilities, "node1")
 		delete(cluster.GlobalHub.SpokeContainers, "node1")
 		cluster.GlobalHub.Unlock()
 	})

@@ -162,7 +162,7 @@
                   class="icon-btn shell"
                   type="button"
                   aria-label="Open container shell"
-                  data-tooltip="Shell (bash)"
+                  data-tooltip="Open shell"
                 >
                   <AppIcon name="terminal" :size="16" :stroke-width="2.25" />
                 </button>

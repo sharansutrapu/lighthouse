@@ -3,10 +3,12 @@ package cluster
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,6 +32,25 @@ var activeLogStreams = struct {
 	sync.Mutex
 	cancels map[string]context.CancelFunc
 }{cancels: make(map[string]context.CancelFunc)}
+
+type execConnection interface {
+	Write([]byte) (int, error)
+	Close() error
+}
+
+type activeExecSession struct {
+	conn   execConnection
+	cancel context.CancelFunc
+}
+
+var activeExecSessions = struct {
+	sync.Mutex
+	sessions map[string]activeExecSession
+	pending  map[string][][]byte
+}{
+	sessions: make(map[string]activeExecSession),
+	pending:  make(map[string][][]byte),
+}
 
 var syncInterval = 5 * time.Second
 var reconnectInterval = 5 * time.Second
@@ -57,6 +78,12 @@ func StartSpokeAgent(hubURL, hubToken, nodeID string, cli *client.Client) {
 		spokeWs = ws
 		spokeWriteMu.Unlock()
 		log.Printf("[Spoke] Connected to Hub successfully")
+		PushToHub("capabilities", map[string]interface{}{
+			"protocol_version": 1,
+			"capabilities": []string{
+				"list", "metrics", "logs", "inspect", "actions", "scan", "shell", "resources",
+			},
+		})
 
 		// Start background syncer for container list
 		ctx, cancel := context.WithCancel(context.Background())
@@ -86,6 +113,7 @@ func StartSpokeAgent(hubURL, hubToken, nodeID string, cli *client.Client) {
 
 		cancel()
 		cancelAllLogStreams()
+		cancelAllExecSessions()
 		spokeWriteMu.Lock()
 		if spokeWs == ws {
 			spokeWs = nil
@@ -131,12 +159,14 @@ func PushToHub(msgType string, data interface{}) {
 // on its "type" field.
 func handleHubMessage(msg []byte) {
 	var payload struct {
-		Type        string `json:"type"`
-		Action      string `json:"action,omitempty"`
-		ContainerID string `json:"container_id,omitempty"`
-		ExecID      string `json:"exec_id,omitempty"`
-		StreamID    string `json:"stream_id,omitempty"`
-		Data        []byte `json:"data,omitempty"`
+		Type        string          `json:"type"`
+		Action      string          `json:"action,omitempty"`
+		ContainerID string          `json:"container_id,omitempty"`
+		ExecID      string          `json:"exec_id,omitempty"`
+		StreamID    string          `json:"stream_id,omitempty"`
+		RequestID   string          `json:"request_id,omitempty"`
+		Shell       string          `json:"shell,omitempty"`
+		Data        json.RawMessage `json:"data,omitempty"`
 	}
 	if err := json.Unmarshal(msg, &payload); err != nil {
 		return
@@ -145,15 +175,174 @@ func handleHubMessage(msg []byte) {
 	if payload.Type == "command" {
 		handleCommand(payload.Action, payload.ContainerID)
 	} else if payload.Type == "exec_start" {
-		// Start a terminal session and stream output
-		// Note: Simplified for demonstration; proper terminal multiplexing requires full attach/exec flow.
-		go handleExecSession(payload.ExecID, payload.ContainerID)
+		go handleExecSession(payload.ExecID, payload.ContainerID, payload.Shell)
 	} else if payload.Type == "exec_input" {
-		// TODO: write to exec stdin
+		var input []byte
+		if err := json.Unmarshal(payload.Data, &input); err == nil {
+			writeExecInput(payload.ExecID, input)
+		}
+	} else if payload.Type == "exec_stop" {
+		stopExecSession(payload.ExecID)
 	} else if payload.Type == "log_start" {
 		go handleLogStream(payload.StreamID, payload.ContainerID)
 	} else if payload.Type == "log_stop" {
 		stopLogStream(payload.StreamID)
+	} else if payload.Type == "request" {
+		go handleRPCRequest(payload.RequestID, payload.Action, payload.Data)
+	}
+}
+
+type rpcResponse struct {
+	RequestID string          `json:"request_id"`
+	Data      json.RawMessage `json:"data,omitempty"`
+	Error     string          `json:"error,omitempty"`
+}
+
+func respondToHub(requestID string, data interface{}, responseErr error) {
+	response := rpcResponse{RequestID: requestID}
+	if responseErr != nil {
+		response.Error = responseErr.Error()
+	} else if data != nil {
+		response.Data, _ = json.Marshal(data)
+	}
+	PushToHub("response", response)
+}
+
+func handleRPCRequest(requestID, action string, data json.RawMessage) {
+	if requestID == "" || dockerClient == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	switch action {
+	case "container_inspect":
+		var request struct {
+			ContainerID string `json:"container_id"`
+		}
+		if err := json.Unmarshal(data, &request); err != nil {
+			respondToHub(requestID, nil, err)
+			return
+		}
+		result, err := dockerClient.ContainerInspect(ctx, request.ContainerID, client.ContainerInspectOptions{Size: true})
+		respondToHub(requestID, result, err)
+	case "container_action":
+		var request struct {
+			ContainerID string `json:"container_id"`
+			Action      string `json:"action"`
+		}
+		if err := json.Unmarshal(data, &request); err != nil {
+			respondToHub(requestID, nil, err)
+			return
+		}
+		respondToHub(requestID, map[string]string{"status": "success"}, executeContainerAction(ctx, request.Action, request.ContainerID))
+	case "list_images":
+		result, err := dockerClient.ImageList(ctx, client.ImageListOptions{All: false})
+		respondToHub(requestID, result, err)
+	case "list_volumes":
+		result, err := dockerClient.VolumeList(ctx, client.VolumeListOptions{})
+		respondToHub(requestID, result, err)
+	case "list_networks":
+		result, err := dockerClient.NetworkList(ctx, client.NetworkListOptions{})
+		respondToHub(requestID, result, err)
+	case "image_remove":
+		var request struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(data, &request); err != nil {
+			respondToHub(requestID, nil, err)
+			return
+		}
+		result, err := dockerClient.ImageRemove(ctx, request.ID, client.ImageRemoveOptions{Force: true, PruneChildren: true})
+		respondToHub(requestID, result, err)
+	case "volume_remove":
+		var request struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(data, &request); err != nil {
+			respondToHub(requestID, nil, err)
+			return
+		}
+		_, err := dockerClient.VolumeRemove(ctx, request.Name, client.VolumeRemoveOptions{Force: true})
+		respondToHub(requestID, map[string]string{"message": "Volume deleted successfully"}, err)
+	case "network_remove":
+		var request struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(data, &request); err != nil {
+			respondToHub(requestID, nil, err)
+			return
+		}
+		_, err := dockerClient.NetworkRemove(ctx, request.ID, client.NetworkRemoveOptions{})
+		respondToHub(requestID, map[string]string{"message": "Network deleted successfully"}, err)
+	case "image_prune":
+		var request struct {
+			AllUnused        bool `json:"all_unused"`
+			RemoveContainers bool `json:"remove_containers"`
+		}
+		_ = json.Unmarshal(data, &request)
+		warning := pruneContainersIfRequested(ctx, request.RemoveContainers)
+		filters := make(client.Filters)
+		if request.AllUnused {
+			filters.Add("dangling", "false")
+		} else {
+			filters.Add("dangling", "true")
+		}
+		result, err := dockerClient.ImagePrune(ctx, client.ImagePruneOptions{Filters: filters})
+		respondToHub(requestID, map[string]interface{}{"Report": result, "Warning": warning}, err)
+	case "volume_prune":
+		var request struct {
+			RemoveContainers bool `json:"remove_containers"`
+		}
+		_ = json.Unmarshal(data, &request)
+		warning := pruneContainersIfRequested(ctx, request.RemoveContainers)
+		result, err := dockerClient.VolumePrune(ctx, client.VolumePruneOptions{})
+		respondToHub(requestID, map[string]interface{}{"Report": result, "Warning": warning}, err)
+	case "network_prune":
+		var request struct {
+			RemoveContainers bool `json:"remove_containers"`
+		}
+		_ = json.Unmarshal(data, &request)
+		warning := pruneContainersIfRequested(ctx, request.RemoveContainers)
+		result, err := dockerClient.NetworkPrune(ctx, client.NetworkPruneOptions{})
+		respondToHub(requestID, map[string]interface{}{"Report": result, "Warning": warning}, err)
+	default:
+		respondToHub(requestID, nil, fmt.Errorf("unsupported remote action: %s", action))
+	}
+}
+
+func pruneContainersIfRequested(ctx context.Context, removeContainers bool) string {
+	if removeContainers {
+		_, _ = dockerClient.ContainerPrune(ctx, client.ContainerPruneOptions{})
+		return ""
+	}
+	filters := make(client.Filters)
+	filters.Add("status", "exited", "created")
+	stopped, err := dockerClient.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: filters})
+	if err == nil && len(stopped.Items) > 0 {
+		return "Stopped containers detected. Some resources may not have been pruned."
+	}
+	return ""
+}
+
+func executeContainerAction(ctx context.Context, action, containerID string) error {
+	switch action {
+	case "start":
+		_, err := dockerClient.ContainerStart(ctx, containerID, client.ContainerStartOptions{})
+		return err
+	case "stop":
+		timeout := 60
+		_, err := dockerClient.ContainerStop(ctx, containerID, client.ContainerStopOptions{Timeout: &timeout})
+		return err
+	case "restart":
+		timeout := 60
+		_, err := dockerClient.ContainerRestart(ctx, containerID, client.ContainerRestartOptions{Timeout: &timeout})
+		return err
+	case "remove":
+		_, err := dockerClient.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true})
+		return err
+	default:
+		return fmt.Errorf("unsupported container action: %s", action)
 	}
 }
 
@@ -290,6 +479,13 @@ func handleCommand(action, containerID string) {
 				Image:  imageName,
 				Result: string(b),
 			})
+			containerName := strings.TrimPrefix(c.Container.Name, "/")
+			PushToHub("scan_result", map[string]interface{}{
+				"container_id":   containerID,
+				"container_name": containerName,
+				"image":          imageName,
+				"result":         json.RawMessage(b),
+			})
 			log.Printf("[Spoke] Scan complete for %s", imageName)
 			PushToHub("command_result", commandResult{Action: "scan", ContainerID: containerID, Status: "success"})
 		}()
@@ -317,9 +513,124 @@ type commandResult struct {
 	Error       string `json:"error,omitempty"`
 }
 
-// handleExecSession would stream an interactive shell session for a
-// Hub-initiated exec request. Not yet implemented — shell access currently
-// only works against containers on the node the UI talks to directly.
-func handleExecSession(execID, containerID string) {
-	log.Printf("[Spoke] Exec session %s for container %s", execID, containerID)
+type execStreamMessage struct {
+	ExecID string `json:"exec_id"`
+	Data   string `json:"data,omitempty"`
+	Error  string `json:"error,omitempty"`
+}
+
+func handleExecSession(execID, containerID, shell string) {
+	if execID == "" {
+		return
+	}
+	if containerID == "" || dockerClient == nil {
+		failExecSession(execID, "Remote terminal is unavailable")
+		return
+	}
+	allowedShells := map[string]bool{"/bin/sh": true, "/bin/bash": true, "/bin/ash": true}
+	if !allowedShells[shell] {
+		failExecSession(execID, "Invalid shell")
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	execResult, err := dockerClient.ExecCreate(ctx, containerID, client.ExecCreateOptions{
+		AttachStdin:  true,
+		AttachStdout: true,
+		AttachStderr: true,
+		TTY:          true,
+		Cmd:          []string{shell},
+	})
+	if err != nil {
+		cancel()
+		failExecSession(execID, "Failed to create terminal session")
+		return
+	}
+	attached, err := dockerClient.ExecAttach(ctx, execResult.ID, client.ExecAttachOptions{TTY: true})
+	if err != nil {
+		cancel()
+		failExecSession(execID, "Failed to attach terminal session")
+		return
+	}
+
+	activeExecSessions.Lock()
+	if previous, ok := activeExecSessions.sessions[execID]; ok {
+		previous.cancel()
+		_ = previous.conn.Close()
+	}
+	activeExecSessions.sessions[execID] = activeExecSession{conn: attached.Conn, cancel: cancel}
+	for _, input := range activeExecSessions.pending[execID] {
+		_, _ = attached.Conn.Write(input)
+	}
+	delete(activeExecSessions.pending, execID)
+	activeExecSessions.Unlock()
+
+	defer func() {
+		cancel()
+		attached.Close()
+		activeExecSessions.Lock()
+		delete(activeExecSessions.sessions, execID)
+		activeExecSessions.Unlock()
+		PushToHub("exec_end", execStreamMessage{ExecID: execID})
+	}()
+
+	buffer := make([]byte, 4096)
+	for {
+		count, readErr := attached.Reader.Read(buffer)
+		if count > 0 {
+			PushToHub("exec_output", execStreamMessage{ExecID: execID, Data: string(buffer[:count])})
+		}
+		if readErr != nil {
+			if readErr != io.EOF && ctx.Err() == nil {
+				PushToHub("exec_error", execStreamMessage{ExecID: execID, Error: "Remote terminal session ended unexpectedly"})
+			}
+			return
+		}
+	}
+}
+
+func failExecSession(execID, message string) {
+	activeExecSessions.Lock()
+	delete(activeExecSessions.pending, execID)
+	activeExecSessions.Unlock()
+	PushToHub("exec_error", execStreamMessage{ExecID: execID, Error: message})
+	PushToHub("exec_end", execStreamMessage{ExecID: execID})
+}
+
+func writeExecInput(execID string, input []byte) {
+	activeExecSessions.Lock()
+	session, ok := activeExecSessions.sessions[execID]
+	if ok {
+		_, _ = session.conn.Write(input)
+	} else {
+		activeExecSessions.pending[execID] = append(activeExecSessions.pending[execID], append([]byte(nil), input...))
+	}
+	activeExecSessions.Unlock()
+}
+
+func stopExecSession(execID string) {
+	activeExecSessions.Lock()
+	session, ok := activeExecSessions.sessions[execID]
+	delete(activeExecSessions.sessions, execID)
+	delete(activeExecSessions.pending, execID)
+	activeExecSessions.Unlock()
+	if ok {
+		session.cancel()
+		_ = session.conn.Close()
+	}
+}
+
+func cancelAllExecSessions() {
+	activeExecSessions.Lock()
+	sessions := make([]activeExecSession, 0, len(activeExecSessions.sessions))
+	for execID, session := range activeExecSessions.sessions {
+		sessions = append(sessions, session)
+		delete(activeExecSessions.sessions, execID)
+	}
+	clear(activeExecSessions.pending)
+	activeExecSessions.Unlock()
+	for _, session := range sessions {
+		session.cancel()
+		_ = session.conn.Close()
+	}
 }

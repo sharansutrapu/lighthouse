@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"net/http"
+	"time"
+
+	"lighthouse/cluster"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/labstack/echo/v4"
@@ -19,6 +22,9 @@ func RegisterNetworkRoutes(r *echo.Group, cli *client.Client) {
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		}
+		if LighthouseMode == "hub" {
+			return c.JSON(http.StatusOK, aggregateClusterResources(c.Request().Context(), "list_networks", networks))
+		}
 		return c.JSON(http.StatusOK, networks)
 	})
 
@@ -31,6 +37,20 @@ func RegisterNetworkRoutes(r *echo.Group, cli *client.Client) {
 		}
 
 		id := c.Param("id")
+		nodeID := c.QueryParam("node_id")
+		if LighthouseMode == "hub" && nodeID != "" && nodeID != NodeID {
+			if !cluster.SpokeSupports(nodeID, "resources") {
+				return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "Spoke upgrade required for remote resource management"})
+			}
+			ctx, cancel := context.WithTimeout(c.Request().Context(), 90*time.Second)
+			defer cancel()
+			data, err := cluster.CallSpoke(ctx, nodeID, "network_remove", map[string]string{"id": id})
+			if err != nil {
+				return c.JSON(http.StatusBadGateway, map[string]string{"error": err.Error()})
+			}
+			logAudit(userClaims.ID, userClaims.Username, "DELETE", "Network:"+id, "Success", "Deleted network on "+nodeID)
+			return c.JSONBlob(http.StatusOK, data)
+		}
 		_, err := cli.NetworkRemove(context.Background(), id, client.NetworkRemoveOptions{})
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -53,6 +73,21 @@ func RegisterNetworkRoutes(r *echo.Group, cli *client.Client) {
 			RemoveContainers bool `json:"remove_containers"`
 		}
 		_ = c.Bind(&req)
+
+		nodeID := c.QueryParam("node_id")
+		if LighthouseMode == "hub" && nodeID != "" && nodeID != NodeID {
+			if !cluster.SpokeSupports(nodeID, "resources") {
+				return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "Spoke upgrade required for remote resource management"})
+			}
+			ctx, cancel := context.WithTimeout(c.Request().Context(), 90*time.Second)
+			defer cancel()
+			data, err := cluster.CallSpoke(ctx, nodeID, "network_prune", req)
+			if err != nil {
+				return c.JSON(http.StatusBadGateway, map[string]string{"error": err.Error()})
+			}
+			logAudit(userClaims.ID, userClaims.Username, "PRUNE", "Networks", "Success", "Pruned unused networks on "+nodeID)
+			return c.JSONBlob(http.StatusOK, data)
+		}
 
 		warning := ""
 		if req.RemoveContainers {

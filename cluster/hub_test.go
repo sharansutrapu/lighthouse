@@ -1,10 +1,13 @@
 package cluster
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"github.com/labstack/echo/v4"
@@ -27,6 +30,7 @@ type mockWSConn struct {
 	readErrs []error
 	readIdx  int
 	writes   []interface{}
+	onWrite  func(interface{})
 }
 
 func (m *mockWSConn) ReadMessage() (int, []byte, error) {
@@ -40,6 +44,9 @@ func (m *mockWSConn) ReadMessage() (int, []byte, error) {
 }
 func (m *mockWSConn) WriteJSON(v interface{}) error {
 	m.writes = append(m.writes, v)
+	if m.onWrite != nil {
+		m.onWrite(v)
+	}
 	return nil
 }
 func (m *mockWSConn) WriteMessage(messageType int, data []byte) error {
@@ -152,12 +159,11 @@ func TestHandleSpokeMessage(t *testing.T) {
 
 	// exec_output
 	uiWs := &mockWSConn{}
-	GlobalHub.Lock()
-	GlobalHub.ExecStreams["exec1"] = uiWs
-	GlobalHub.Unlock()
-	msg = []byte(`{"type":"exec_output","exec_id":"exec1","data":"hello"}`)
+	RegisterExecStream("exec1", uiWs)
+	msg = []byte(`{"type":"exec_output","data":{"exec_id":"exec1","data":"hello"}}`)
 	handleSpokeMessage("node1", msg)
 	assert.Len(t, uiWs.writes, 1)
+	UnregisterExecStream("exec1")
 
 	// remote log output
 	logWs := &mockWSConn{}
@@ -212,6 +218,57 @@ func TestRemoteLogRouting(t *testing.T) {
 	assert.NoError(t, SendLogStart(nodeID, "stream1", "abcdef123456"))
 	assert.NoError(t, SendLogStop(nodeID, "stream1"))
 	assert.Len(t, mws.writes, 2)
+}
+
+func TestSpokeCapabilityNegotiation(t *testing.T) {
+	GlobalHub.Lock()
+	GlobalHub.Spokes["cap-node"] = &mockWSConn{}
+	delete(GlobalHub.SpokeCapabilities, "cap-node")
+	GlobalHub.Unlock()
+	t.Cleanup(func() {
+		GlobalHub.Lock()
+		delete(GlobalHub.Spokes, "cap-node")
+		delete(GlobalHub.SpokeCapabilities, "cap-node")
+		GlobalHub.Unlock()
+	})
+
+	assert.True(t, SpokeSupports("cap-node", "logs"))
+	assert.False(t, SpokeSupports("cap-node", "shell"))
+	assert.NotContains(t, ConnectedSpokeIDsWithCapability("resources"), "cap-node")
+
+	handleSpokeMessage("cap-node", []byte(`{"type":"capabilities","data":{"protocol_version":1,"capabilities":["logs","shell","resources"]}}`))
+	assert.True(t, SpokeSupports("cap-node", "shell"))
+	assert.Contains(t, ConnectedSpokeIDsWithCapability("resources"), "cap-node")
+}
+
+func TestCallSpoke(t *testing.T) {
+	mws := &mockWSConn{}
+	mws.onWrite = func(value interface{}) {
+		payload := value.(map[string]interface{})
+		requestID := payload["request_id"].(string)
+		responseData, _ := json.Marshal(map[string]string{"status": "ok"})
+		response, _ := json.Marshal(RPCResponse{RequestID: requestID, Data: responseData})
+		handleSpokeMessage("rpc-node", mustEnvelope("response", response))
+	}
+	GlobalHub.Lock()
+	GlobalHub.Spokes["rpc-node"] = mws
+	GlobalHub.Unlock()
+	t.Cleanup(func() {
+		GlobalHub.Lock()
+		delete(GlobalHub.Spokes, "rpc-node")
+		GlobalHub.Unlock()
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result, err := CallSpoke(ctx, "rpc-node", "ping", map[string]string{"value": "test"})
+	assert.NoError(t, err)
+	assert.JSONEq(t, `{"status":"ok"}`, string(result))
+}
+
+func mustEnvelope(messageType string, data []byte) []byte {
+	payload, _ := json.Marshal(map[string]interface{}{"type": messageType, "data": json.RawMessage(data)})
+	return payload
 }
 
 func TestSendExecInput(t *testing.T) {

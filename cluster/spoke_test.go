@@ -3,6 +3,7 @@ package cluster
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io/ioutil"
 	"net/http"
@@ -195,6 +196,29 @@ func TestHubLogWriter(t *testing.T) {
 	}
 }
 
+func TestHandleRPCRequest(t *testing.T) {
+	dockerClient = getMockDockerClient()
+	mws := &mockSpokeWSConn{}
+	spokeWriteMu.Lock()
+	spokeWs = mws
+	spokeWriteMu.Unlock()
+	t.Cleanup(func() {
+		spokeWriteMu.Lock()
+		spokeWs = nil
+		spokeWriteMu.Unlock()
+	})
+
+	request := json.RawMessage(`{"container_id":"c1","action":"start"}`)
+	handleRPCRequest("request1", "container_action", request)
+	if assert.Len(t, mws.writes, 1) {
+		payload := mws.writes[0].(map[string]interface{})
+		assert.Equal(t, "response", payload["type"])
+		encoded, err := json.Marshal(payload["data"])
+		assert.NoError(t, err)
+		assert.Contains(t, string(encoded), "request1")
+	}
+}
+
 func TestHandleCommand(t *testing.T) {
 	dockerClient = getMockDockerClient()
 
@@ -235,5 +259,49 @@ func TestHandleCommand(t *testing.T) {
 }
 
 func TestHandleExecSession(t *testing.T) {
-	handleExecSession("e1", "c1")
+	originalWS := spokeWs
+	mws := &mockSpokeWSConn{}
+	spokeWs = mws
+	t.Cleanup(func() { spokeWs = originalWS })
+
+	handleExecSession("e1", "c1", "/usr/bin/zsh")
+	if assert.Len(t, mws.writes, 2) {
+		assert.Equal(t, "exec_error", mws.writes[0].(map[string]interface{})["type"])
+		assert.Equal(t, "exec_end", mws.writes[1].(map[string]interface{})["type"])
+	}
+}
+
+type mockExecConnection struct {
+	bytes.Buffer
+	closed bool
+}
+
+func (conn *mockExecConnection) Close() error {
+	conn.closed = true
+	return nil
+}
+
+func TestExecInputAndCleanup(t *testing.T) {
+	activeExecSessions.Lock()
+	activeExecSessions.sessions = make(map[string]activeExecSession)
+	activeExecSessions.pending = make(map[string][][]byte)
+	activeExecSessions.Unlock()
+	t.Cleanup(cancelAllExecSessions)
+
+	writeExecInput("pending", []byte("first"))
+	activeExecSessions.Lock()
+	assert.Equal(t, []byte("first"), activeExecSessions.pending["pending"][0])
+	activeExecSessions.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	conn := &mockExecConnection{}
+	activeExecSessions.Lock()
+	activeExecSessions.sessions["active"] = activeExecSession{conn: conn, cancel: cancel}
+	activeExecSessions.Unlock()
+	writeExecInput("active", []byte("echo test\n"))
+	assert.Equal(t, "echo test\n", conn.String())
+
+	stopExecSession("active")
+	assert.True(t, conn.closed)
+	assert.Error(t, ctx.Err())
 }

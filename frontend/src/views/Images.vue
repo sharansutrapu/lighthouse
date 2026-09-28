@@ -3,9 +3,16 @@
     <div class="page-header glass">
       <div class="header-left">
         <h1>Docker Images <span class="badge badge-dim" style="font-size: 0.8rem; margin-left: 0.5rem; vertical-align: middle;">{{ images.length }} Total</span></h1>
-        <p class="subtitle">Manage local images and clear disk space</p>
+        <p class="subtitle">{{ isHubMode ? 'Manage images across every connected node' : 'Manage local images and clear disk space' }}</p>
       </div>
       <div class="header-actions" style="display: flex; gap: 1rem; align-items: center;">
+        <label v-if="isHubMode" class="node-filter">
+          <span>Node</span>
+          <select v-model="nodeFilter">
+            <option value="all">All nodes</option>
+            <option v-for="node in nodeOptions" :key="node" :value="node">{{ node }}</option>
+          </select>
+        </label>
         <div class="search-box glass" style="margin: 0; min-width: 250px;">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5">
             <circle cx="11" cy="11" r="8"></circle>
@@ -37,6 +44,7 @@
           <thead>
             <tr>
               <th>ID</th>
+              <th v-if="isHubMode">Node</th>
               <th>Used By</th>
               <th>Tags</th>
               <th>Size</th>
@@ -45,10 +53,11 @@
             </tr>
           </thead>
           <tbody v-if="filteredImages.length > 0">
-            <tr v-for="img in filteredImages" :key="img.Id">
+            <tr v-for="img in filteredImages" :key="`${img.node_id || 'local'}:${img.Id}`">
               <td data-label="ID"><strong>{{ img.Id.replace('sha256:', '').substring(0, 12) }}</strong></td>
+              <td v-if="isHubMode" data-label="Node"><span class="badge badge-dim mini">{{ resourceNode(img) }}</span></td>
               <td data-label="Used By">
-                <span v-if="getContainersUsingImage(img.Id).length > 0" class="text-mute"><small>{{ getContainersUsingImage(img.Id).join(', ') }}</small></span>
+                <span v-if="getContainersUsingImage(img).length > 0" class="text-mute"><small>{{ getContainersUsingImage(img).join(', ') }}</small></span>
                 <span v-else class="text-mute"><small>—</small></span>
               </td>
               <td data-label="Tags">
@@ -60,7 +69,7 @@
               <td data-label="Size">{{ formatBytes(img.Size) }}</td>
               <td data-label="Created">{{ new Date(img.Created * 1000).toLocaleString() }}</td>
               <td data-label="Actions" class="text-right">
-                <button class="action-btn danger" @click="requestRemoveImage(img.Id)" data-tooltip="Remove">
+                <button class="action-btn danger" @click="requestRemoveImage(img)" data-tooltip="Remove">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="16" height="16">
                     <polyline points="3 6 5 6 21 6"></polyline>
                     <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -71,7 +80,7 @@
           </tbody>
           <tbody v-else>
             <tr>
-              <td colspan="5" class="empty-state">No images found.</td>
+              <td :colspan="isHubMode ? 7 : 6" class="empty-state">No images found.</td>
             </tr>
           </tbody>
         </table>
@@ -125,21 +134,33 @@
 <script setup>
 // Docker image management page: list/search images, remove one, or prune all
 // unused ones (with an optional "remove stopped containers first" step).
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { apiFetch } from '../utils/apiFetch';
-import { formatBytes, showToast } from '../utils/sharedState';
+import { formatBytes, sharedState, showToast } from '../utils/sharedState';
 import { useContainers } from '../composables/useContainers';
 
 const images = ref([]);
 const isLoading = ref(true);
 const searchQuery = ref('');
+const route = useRoute();
+const router = useRouter();
+const nodeFilter = ref(typeof route.query.node === 'string' ? route.query.node : 'all');
 const { containers } = useContainers();
+const isHubMode = computed(() => sharedState.deploymentMode === 'hub');
+const resourceNode = (resource) => resource.node_id || sharedState.localNodeId || 'local';
+const nodeOptions = computed(() => [...new Set([
+  sharedState.localNodeId,
+  ...images.value.map(resourceNode),
+  ...(nodeFilter.value !== 'all' ? [nodeFilter.value] : [])
+].filter(Boolean))].sort());
 
-const getContainersUsingImage = (imageId) => {
+const getContainersUsingImage = (image) => {
   if (!containers.value) return [];
   const using = [];
   for (const c of containers.value) {
-    if (c.image_id === imageId || c.image === imageId) {
+    const sameNode = !isHubMode.value || resourceNode(c) === resourceNode(image);
+    if (sameNode && (c.image_id === image.Id || c.image === image.Id || (image.RepoTags || []).includes(c.image))) {
       using.push(c.name ? c.name.replace(/^\//, '') : c.id.substring(0, 12));
     }
   }
@@ -148,12 +169,29 @@ const getContainersUsingImage = (imageId) => {
 
 const filteredImages = computed(() => {
   const query = searchQuery.value.toLowerCase().trim();
-  if (!query) return images.value;
   return images.value.filter(img => {
     const id = img.Id.toLowerCase();
     const tags = (img.RepoTags || []).join(' ').toLowerCase();
-    return id.includes(query) || tags.includes(query);
+    const matchesNode = nodeFilter.value === 'all' || resourceNode(img) === nodeFilter.value;
+    return matchesNode && (!query || id.includes(query) || tags.includes(query));
   });
+});
+
+const nodeURL = (path, nodeID) => {
+  if (!isHubMode.value || !nodeID) return path;
+  return `${path}${path.includes('?') ? '&' : '?'}node_id=${encodeURIComponent(nodeID)}`;
+};
+
+watch(nodeFilter, (node) => {
+  const query = { ...route.query };
+  if (node === 'all') delete query.node;
+  else query.node = node;
+  router.replace({ query });
+});
+
+watch(() => route.query.node, (node) => {
+  const nextNode = typeof node === 'string' ? node : 'all';
+  if (nodeFilter.value !== nextNode) nodeFilter.value = nextNode;
 });
 
 // fetchImages loads the full image list from the backend.
@@ -229,10 +267,11 @@ const executeConfirm = async () => {
 };
 
 // requestRemoveImage opens the confirmation modal for deleting one image by ID.
-const requestRemoveImage = (id) => {
-  openConfirm('Remove Image', `Are you sure you want to remove the image ${id.substring(0, 12)}?`, 'error', async () => {
+const requestRemoveImage = (image) => {
+  const nodeID = resourceNode(image);
+  openConfirm('Remove Image', `Remove image ${image.Id.substring(0, 12)} from ${nodeID}?`, 'error', async () => {
     try {
-      const res = await apiFetch(`/api/images/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const res = await apiFetch(nodeURL(`/api/images/${encodeURIComponent(image.Id)}`, nodeID), { method: 'DELETE' });
       if (res.ok) {
         showToast('Success', 'Image removed', 'success');
         fetchImages();
@@ -248,27 +287,44 @@ const requestRemoveImage = (id) => {
 
 // pruneImages opens the confirmation modal for removing all unused images.
 const pruneImages = () => {
-  openConfirm('Prune Unused Images', 'Are you sure you want to prune unused images? This action cannot be undone.', 'warning', async (options) => {
+  const targets = isHubMode.value
+    ? (nodeFilter.value === 'all' ? nodeOptions.value : [nodeFilter.value])
+    : [null];
+  const targetLabel = isHubMode.value
+    ? (nodeFilter.value === 'all' ? `all ${targets.length} nodes` : nodeFilter.value)
+    : 'this node';
+  openConfirm('Prune Unused Images', `Prune unused images on ${targetLabel}? This action cannot be undone.`, 'warning', async (options) => {
     try {
-      const res = await apiFetch('/api/images/prune', { 
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          remove_containers: options.removeContainers,
-          all_unused: options.allUnused
-        })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const report = data.Report || data;
-        showToast('Success', `Pruned images. Freed ${formatBytes(report.SpaceReclaimed || 0)}`, 'success');
-        if (data.Warning) {
-          showToast('Warning', data.Warning, 'warning');
+      let reclaimed = 0;
+      const warnings = [];
+      const failures = [];
+      for (const nodeID of targets) {
+        const res = await apiFetch(nodeURL('/api/images/prune', nodeID), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            remove_containers: options.removeContainers,
+            all_unused: options.allUnused
+          })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          failures.push(`${nodeID || 'local'}: ${data.error || 'prune failed'}`);
+          continue;
         }
-        fetchImages();
-      } else {
-        showToast('Error', 'Failed to prune images', 'error');
+        const report = data.Report || data;
+        reclaimed += report.SpaceReclaimed || 0;
+        if (data.Warning) warnings.push(`${nodeID || 'local'}: ${data.Warning}`);
       }
+      if (failures.length > 0) {
+        showToast('Prune incomplete', failures.join(' · '), 'error');
+      } else {
+        showToast('Success', `Pruned images on ${targets.length} node${targets.length === 1 ? '' : 's'}. Freed ${formatBytes(reclaimed)}`, 'success');
+      }
+      if (warnings.length > 0) {
+        showToast('Warning', warnings.join(' · '), 'warning');
+      }
+      fetchImages();
     } catch (err) {
       showToast('Error', 'Connection error', 'error');
     }
@@ -291,5 +347,26 @@ onMounted(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 0.25rem;
+}
+
+.node-filter {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text-mute);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.node-filter select {
+  min-height: 38px;
+  padding: 0 2rem 0 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--text-main);
+  font: inherit;
+  text-transform: none;
 }
 </style>

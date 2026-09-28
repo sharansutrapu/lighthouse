@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -185,22 +186,22 @@ func TestHandlePOSTContainersIdAction_Table(t *testing.T) {
 			wantStatus: http.StatusOK,
 		},
 		{
-			name:     "happy path: authorized non-admin starts container",
-			id:       "abc123",
-			action:   "start",
-			isAdmin:  false,
-			userID:   44,
-			envGates: [4]bool{true, true, true, true},
-			seedUser: &db.User{ID: 44, IsActive: true, CanStart: true, IsRestrictedAccess: true, AllowedContainers: "othername"},
-			handler:  inspectOK("othername", "alpine"),
+			name:       "happy path: authorized non-admin starts container",
+			id:         "abc123",
+			action:     "start",
+			isAdmin:    false,
+			userID:     44,
+			envGates:   [4]bool{true, true, true, true},
+			seedUser:   &db.User{ID: 44, IsActive: true, CanStart: true, IsRestrictedAccess: true, AllowedContainers: "othername"},
+			handler:    inspectOK("othername", "alpine"),
 			wantStatus: http.StatusOK,
 		},
 		{
-			name:       "infra failure: docker action call fails",
-			id:         "abc123",
-			action:     "start",
-			isAdmin:    true,
-			envGates:   [4]bool{true, true, true, true},
+			name:     "infra failure: docker action call fails",
+			id:       "abc123",
+			action:   "start",
+			isAdmin:  true,
+			envGates: [4]bool{true, true, true, true},
 			handler: func(req *http.Request) (*http.Response, error) {
 				if strings.Contains(req.URL.Path, "/json") {
 					return makeResponse(http.StatusOK, `{"Id":"target","Name":"othername","Config":{"Image":"alpine"}}`), nil
@@ -245,20 +246,26 @@ func TestHandlePOSTContainersIdAction_Table(t *testing.T) {
 	}
 }
 
-// TestHandlePOSTContainersIdAction_HubModeSpokeDispatch covers the hub-mode
-// branches that dispatch start/stop/remove to a spoke node instead of
-// executing locally, for both the success and failure of SendCommandToSpoke.
+// TestHandlePOSTContainersIdAction_HubModeSpokeDispatch covers correlated
+// remote action completion and the disconnected-spoke failure response.
 func TestHandlePOSTContainersIdAction_HubModeSpokeDispatch(t *testing.T) {
 	assert.NoError(t, db.InitDB(":memory:"))
 	db.GormDB.Save(&db.User{ID: 1, IsAdmin: true, IsActive: true})
 	withEnvGates(t, true, true, true, true)
 	withLighthouseMode(t, "hub")
 
+	spoke := &resourceRPCConn{responses: map[string]json.RawMessage{
+		"container_action": json.RawMessage(`{"status":"success"}`),
+	}}
 	cluster.GlobalHub.Lock()
+	cluster.GlobalHub.Spokes["node1"] = spoke
+	cluster.GlobalHub.SpokeCapabilities["node1"] = map[string]bool{"actions": true}
 	cluster.GlobalHub.SpokeContainers["node1"] = []map[string]interface{}{{"ID": "abc123"}}
 	cluster.GlobalHub.Unlock()
 	t.Cleanup(func() {
 		cluster.GlobalHub.Lock()
+		delete(cluster.GlobalHub.Spokes, "node1")
+		delete(cluster.GlobalHub.SpokeCapabilities, "node1")
 		delete(cluster.GlobalHub.SpokeContainers, "node1")
 		cluster.GlobalHub.Unlock()
 	})
@@ -276,9 +283,16 @@ func TestHandlePOSTContainersIdAction_HubModeSpokeDispatch(t *testing.T) {
 		h := handlePOSTContainersIdAction(cli)
 		err := h(c)
 		assert.NoError(t, err)
-		// No spoke actually connected, so SendCommandToSpoke returns an error -> 500.
-		assert.Equal(t, http.StatusInternalServerError, rec.Code, "action=%s", action)
+		assert.Equal(t, http.StatusOK, rec.Code, "action=%s", action)
 	}
+
+	cluster.GlobalHub.Lock()
+	delete(cluster.GlobalHub.Spokes, "node1")
+	cluster.GlobalHub.Unlock()
+	c, rec := newActionRequest("abc123", "start")
+	mockUserContext(c, 1, true)
+	assert.NoError(t, handlePOSTContainersIdAction(cli)(c))
+	assert.Equal(t, http.StatusBadGateway, rec.Code)
 }
 
 type simpleErr string

@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -36,15 +38,19 @@ var upgraderFunc = func(w http.ResponseWriter, r *http.Request) (WSConn, error) 
 // Hub maintains the state of connected Spokes
 type Hub struct {
 	sync.RWMutex
-	Spokes          map[string]WSConn
-	SpokeContainers map[string][]map[string]interface{}
-	SpokeLastSeen   map[string]time.Time
-	ExecStreams     map[string]WSConn        // maps exec_id to UI websocket
-	LogStreams      map[string]WSConn        // maps stream_id to UI websocket
-	CommandResults  map[string]CommandResult // container_id -> most recent dispatched command outcome
+	Spokes              map[string]WSConn
+	SpokeContainers     map[string][]map[string]interface{}
+	SpokeLastSeen       map[string]time.Time
+	SpokeCapabilities   map[string]map[string]bool
+	ExecStreams         map[string]WSConn // maps exec_id to UI websocket
+	LogStreams          map[string]WSConn // maps stream_id to UI websocket
+	PendingRequests     map[string]chan RPCResponse
+	PendingRequestNodes map[string]string
+	CommandResults      map[string]CommandResult // container_id -> most recent dispatched command outcome
 }
 
 var hubSpokeWriteMu sync.Mutex
+var requestSequence uint64
 
 // NodeStatus is the read-only topology snapshot exposed by the Hub API.
 type NodeStatus struct {
@@ -52,6 +58,7 @@ type NodeStatus struct {
 	Connected      bool      `json:"connected"`
 	LastSeen       time.Time `json:"last_seen"`
 	ContainerCount int       `json:"container_count"`
+	Capabilities   []string  `json:"capabilities"`
 }
 
 // CommandResult is the outcome of a command dispatched to a Spoke, reported
@@ -62,13 +69,23 @@ type CommandResult struct {
 	Error  string `json:"error,omitempty"`
 }
 
+// RPCResponse is one correlated response to a Hub request sent to a Spoke.
+type RPCResponse struct {
+	RequestID string          `json:"request_id"`
+	Data      json.RawMessage `json:"data,omitempty"`
+	Error     string          `json:"error,omitempty"`
+}
+
 var GlobalHub = &Hub{
-	Spokes:          make(map[string]WSConn),
-	SpokeContainers: make(map[string][]map[string]interface{}),
-	SpokeLastSeen:   make(map[string]time.Time),
-	ExecStreams:     make(map[string]WSConn),
-	LogStreams:      make(map[string]WSConn),
-	CommandResults:  make(map[string]CommandResult),
+	Spokes:              make(map[string]WSConn),
+	SpokeContainers:     make(map[string][]map[string]interface{}),
+	SpokeLastSeen:       make(map[string]time.Time),
+	SpokeCapabilities:   make(map[string]map[string]bool),
+	ExecStreams:         make(map[string]WSConn),
+	LogStreams:          make(map[string]WSConn),
+	PendingRequests:     make(map[string]chan RPCResponse),
+	PendingRequestNodes: make(map[string]string),
+	CommandResults:      make(map[string]CommandResult),
 }
 
 // RegisterHubRoutes attaches the WebSocket endpoint
@@ -95,9 +112,30 @@ func RegisterHubRoutes(e *echo.Echo, hubToken string) {
 		defer ws.Close()
 
 		GlobalHub.Lock()
+		previousWS := GlobalHub.Spokes[nodeID]
+		var supersededRequests []chan RPCResponse
+		if previousWS != nil && previousWS != ws {
+			for requestID, requestNodeID := range GlobalHub.PendingRequestNodes {
+				if requestNodeID == nodeID {
+					supersededRequests = append(supersededRequests, GlobalHub.PendingRequests[requestID])
+					delete(GlobalHub.PendingRequests, requestID)
+					delete(GlobalHub.PendingRequestNodes, requestID)
+				}
+			}
+		}
 		GlobalHub.Spokes[nodeID] = ws
 		GlobalHub.SpokeLastSeen[nodeID] = time.Now()
+		delete(GlobalHub.SpokeCapabilities, nodeID)
 		GlobalHub.Unlock()
+		if previousWS != nil && previousWS != ws {
+			_ = previousWS.Close()
+		}
+		for _, responseChan := range supersededRequests {
+			select {
+			case responseChan <- RPCResponse{Error: "spoke reconnected"}:
+			default:
+			}
+		}
 
 		log.Printf("[Hub] Spoke %s connected", nodeID)
 
@@ -105,11 +143,33 @@ func RegisterHubRoutes(e *echo.Echo, hubToken string) {
 			_, msg, err := ws.ReadMessage()
 			if err != nil {
 				log.Printf("[Hub] Spoke %s disconnected: %v", nodeID, err)
+				var pending []chan RPCResponse
 				GlobalHub.Lock()
-				delete(GlobalHub.Spokes, nodeID)
-				delete(GlobalHub.SpokeContainers, nodeID)
-				GlobalHub.SpokeLastSeen[nodeID] = time.Now()
+				if GlobalHub.Spokes[nodeID] == ws {
+					delete(GlobalHub.Spokes, nodeID)
+					delete(GlobalHub.SpokeContainers, nodeID)
+					GlobalHub.SpokeLastSeen[nodeID] = time.Now()
+					for requestID, requestNodeID := range GlobalHub.PendingRequestNodes {
+						if requestNodeID == nodeID {
+							pending = append(pending, GlobalHub.PendingRequests[requestID])
+							delete(GlobalHub.PendingRequests, requestID)
+							delete(GlobalHub.PendingRequestNodes, requestID)
+						}
+					}
+				}
 				GlobalHub.Unlock()
+				for _, responseChan := range pending {
+					select {
+					case responseChan <- RPCResponse{Error: "spoke disconnected"}:
+					default:
+					}
+				}
+				break
+			}
+			GlobalHub.RLock()
+			current := GlobalHub.Spokes[nodeID]
+			GlobalHub.RUnlock()
+			if current != ws {
 				break
 			}
 			handleSpokeMessage(nodeID, msg)
@@ -124,6 +184,7 @@ func handleSpokeMessage(nodeID string, msg []byte) {
 		Type        string          `json:"type"`
 		ContainerID string          `json:"container_id,omitempty"`
 		ExecID      string          `json:"exec_id,omitempty"`
+		RequestID   string          `json:"request_id,omitempty"`
 		Data        json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(msg, &payload); err != nil {
@@ -135,6 +196,23 @@ func handleSpokeMessage(nodeID string, msg []byte) {
 	GlobalHub.Unlock()
 
 	switch payload.Type {
+	case "capabilities":
+		var announcement struct {
+			Capabilities []string `json:"capabilities"`
+		}
+		if err := json.Unmarshal(payload.Data, &announcement); err != nil {
+			return
+		}
+		capabilities := make(map[string]bool, len(announcement.Capabilities))
+		for _, capability := range announcement.Capabilities {
+			if capability != "" {
+				capabilities[capability] = true
+			}
+		}
+		GlobalHub.Lock()
+		GlobalHub.SpokeCapabilities[nodeID] = capabilities
+		GlobalHub.Unlock()
+
 	case "containers":
 		var containers []map[string]interface{}
 		json.Unmarshal(payload.Data, &containers)
@@ -154,12 +232,46 @@ func handleSpokeMessage(nodeID string, msg []byte) {
 		stat.NodeID = nodeID
 		db.GormDB.Create(&stat)
 
-	case "exec_output":
+	case "scan_result":
+		var result struct {
+			ContainerID   string          `json:"container_id"`
+			ContainerName string          `json:"container_name"`
+			Image         string          `json:"image"`
+			Result        json.RawMessage `json:"result"`
+		}
+		if err := json.Unmarshal(payload.Data, &result); err != nil || result.Image == "" {
+			return
+		}
+		db.GormDB.Create(&db.ImageScanResult{Image: result.Image, Result: string(result.Result)})
+		if alerts.Global != nil && strings.Contains(string(result.Result), `"Severity":"CRITICAL"`) {
+			alerts.Global.TriggerContainerEvent("vulnerability_found", result.ContainerName, "CRITICAL vulnerabilities found during remote scan of image: "+result.Image)
+		}
+
+	case "exec_output", "exec_error", "exec_end":
+		var output struct {
+			ExecID string `json:"exec_id"`
+			Data   string `json:"data,omitempty"`
+			Error  string `json:"error,omitempty"`
+		}
+		if err := json.Unmarshal(payload.Data, &output); err != nil {
+			return
+		}
+		if output.ExecID == "" {
+			output.ExecID = payload.ExecID
+		}
 		GlobalHub.RLock()
-		uiWs, ok := GlobalHub.ExecStreams[payload.ExecID]
+		uiWs, ok := GlobalHub.ExecStreams[output.ExecID]
 		GlobalHub.RUnlock()
-		if ok {
-			uiWs.WriteMessage(websocket.TextMessage, payload.Data)
+		if !ok {
+			return
+		}
+		if payload.Type == "exec_output" {
+			_ = uiWs.WriteMessage(websocket.TextMessage, []byte(output.Data))
+		} else if payload.Type == "exec_error" {
+			_ = uiWs.WriteMessage(websocket.TextMessage, []byte("\r\n[LightHouse] "+output.Error+"\r\n"))
+		} else {
+			_ = uiWs.Close()
+			UnregisterExecStream(output.ExecID)
 		}
 
 	case "log_output", "log_error", "log_end":
@@ -184,6 +296,25 @@ func handleSpokeMessage(nodeID string, msg []byte) {
 		} else {
 			_ = uiWs.Close()
 			UnregisterLogStream(output.StreamID)
+		}
+
+	case "response":
+		var response RPCResponse
+		if err := json.Unmarshal(payload.Data, &response); err != nil {
+			return
+		}
+		if response.RequestID == "" {
+			response.RequestID = payload.RequestID
+		}
+		GlobalHub.RLock()
+		responseChan := GlobalHub.PendingRequests[response.RequestID]
+		requestNodeID := GlobalHub.PendingRequestNodes[response.RequestID]
+		GlobalHub.RUnlock()
+		if responseChan != nil && requestNodeID == nodeID {
+			select {
+			case responseChan <- response:
+			default:
+			}
 		}
 
 	case "command_result":
@@ -221,10 +352,43 @@ func SnapshotSpokes() []NodeStatus {
 			Connected:      connected,
 			LastSeen:       lastSeen,
 			ContainerCount: len(GlobalHub.SpokeContainers[nodeID]),
+			Capabilities:   spokeCapabilitiesLocked(nodeID),
 		})
 	}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
 	return nodes
+}
+
+var legacySpokeCapabilities = []string{"list", "metrics", "logs"}
+
+func spokeCapabilitiesLocked(nodeID string) []string {
+	capabilityMap, announced := GlobalHub.SpokeCapabilities[nodeID]
+	if !announced {
+		return append([]string(nil), legacySpokeCapabilities...)
+	}
+	capabilities := make([]string, 0, len(capabilityMap))
+	for capability := range capabilityMap {
+		capabilities = append(capabilities, capability)
+	}
+	sort.Strings(capabilities)
+	return capabilities
+}
+
+// SpokeSupports reports whether a spoke announced support for a protocol
+// feature. Unannounced legacy spokes retain only the pre-RPC feature set.
+func SpokeSupports(nodeID, capability string) bool {
+	GlobalHub.RLock()
+	defer GlobalHub.RUnlock()
+	capabilityMap, announced := GlobalHub.SpokeCapabilities[nodeID]
+	if announced {
+		return capabilityMap[capability]
+	}
+	for _, legacyCapability := range legacySpokeCapabilities {
+		if legacyCapability == capability {
+			return true
+		}
+	}
+	return false
 }
 
 // FindSpokeContainer resolves a full or short Docker container ID to its
@@ -263,6 +427,20 @@ func RegisterLogStream(streamID string, ws WSConn) {
 	GlobalHub.Unlock()
 }
 
+// RegisterExecStream binds a browser terminal WebSocket to one remote exec ID.
+func RegisterExecStream(execID string, ws WSConn) {
+	GlobalHub.Lock()
+	GlobalHub.ExecStreams[execID] = ws
+	GlobalHub.Unlock()
+}
+
+// UnregisterExecStream releases a browser terminal binding.
+func UnregisterExecStream(execID string) {
+	GlobalHub.Lock()
+	delete(GlobalHub.ExecStreams, execID)
+	GlobalHub.Unlock()
+}
+
 // UnregisterLogStream releases a browser WebSocket binding.
 func UnregisterLogStream(streamID string) {
 	GlobalHub.Lock()
@@ -297,6 +475,88 @@ func SendLogStop(nodeID, streamID string) error {
 		"type":      "log_stop",
 		"stream_id": streamID,
 	})
+}
+
+// SendExecStart asks a spoke to create and attach a TTY session.
+func SendExecStart(nodeID, execID, containerID, shell string) error {
+	return writeToSpoke(nodeID, map[string]string{
+		"type":         "exec_start",
+		"exec_id":      execID,
+		"container_id": containerID,
+		"shell":        shell,
+	})
+}
+
+// SendExecStop closes a remote TTY session.
+func SendExecStop(nodeID, execID string) error {
+	return writeToSpoke(nodeID, map[string]string{
+		"type":    "exec_stop",
+		"exec_id": execID,
+	})
+}
+
+// ConnectedSpokeIDs returns a stable list of currently connected spokes.
+func ConnectedSpokeIDs() []string {
+	GlobalHub.RLock()
+	defer GlobalHub.RUnlock()
+	nodeIDs := make([]string, 0, len(GlobalHub.Spokes))
+	for nodeID := range GlobalHub.Spokes {
+		nodeIDs = append(nodeIDs, nodeID)
+	}
+	sort.Strings(nodeIDs)
+	return nodeIDs
+}
+
+// ConnectedSpokeIDsWithCapability returns connected spokes that explicitly
+// support a feature introduced after the legacy inventory protocol.
+func ConnectedSpokeIDsWithCapability(capability string) []string {
+	GlobalHub.RLock()
+	defer GlobalHub.RUnlock()
+	nodeIDs := make([]string, 0, len(GlobalHub.Spokes))
+	for nodeID := range GlobalHub.Spokes {
+		capabilityMap, announced := GlobalHub.SpokeCapabilities[nodeID]
+		if announced && capabilityMap[capability] {
+			nodeIDs = append(nodeIDs, nodeID)
+		}
+	}
+	sort.Strings(nodeIDs)
+	return nodeIDs
+}
+
+// CallSpoke sends one request over the persistent connection and waits for
+// the response with the same request ID or for the caller's context to end.
+func CallSpoke(ctx context.Context, nodeID, action string, data interface{}) (json.RawMessage, error) {
+	requestID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), atomic.AddUint64(&requestSequence, 1))
+	responseChan := make(chan RPCResponse, 1)
+	GlobalHub.Lock()
+	GlobalHub.PendingRequests[requestID] = responseChan
+	GlobalHub.PendingRequestNodes[requestID] = nodeID
+	GlobalHub.Unlock()
+	defer func() {
+		GlobalHub.Lock()
+		delete(GlobalHub.PendingRequests, requestID)
+		delete(GlobalHub.PendingRequestNodes, requestID)
+		GlobalHub.Unlock()
+	}()
+
+	if err := writeToSpoke(nodeID, map[string]interface{}{
+		"type":       "request",
+		"request_id": requestID,
+		"action":     action,
+		"data":       data,
+	}); err != nil {
+		return nil, err
+	}
+
+	select {
+	case response := <-responseChan:
+		if response.Error != "" {
+			return nil, fmt.Errorf("%s", response.Error)
+		}
+		return response.Data, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // SendCommandToSpoke sends an action like start/stop/restart

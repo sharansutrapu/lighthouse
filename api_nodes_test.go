@@ -23,9 +23,11 @@ func TestHandleGETNodes(t *testing.T) {
 	originalSpokes := cluster.GlobalHub.Spokes
 	originalContainers := cluster.GlobalHub.SpokeContainers
 	originalLastSeen := cluster.GlobalHub.SpokeLastSeen
+	originalCapabilities := cluster.GlobalHub.SpokeCapabilities
 	cluster.GlobalHub.Spokes = map[string]cluster.WSConn{"spoke-1": &mockNodeWSConn{}}
 	cluster.GlobalHub.SpokeContainers = map[string][]map[string]interface{}{"spoke-1": {{"ID": "c1"}}}
 	cluster.GlobalHub.SpokeLastSeen = map[string]time.Time{"spoke-1": time.Unix(100, 0)}
+	cluster.GlobalHub.SpokeCapabilities = map[string]map[string]bool{"spoke-1": {"logs": true, "shell": true}}
 	cluster.GlobalHub.Unlock()
 
 	defer func() {
@@ -35,6 +37,7 @@ func TestHandleGETNodes(t *testing.T) {
 		cluster.GlobalHub.Spokes = originalSpokes
 		cluster.GlobalHub.SpokeContainers = originalContainers
 		cluster.GlobalHub.SpokeLastSeen = originalLastSeen
+		cluster.GlobalHub.SpokeCapabilities = originalCapabilities
 		cluster.GlobalHub.Unlock()
 	}()
 
@@ -53,6 +56,7 @@ func TestHandleGETNodes(t *testing.T) {
 		assert.Equal(t, "spoke-1", nodes[1].ID)
 		assert.True(t, nodes[1].Connected)
 		assert.Equal(t, 1, nodes[1].ContainerCount)
+		assert.Equal(t, []string{"logs", "shell"}, nodes[1].Capabilities)
 	}
 }
 

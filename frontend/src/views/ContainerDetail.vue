@@ -124,7 +124,7 @@
         <AppIcon name="server" :size="20" />
         <div>
           <strong>Remote workload on {{ container.node_id }}</strong>
-          <p>Live logs are available from this spoke. Inspection, shell, actions, and scans remain unavailable until those remote transports are implemented.</p>
+          <p>Inspection, logs, shell, lifecycle actions, and vulnerability scans are routed through this spoke. Historical live-stat charts remain hub-collected.</p>
         </div>
       </section>
 
@@ -1011,8 +1011,10 @@ onMounted(async () => {
     return;
   }
   await fetchInspect();
-  await fetchHistoryData();
-  if (container.value?.state === "running") startStatsPolling();
+  if (container.value?.capabilities?.stats !== false) {
+    await fetchHistoryData();
+    if (container.value?.state === "running") startStatsPolling();
+  }
 });
 
 onUnmounted(() => {

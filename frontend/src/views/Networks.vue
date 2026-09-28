@@ -2,10 +2,17 @@
   <div class="page-container">
     <div class="page-header glass">
       <div class="header-left">
-        <h1>Docker Networks</h1>
-        <p class="subtitle">Manage network topologies and isolation</p>
+        <h1>Docker Networks <span class="badge badge-dim" style="font-size: 0.8rem; margin-left: 0.5rem; vertical-align: middle;">{{ networks.length }} Total</span></h1>
+        <p class="subtitle">{{ isHubMode ? 'Manage network topology across every connected node' : 'Manage network topologies and isolation' }}</p>
       </div>
       <div class="header-actions" style="display: flex; gap: 1rem; align-items: center;">
+        <label v-if="isHubMode" class="node-filter">
+          <span>Node</span>
+          <select v-model="nodeFilter">
+            <option value="all">All nodes</option>
+            <option v-for="node in nodeOptions" :key="node" :value="node">{{ node }}</option>
+          </select>
+        </label>
         <div class="search-box glass" style="margin: 0; min-width: 250px;">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5">
             <circle cx="11" cy="11" r="8"></circle>
@@ -37,6 +44,7 @@
           <thead>
             <tr>
               <th>Name</th>
+              <th v-if="isHubMode">Node</th>
               <th>Used By</th>
               <th>Driver</th>
               <th>Scope</th>
@@ -45,10 +53,11 @@
             </tr>
           </thead>
           <tbody v-if="filteredNetworks.length > 0">
-            <tr v-for="net in filteredNetworks" :key="net.Id">
+            <tr v-for="net in filteredNetworks" :key="`${net.node_id || 'local'}:${net.Id}`">
               <td data-label="Name"><strong>{{ net.Name }}</strong></td>
+              <td v-if="isHubMode" data-label="Node"><span class="badge badge-dim mini">{{ resourceNode(net) }}</span></td>
               <td data-label="Used By">
-                <span v-if="getContainersUsingNetwork(net.Name).length > 0" class="text-mute"><small>{{ getContainersUsingNetwork(net.Name).join(', ') }}</small></span>
+                <span v-if="getContainersUsingNetwork(net).length > 0" class="text-mute"><small>{{ getContainersUsingNetwork(net).join(', ') }}</small></span>
                 <span v-else class="text-mute"><small>—</small></span>
               </td>
               <td data-label="Driver"><span class="badge badge-dim mini">{{ net.Driver }}</span></td>
@@ -60,7 +69,7 @@
                 <span v-else class="text-mute">—</span>
               </td>
               <td data-label="Actions" class="text-right">
-                <button class="action-btn danger" @click="requestRemoveNetwork(net.Id)" data-tooltip="Remove">
+                <button class="action-btn danger" @click="requestRemoveNetwork(net)" data-tooltip="Remove">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="16" height="16">
                     <polyline points="3 6 5 6 21 6"></polyline>
                     <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -71,7 +80,7 @@
           </tbody>
           <tbody v-else>
             <tr>
-              <td colspan="5" class="empty-state">No networks found.</td>
+              <td :colspan="isHubMode ? 7 : 6" class="empty-state">No networks found.</td>
             </tr>
           </tbody>
         </table>
@@ -115,21 +124,33 @@
 <script setup>
 // Docker network management page: list/search networks, remove one, or prune
 // all unused ones. Mirrors Images.vue/Volumes.vue's confirm-modal pattern.
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { apiFetch } from '../utils/apiFetch';
-import { showToast } from '../utils/sharedState';
+import { sharedState, showToast } from '../utils/sharedState';
 import { useContainers } from '../composables/useContainers';
 
 const networks = ref([]);
 const isLoading = ref(true);
 const searchQuery = ref('');
+const route = useRoute();
+const router = useRouter();
+const nodeFilter = ref(typeof route.query.node === 'string' ? route.query.node : 'all');
 const { containers } = useContainers();
+const isHubMode = computed(() => sharedState.deploymentMode === 'hub');
+const resourceNode = (resource) => resource.node_id || sharedState.localNodeId || 'local';
+const nodeOptions = computed(() => [...new Set([
+  sharedState.localNodeId,
+  ...networks.value.map(resourceNode),
+  ...(nodeFilter.value !== 'all' ? [nodeFilter.value] : [])
+].filter(Boolean))].sort());
 
-const getContainersUsingNetwork = (netName) => {
+const getContainersUsingNetwork = (network) => {
   if (!containers.value) return [];
   const using = [];
   for (const c of containers.value) {
-    if (c.networks && c.networks.Networks && c.networks.Networks[netName]) {
+    if (isHubMode.value && resourceNode(c) !== resourceNode(network)) continue;
+    if (c.networks && c.networks.Networks && c.networks.Networks[network.Name]) {
       using.push(c.name ? c.name.replace(/^\//, '') : c.id.substring(0, 12));
     }
   }
@@ -138,12 +159,29 @@ const getContainersUsingNetwork = (netName) => {
 
 const filteredNetworks = computed(() => {
   const query = searchQuery.value.toLowerCase().trim();
-  if (!query) return networks.value;
   return networks.value.filter(net => {
     const name = (net.Name || '').toLowerCase();
     const driver = (net.Driver || '').toLowerCase();
-    return name.includes(query) || driver.includes(query);
+    const matchesNode = nodeFilter.value === 'all' || resourceNode(net) === nodeFilter.value;
+    return matchesNode && (!query || name.includes(query) || driver.includes(query));
   });
+});
+
+const nodeURL = (path, nodeID) => {
+  if (!isHubMode.value || !nodeID) return path;
+  return `${path}${path.includes('?') ? '&' : '?'}node_id=${encodeURIComponent(nodeID)}`;
+};
+
+watch(nodeFilter, (node) => {
+  const query = { ...route.query };
+  if (node === 'all') delete query.node;
+  else query.node = node;
+  router.replace({ query });
+});
+
+watch(() => route.query.node, (node) => {
+  const nextNode = typeof node === 'string' ? node : 'all';
+  if (nodeFilter.value !== nextNode) nodeFilter.value = nextNode;
 });
 
 // fetchNetworks loads the full network list from the backend.
@@ -204,10 +242,11 @@ const executeConfirm = async () => {
 };
 
 // requestRemoveNetwork opens the confirmation modal for deleting one network by ID.
-const requestRemoveNetwork = (id) => {
-  openConfirm('Remove Network', `Are you sure you want to remove this network?`, 'error', async () => {
+const requestRemoveNetwork = (network) => {
+  const nodeID = resourceNode(network);
+  openConfirm('Remove Network', `Remove ${network.Name} from ${nodeID}?`, 'error', async () => {
     try {
-      const res = await apiFetch(`/api/networks/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const res = await apiFetch(nodeURL(`/api/networks/${encodeURIComponent(network.Id)}`, nodeID), { method: 'DELETE' });
       if (res.ok) {
         showToast('Success', 'Network removed', 'success');
         fetchNetworks();
@@ -223,23 +262,36 @@ const requestRemoveNetwork = (id) => {
 
 // pruneNetworks opens the confirmation modal for removing all unused networks.
 const pruneNetworks = () => {
-  openConfirm('Prune Unused Networks', 'Are you sure you want to prune all unused networks? This action cannot be undone.', 'warning', async (options) => {
+  const targets = isHubMode.value
+    ? (nodeFilter.value === 'all' ? nodeOptions.value : [nodeFilter.value])
+    : [null];
+  const targetLabel = isHubMode.value
+    ? (nodeFilter.value === 'all' ? `all ${targets.length} nodes` : nodeFilter.value)
+    : 'this node';
+  openConfirm('Prune Unused Networks', `Prune unused networks on ${targetLabel}? This action cannot be undone.`, 'warning', async (options) => {
     try {
-      const res = await apiFetch('/api/networks/prune', { 
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ remove_containers: options.removeContainers })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        showToast('Success', `Pruned unused networks`, 'success');
-        if (data.Warning) {
-          showToast('Warning', data.Warning, 'warning');
+      const warnings = [];
+      const failures = [];
+      for (const nodeID of targets) {
+        const res = await apiFetch(nodeURL('/api/networks/prune', nodeID), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ remove_containers: options.removeContainers })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          failures.push(`${nodeID || 'local'}: ${data.error || 'prune failed'}`);
+          continue;
         }
-        fetchNetworks();
-      } else {
-        showToast('Error', 'Failed to prune networks', 'error');
+        if (data.Warning) warnings.push(`${nodeID || 'local'}: ${data.Warning}`);
       }
+      if (failures.length > 0) {
+        showToast('Prune incomplete', failures.join(' · '), 'error');
+      } else {
+        showToast('Success', `Pruned networks on ${targets.length} node${targets.length === 1 ? '' : 's'}`, 'success');
+      }
+      if (warnings.length > 0) showToast('Warning', warnings.join(' · '), 'warning');
+      fetchNetworks();
     } catch (err) {
       showToast('Error', 'Connection error', 'error');
     }
@@ -250,3 +302,26 @@ onMounted(() => {
   fetchNetworks();
 });
 </script>
+
+<style scoped>
+.node-filter {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text-mute);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.node-filter select {
+  min-height: 38px;
+  padding: 0 2rem 0 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--text-main);
+  font: inherit;
+  text-transform: none;
+}
+</style>

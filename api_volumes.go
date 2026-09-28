@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"net/http"
+	"time"
+
+	"lighthouse/cluster"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/labstack/echo/v4"
@@ -24,6 +27,9 @@ func handleGETVolumes(cli *client.Client) echo.HandlerFunc {
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		}
+		if LighthouseMode == "hub" {
+			return c.JSON(http.StatusOK, aggregateClusterResources(c.Request().Context(), "list_volumes", volumes))
+		}
 		return c.JSON(http.StatusOK, volumes)
 	}
 }
@@ -39,6 +45,20 @@ func handleDELETEVolumesName(cli *client.Client) echo.HandlerFunc {
 		}
 
 		name := c.Param("name")
+		nodeID := c.QueryParam("node_id")
+		if LighthouseMode == "hub" && nodeID != "" && nodeID != NodeID {
+			if !cluster.SpokeSupports(nodeID, "resources") {
+				return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "Spoke upgrade required for remote resource management"})
+			}
+			ctx, cancel := context.WithTimeout(c.Request().Context(), 90*time.Second)
+			defer cancel()
+			data, err := cluster.CallSpoke(ctx, nodeID, "volume_remove", map[string]string{"name": name})
+			if err != nil {
+				return c.JSON(http.StatusBadGateway, map[string]string{"error": err.Error()})
+			}
+			logAudit(userClaims.ID, userClaims.Username, "DELETE", "Volume:"+name, "Success", "Deleted volume on "+nodeID)
+			return c.JSONBlob(http.StatusOK, data)
+		}
 		_, err := cli.VolumeRemove(context.Background(), name, client.VolumeRemoveOptions{Force: true})
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -63,6 +83,21 @@ func handlePOSTVolumesPrune(cli *client.Client) echo.HandlerFunc {
 			RemoveContainers bool `json:"remove_containers"`
 		}
 		_ = c.Bind(&req)
+
+		nodeID := c.QueryParam("node_id")
+		if LighthouseMode == "hub" && nodeID != "" && nodeID != NodeID {
+			if !cluster.SpokeSupports(nodeID, "resources") {
+				return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "Spoke upgrade required for remote resource management"})
+			}
+			ctx, cancel := context.WithTimeout(c.Request().Context(), 90*time.Second)
+			defer cancel()
+			data, err := cluster.CallSpoke(ctx, nodeID, "volume_prune", req)
+			if err != nil {
+				return c.JSON(http.StatusBadGateway, map[string]string{"error": err.Error()})
+			}
+			logAudit(userClaims.ID, userClaims.Username, "PRUNE", "Volumes", "Success", "Pruned unused volumes on "+nodeID)
+			return c.JSONBlob(http.StatusOK, data)
+		}
 
 		warning := ""
 		if req.RemoveContainers {

@@ -2062,12 +2062,12 @@ func handleGETContainers(cli *client.Client) echo.HandlerFunc {
 					NodeID:   nodeID,
 					IsRemote: isRemote,
 					Capabilities: ContainerCapabilities{
-						Inspect: !isRemote,
-						Logs:    true,
-						Shell:   !isRemote,
+						Inspect: !isRemote || cluster.SpokeSupports(nodeID, "inspect"),
+						Logs:    !isRemote || cluster.SpokeSupports(nodeID, "logs"),
+						Shell:   !isRemote || cluster.SpokeSupports(nodeID, "shell"),
 						Stats:   !isRemote,
-						Actions: !isRemote,
-						Scan:    !isRemote,
+						Actions: !isRemote || cluster.SpokeSupports(nodeID, "actions"),
+						Scan:    !isRemote || cluster.SpokeSupports(nodeID, "scan"),
 					},
 					State:      state,
 					Created:    int64(createdVal),
@@ -2108,6 +2108,33 @@ func handleGETContainersIdInspect(cli *client.Client) echo.HandlerFunc {
 		var u db.User
 		db.GormDB.Select("is_admin").First(&u, userClaims.ID)
 		dbIsAdmin := u.IsAdmin
+
+		if LighthouseMode == "hub" {
+			nodeID, containerName, containerImage, remote := cluster.FindSpokeContainer(id)
+			if remote {
+				if inspectContainerExcluded(dbIsAdmin, containerName, containerImage) {
+					return c.JSON(http.StatusNotFound, map[string]string{"error": "Container not found"})
+				}
+				if !dbIsAdmin && !matchesAuthorizedContainer(userClaims.ID, containerName) {
+					return c.JSON(http.StatusForbidden, map[string]string{"error": "Access Denied"})
+				}
+				if !cluster.SpokeSupports(nodeID, "inspect") {
+					return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "Spoke upgrade required for remote inspection"})
+				}
+				ctx, cancel := context.WithTimeout(c.Request().Context(), 20*time.Second)
+				defer cancel()
+				data, err := cluster.CallSpoke(ctx, nodeID, "container_inspect", map[string]string{"container_id": id})
+				if err != nil {
+					return c.JSON(http.StatusBadGateway, map[string]string{"error": err.Error()})
+				}
+				var result map[string]interface{}
+				if err := json.Unmarshal(data, &result); err != nil {
+					return c.JSON(http.StatusBadGateway, map[string]string{"error": "Invalid response from spoke"})
+				}
+				sanitizeInspectMap(result)
+				return c.JSON(http.StatusOK, result)
+			}
+		}
 
 		container, err := cli.ContainerInspect(context.Background(), id, client.ContainerInspectOptions{Size: true})
 		if err != nil {
@@ -2176,6 +2203,46 @@ func handlePOSTContainersIdAction(cli *client.Client) echo.HandlerFunc {
 			return c.JSON(http.StatusForbidden, map[string]string{"error": detail})
 		}
 
+		var currentUser db.User
+		db.GormDB.Select("is_admin").First(&currentUser, userClaims.ID)
+		dbIsAdmin := currentUser.IsAdmin
+		if !dbIsAdmin {
+			can, err := staffHasContainerActionPermission(action, userClaims.ID)
+			if err != nil || !can {
+				detail := "This action is not permitted for this account."
+				logAudit(userClaims.ID, userClaims.Username, action, id, "Forbidden", detail)
+				return c.JSON(http.StatusForbidden, map[string]string{"error": detail})
+			}
+		}
+
+		if LighthouseMode == "hub" {
+			nodeID, targetName, targetImage, remote := cluster.FindSpokeContainer(id)
+			if remote {
+				if isLightHouseSelfContainer(targetName, targetImage) && (action == "stop" || action == "remove") {
+					return c.JSON(http.StatusForbidden, map[string]string{"error": "Cannot stop or remove the LightHouse platform container."})
+				}
+				if !isLightHouseSelfContainer(targetName, targetImage) && inspectContainerExcluded(dbIsAdmin, targetName, targetImage) {
+					return c.JSON(http.StatusNotFound, map[string]string{"error": "Target container not found."})
+				}
+				if !dbIsAdmin && !matchesAuthorizedContainer(userClaims.ID, targetName) {
+					logAudit(userClaims.ID, userClaims.Username, action, targetName, "Forbidden", "Security Restriction: Regex level rights missing.")
+					return c.JSON(http.StatusForbidden, map[string]string{"error": "Security Restriction: You are not authorized to interact with this container resource."})
+				}
+				if !cluster.SpokeSupports(nodeID, "actions") {
+					return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "Spoke upgrade required for remote actions"})
+				}
+				ctx, cancel := context.WithTimeout(c.Request().Context(), 75*time.Second)
+				defer cancel()
+				_, err := cluster.CallSpoke(ctx, nodeID, "container_action", map[string]string{"container_id": id, "action": action})
+				if err != nil {
+					logAudit(userClaims.ID, userClaims.Username, action, id, "Error", "Spoke Error: "+err.Error())
+					return c.JSON(http.StatusBadGateway, map[string]string{"error": err.Error()})
+				}
+				logAudit(userClaims.ID, userClaims.Username, action, id, "Success", "Action executed successfully on "+nodeID+".")
+				return c.NoContent(http.StatusOK)
+			}
+		}
+
 		target, err := cli.ContainerInspect(context.Background(), id, client.ContainerInspectOptions{})
 		if err != nil {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "Target container not found."})
@@ -2194,18 +2261,6 @@ func handlePOSTContainersIdAction(cli *client.Client) echo.HandlerFunc {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "Target container not found."})
 		}
 
-		if !userClaims.IsAdmin {
-			can, err := staffHasContainerActionPermission(action, userClaims.ID)
-			if err != nil || !can {
-				detail := "This action is not permitted for this account."
-				logAudit(userClaims.ID, userClaims.Username, action, id, "Forbidden", detail)
-				return c.JSON(http.StatusForbidden, map[string]string{"error": detail})
-			}
-		}
-
-		var u db.User
-		db.GormDB.Select("is_admin").First(&u, userClaims.ID)
-		dbIsAdmin := u.IsAdmin
 		if !dbIsAdmin {
 			patterns := getAuthorizedPatterns(userClaims.ID)
 			authorized := false
@@ -2314,6 +2369,37 @@ func handlePOSTContainersIdAction(cli *client.Client) echo.HandlerFunc {
 	}
 }
 
+func matchesAuthorizedContainer(userID int, containerName string) bool {
+	for _, pattern := range getAuthorizedPatterns(userID) {
+		if pattern.MatchString(containerName) {
+			return true
+		}
+	}
+	return false
+}
+
+func sanitizeInspectMap(result map[string]interface{}) {
+	containerData := result
+	if nested, ok := result["Container"].(map[string]interface{}); ok {
+		containerData = nested
+	}
+	config, ok := containerData["Config"].(map[string]interface{})
+	if !ok {
+		return
+	}
+	rawEnv, ok := config["Env"].([]interface{})
+	if !ok {
+		return
+	}
+	env := make([]string, 0, len(rawEnv))
+	for _, value := range rawEnv {
+		if entry, ok := value.(string); ok {
+			env = append(env, entry)
+		}
+	}
+	config["Env"] = sanitizeContainerEnv(env)
+}
+
 // handlePOSTContainersIdScan triggers a Trivy vulnerability scan for a
 // container's image, either dispatching it to the owning Spoke (hub mode) or
 // running it locally in the background so the request returns immediately.
@@ -2331,22 +2417,20 @@ func handlePOSTContainersIdScan(cli *client.Client) echo.HandlerFunc {
 		}
 
 		if LighthouseMode == "hub" {
-			nodeID := ""
-			cluster.GlobalHub.RLock()
-			for nID, spContainers := range cluster.GlobalHub.SpokeContainers {
-				for _, ctr := range spContainers {
-					cID, _ := ctr["ID"].(string)
-					cId, _ := ctr["Id"].(string)
-					if cID == id || cId == id {
-						nodeID = nID
-						break
-					}
+			nodeID, containerName, containerImage, remote := cluster.FindSpokeContainer(id)
+			if remote {
+				if inspectContainerExcluded(userClaims.IsAdmin, containerName, containerImage) {
+					return c.JSON(http.StatusNotFound, map[string]string{"error": "Container not found"})
 				}
-			}
-			cluster.GlobalHub.RUnlock()
-
-			if nodeID != "" {
-				cluster.SendCommandToSpoke(nodeID, "scan", id)
+				if !userClaims.IsAdmin && !matchesAuthorizedContainer(userClaims.ID, containerName) {
+					return c.JSON(http.StatusForbidden, map[string]string{"error": "Access Denied"})
+				}
+				if !cluster.SpokeSupports(nodeID, "scan") {
+					return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "Spoke upgrade required for remote scans"})
+				}
+				if err := cluster.SendCommandToSpoke(nodeID, "scan", id); err != nil {
+					return c.JSON(http.StatusBadGateway, map[string]string{"error": err.Error()})
+				}
 				logAudit(userClaims.ID, userClaims.Username, "SCAN", "Container:"+id, "Success", "Triggered vulnerability scan on Spoke node")
 				return c.JSON(http.StatusOK, map[string]string{"status": "scanning", "message": "Scan dispatched to Spoke node"})
 			}
@@ -4752,6 +4836,55 @@ func handleGETWsShellId(cli *client.Client) echo.HandlerFunc {
 		err = db.DB.QueryRow("SELECT can_shell FROM users WHERE id = ? AND is_active = ?", userClaims.ID, true).Scan(&canShell)
 		if err != nil || !canShell {
 			return c.JSON(http.StatusForbidden, map[string]string{"error": "Shell access is not permitted for this account."})
+		}
+
+		if LighthouseMode == "hub" {
+			nodeID, containerName, containerImage, remote := cluster.FindSpokeContainer(id)
+			if remote {
+				if inspectContainerExcluded(userClaims.IsAdmin, containerName, containerImage) {
+					return c.NoContent(http.StatusNotFound)
+				}
+				if !userClaims.IsAdmin && !matchesAuthorizedContainer(userClaims.ID, containerName) {
+					return c.JSON(http.StatusForbidden, map[string]string{"error": "Access Denied: You do not have permission to view this resource."})
+				}
+				if !cluster.SpokeSupports(nodeID, "shell") {
+					return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "Spoke upgrade required for remote shell access"})
+				}
+
+				shellCmd := c.QueryParam("shell")
+				if shellCmd == "" {
+					shellCmd = "/bin/sh"
+				}
+				allowedShells := map[string]bool{"/bin/sh": true, "/bin/bash": true, "/bin/ash": true}
+				if !allowedShells[shellCmd] {
+					return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid shell"})
+				}
+
+				ws, err := upgradeAuthenticatedWS(c)
+				if err != nil {
+					log.Printf("WebSocket upgrade failed: %v", err)
+					return nil
+				}
+				defer ws.Close()
+				execID := generateSecureCode()
+				cluster.RegisterExecStream(execID, ws)
+				defer cluster.UnregisterExecStream(execID)
+				defer cluster.SendExecStop(nodeID, execID)
+				if err := cluster.SendExecStart(nodeID, execID, id, shellCmd); err != nil {
+					_ = ws.WriteMessage(websocket.TextMessage, []byte("\r\n[LightHouse] Remote spoke is not connected\r\n"))
+					return nil
+				}
+
+				for {
+					_, input, err := ws.ReadMessage()
+					if err != nil {
+						return nil
+					}
+					if err := cluster.SendExecInput(nodeID, execID, input); err != nil {
+						return nil
+					}
+				}
+			}
 		}
 
 		// Verify container exists and get its name

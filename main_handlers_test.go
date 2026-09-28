@@ -85,6 +85,7 @@ func TestHandleGETContainersIncludesRemoteTopology(t *testing.T) {
 
 	cluster.GlobalHub.Lock()
 	originalSpokeContainers := cluster.GlobalHub.SpokeContainers
+	originalSpokeCapabilities := cluster.GlobalHub.SpokeCapabilities
 	cluster.GlobalHub.SpokeContainers = map[string][]map[string]interface{}{
 		"spoke-1": {
 			{
@@ -98,6 +99,9 @@ func TestHandleGETContainersIncludesRemoteTopology(t *testing.T) {
 			},
 		},
 	}
+	cluster.GlobalHub.SpokeCapabilities = map[string]map[string]bool{
+		"spoke-1": {"inspect": true, "logs": true, "shell": true, "actions": true, "scan": true},
+	}
 	cluster.GlobalHub.Unlock()
 
 	defer func() {
@@ -107,6 +111,7 @@ func TestHandleGETContainersIncludesRemoteTopology(t *testing.T) {
 		apiContainersCacheTS = time.Time{}
 		cluster.GlobalHub.Lock()
 		cluster.GlobalHub.SpokeContainers = originalSpokeContainers
+		cluster.GlobalHub.SpokeCapabilities = originalSpokeCapabilities
 		cluster.GlobalHub.Unlock()
 	}()
 
@@ -129,9 +134,11 @@ func TestHandleGETContainersIncludesRemoteTopology(t *testing.T) {
 		assert.Equal(t, "remote-app", containers[0].Name)
 		assert.Equal(t, "spoke-1", containers[0].NodeID)
 		assert.True(t, containers[0].IsRemote)
-		assert.False(t, containers[0].Capabilities.Inspect)
+		assert.True(t, containers[0].Capabilities.Inspect)
 		assert.True(t, containers[0].Capabilities.Logs)
-		assert.False(t, containers[0].Capabilities.Actions)
+		assert.True(t, containers[0].Capabilities.Shell)
+		assert.True(t, containers[0].Capabilities.Actions)
+		assert.True(t, containers[0].Capabilities.Scan)
 	}
 }
 
