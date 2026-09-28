@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1197,8 +1199,10 @@ func TestHandleGETApiConfig(t *testing.T) {
 }
 
 func TestFrontendRoutesDoNotRewriteMissingAssets(t *testing.T) {
+	frontendRoot := t.TempDir()
+	assert.NoError(t, os.WriteFile(filepath.Join(frontendRoot, "index.html"), []byte(`<html><body><div id="app"></div></body></html>`), 0o600))
 	e := echo.New()
-	registerFrontendRoutes(e)
+	registerFrontendRoutesFrom(e, frontendRoot)
 
 	for _, requestPath := range []string{"/assets/removed-build.css", "/missing-icon.svg", "/api/missing"} {
 		req := httptest.NewRequest(http.MethodGet, requestPath, nil)

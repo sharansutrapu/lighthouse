@@ -731,9 +731,13 @@ func main() {
 }
 
 func registerFrontendRoutes(e *echo.Echo) {
+	registerFrontendRoutesFrom(e, "frontend/dist")
+}
+
+func registerFrontendRoutesFrom(e *echo.Echo, frontendRoot string) {
 	e.Use(frontendCacheHeadersMiddleware())
 	e.Use(middleware.StaticWithConfig(middleware.StaticConfig{
-		Root:   "frontend/dist",
+		Root:   frontendRoot,
 		Browse: false,
 		HTML5:  false,
 		Skipper: func(c echo.Context) bool {
@@ -746,7 +750,7 @@ func registerFrontendRoutes(e *echo.Echo) {
 			c.Response().Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 			return c.NoContent(http.StatusNotFound)
 		}
-		return c.File("frontend/dist/index.html")
+		return c.File(filepath.Join(frontendRoot, "index.html"))
 	})
 }
 
