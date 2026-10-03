@@ -126,6 +126,7 @@ func archiveMetrics(ctx context.Context, provider backup.StorageProvider, bucket
 		return err
 	}
 	defer os.Remove(archivePath)
+	defer outFile.Close()
 
 	gw := gzip.NewWriter(outFile)
 
@@ -210,6 +211,7 @@ func archiveLogs(ctx context.Context, provider backup.StorageProvider, bucket, d
 		return err
 	}
 	defer os.Remove(archivePath)
+	defer outFile.Close()
 
 	gw := gzip.NewWriter(outFile)
 	tw := tar.NewWriter(gw)

@@ -15,10 +15,12 @@ import (
 // generateApiTokenString creates a new random `lh_pat_<64 hex chars>` API
 // token. These are long-lived, non-expiring credentials (unlike JWTs), used
 // by scripts and MCP/AI agents to authenticate without a login session.
-func generateApiTokenString() string {
+func generateApiTokenString() (string, error) {
 	b := make([]byte, 32)
-	rand.Read(b)
-	return "lh_pat_" + hex.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return "lh_pat_" + hex.EncodeToString(b), nil
 }
 
 // hashApiToken returns the SHA-256 hex digest of a token. API tokens are
@@ -84,7 +86,10 @@ func handlePOSTTokens() echo.HandlerFunc {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Name is required"})
 		}
 
-		plaintext := generateApiTokenString()
+		plaintext, err := generateApiTokenString()
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to generate token"})
+		}
 		apiToken := db.ApiToken{
 			UserID: uint(claims.ID),
 			Name:   req.Name,

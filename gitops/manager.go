@@ -125,11 +125,12 @@ func processProject(p db.GitProject) error {
 			// We write a tiny helper script that echoes the token as the
 			// password; git calls it when credentials are required.
 			askPassScript := filepath.Join(workDir, "git-askpass.sh")
-			askPassContent := fmt.Sprintf("#!/bin/sh\necho '%s'\n", p.AuthToken)
+			askPassContent := "#!/bin/sh\nexec printf '%s\\n' \"$GIT_AUTH_TOKEN\"\n"
 			if err := os.WriteFile(askPassScript, []byte(askPassContent), 0700); err == nil {
 				defer os.Remove(askPassScript)
 				env = append(env,
 					"GIT_ASKPASS="+askPassScript,
+					"GIT_AUTH_TOKEN="+p.AuthToken,
 					"GIT_USERNAME=oauth2",
 				)
 			}

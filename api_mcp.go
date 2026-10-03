@@ -306,7 +306,8 @@ func mcpStartContainerHandler(cli *client.Client) server.ToolHandlerFunc {
 			return mcp.NewToolResultError("Unauthorized"), nil
 		}
 
-		if !claims.IsAdmin && !claims.CanStart {
+		isAdmin := getMCPUserIsAdmin(claims.ID)
+		if !isAdmin && !claims.CanStart {
 			return mcp.NewToolResultError("Unauthorized: User lacks Start permission"), nil
 		}
 
@@ -315,7 +316,6 @@ func mcpStartContainerHandler(cli *client.Client) server.ToolHandlerFunc {
 			return mcp.NewToolResultError("container_id is required"), nil
 		}
 
-		isAdmin := getMCPUserIsAdmin(claims.ID)
 		container, err := cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
 		if err != nil {
 			return mcp.NewToolResultError("Container not found"), nil
@@ -344,7 +344,8 @@ func mcpStopContainerHandler(cli *client.Client) server.ToolHandlerFunc {
 			return mcp.NewToolResultError("Unauthorized"), nil
 		}
 
-		if !claims.IsAdmin && !claims.CanStop {
+		isAdmin := getMCPUserIsAdmin(claims.ID)
+		if !isAdmin && !claims.CanStop {
 			return mcp.NewToolResultError("Unauthorized: User lacks Stop permission"), nil
 		}
 
@@ -353,7 +354,6 @@ func mcpStopContainerHandler(cli *client.Client) server.ToolHandlerFunc {
 			return mcp.NewToolResultError("container_id is required"), nil
 		}
 
-		isAdmin := getMCPUserIsAdmin(claims.ID)
 		container, err := cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
 		if err != nil {
 			return mcp.NewToolResultError("Container not found"), nil
@@ -382,7 +382,8 @@ func mcpRestartContainerHandler(cli *client.Client) server.ToolHandlerFunc {
 			return mcp.NewToolResultError("Unauthorized"), nil
 		}
 
-		if !claims.IsAdmin && !claims.CanRestart {
+		isAdmin := getMCPUserIsAdmin(claims.ID)
+		if !isAdmin && !claims.CanRestart {
 			return mcp.NewToolResultError("Unauthorized: User lacks Restart permission"), nil
 		}
 
@@ -391,7 +392,6 @@ func mcpRestartContainerHandler(cli *client.Client) server.ToolHandlerFunc {
 			return mcp.NewToolResultError("container_id is required"), nil
 		}
 
-		isAdmin := getMCPUserIsAdmin(claims.ID)
 		container, err := cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
 		if err != nil {
 			return mcp.NewToolResultError("Container not found"), nil

@@ -20,6 +20,7 @@ import (
 	"gorm.io/gorm"
 	"log"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"os"
 	"os/exec"
@@ -2211,17 +2212,18 @@ func handlePOSTContainersIdAction(cli *client.Client) echo.HandlerFunc {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid action specified."})
 		}
 
+		var currentUser db.User
+		db.GormDB.Select("is_admin").First(&currentUser, userClaims.ID)
+		dbIsAdmin := currentUser.IsAdmin
+
 		// Admins always bypass the env-level action gate and the per-user
 		// permission check — those restrictions are for non-admin staff only.
-		if !userClaims.IsAdmin && !containerActionEnvAllowed(action) {
+		if !dbIsAdmin && !containerActionEnvAllowed(action) {
 			detail := "This action is disabled on this server."
 			logAudit(userClaims.ID, userClaims.Username, action, id, "Forbidden", detail)
 			return c.JSON(http.StatusForbidden, map[string]string{"error": detail})
 		}
 
-		var currentUser db.User
-		db.GormDB.Select("is_admin").First(&currentUser, userClaims.ID)
-		dbIsAdmin := currentUser.IsAdmin
 		if !dbIsAdmin {
 			can, err := staffHasContainerActionPermission(action, userClaims.ID)
 			if err != nil || !can {
@@ -2273,7 +2275,7 @@ func handlePOSTContainersIdAction(cli *client.Client) echo.HandlerFunc {
 			if action == "stop" || action == "remove" {
 				return c.JSON(http.StatusForbidden, map[string]string{"error": "Cannot stop or remove the LightHouse platform container."})
 			}
-		} else if inspectContainerExcluded(userClaims.IsAdmin, target.Container.Name, targetImage) {
+		} else if inspectContainerExcluded(dbIsAdmin, target.Container.Name, targetImage) {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "Target container not found."})
 		}
 
@@ -3550,10 +3552,15 @@ func handlePOSTUsers() echo.HandlerFunc {
 
 			return c.NoContent(http.StatusCreated)
 		case "invite":
-			email := c.FormValue("email")
+			email := strings.TrimSpace(c.FormValue("email"))
 			if email == "" {
 				return c.JSON(http.StatusBadRequest, map[string]string{"error": "Email is required for invite auth"})
 			}
+			addr, err := mail.ParseAddress(email)
+			if err != nil || strings.ContainsAny(email, "\r\n") {
+				return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid email address format"})
+			}
+			email = addr.Address
 
 			// Generate invite token
 			b := make([]byte, 32)
