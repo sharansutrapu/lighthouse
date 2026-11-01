@@ -1,4 +1,14 @@
-import { secureStorage } from "./storage";
+import { secureStorage } from "./storage.js";
+
+export function splitLogChunk(chunk, previous = '') {
+  const lines = (previous + chunk).split(/\r?\n/);
+  const remainder = lines.pop() || '';
+  return { lines, remainder };
+}
+
+export function reconnectDelay(attempt) {
+  return Math.min(30000, 3000 * 2 ** Math.min(Math.max(attempt, 0), 4));
+}
 
 // createAuthenticatedWebSocket opens a WebSocket to path, carrying the
 // current session's JWT as a Sec-WebSocket-Protocol entry (browsers cannot

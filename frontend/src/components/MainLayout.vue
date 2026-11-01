@@ -312,7 +312,7 @@
 
           <router-link
             to="/dashboard"
-            class="sidebar-logo logs-route hide-mobile"
+            class="sidebar-logo logs-route desktop-only"
             v-if="isFullBleedPage"
           >
             <img :src="logoSrc" alt="LightHouse" class="logo-img-sidebar" />
@@ -397,6 +397,9 @@
         </div>
       </header>
 
+      <div v-if="inventoryNotice && !sharedState.forcePasswordChange" class="inventory-notice" role="status">
+        {{ inventoryNotice }}
+      </div>
       <div :class="['layout-body', { 'no-padding': isFullBleedPage }]">
         <slot v-if="!sharedState.forcePasswordChange" />
       </div>
@@ -559,7 +562,7 @@ import {
 } from "../utils/sharedState";
 import { secureStorage } from "../utils/storage";
 import { createAuthenticatedWebSocket } from "../utils/wsAuth";
-import { apiFetch } from "../utils/apiFetch";
+import { apiFetch, apiStatus } from "../utils/apiFetch";
 import McpConfigModal from "./McpConfigModal.vue";
 
 const route = useRoute();
@@ -569,6 +572,21 @@ const isMobileMenuOpen = ref(false);
 const isMobileSearchOpen = ref(false);
 const isSidebarCollapsed = ref(false);
 const isFullBleedPage = computed(() => route.name === "Logs" || route.name === "Shell");
+const inventoryNotice = computed(() => {
+  const paths = {
+    '/dashboard': '/api/containers',
+    '/containers': '/api/containers',
+    '/logs': '/api/containers',
+    '/shell': '/api/containers',
+    '/images': '/api/images',
+    '/volumes': '/api/volumes',
+    '/networks': '/api/networks',
+  };
+  const status = apiStatus[paths[route.path]];
+  if (status?.error) return status.error;
+  if (status?.unavailableNodes.length) return `Inventory incomplete. Unavailable nodes: ${status.unavailableNodes.join(', ')}.`;
+  return '';
+});
 const showMcpConfigModal = ref(false);
 let statsWs = null;
 let userInterval = null;
@@ -813,6 +831,17 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.inventory-notice {
+  flex-shrink: 0;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--warning);
+  background: color-mix(in srgb, var(--warning) 12%, var(--bg-card));
+  color: var(--text-main);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .modal-content h3 {
   margin-bottom: 0.5rem;
 }

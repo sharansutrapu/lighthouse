@@ -2,7 +2,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { secureStorage } from '../utils/storage';
 import { sharedState, showToast, formatBytes } from '../utils/sharedState';
-import { apiFetch } from '../utils/apiFetch';
+import { apiFetch, apiStatus, getAPIError } from '../utils/apiFetch';
 
 // This composable centralizes the container list: a single module-level
 // `containers` ref shared by every component that calls useContainers(), kept
@@ -12,23 +12,53 @@ const containers = ref([]);
 const loading = ref(true);
 let pollInterval = null;
 let pollSubscribers = 0;
+let fetchPromise = null;
+let fetchController = null;
+let activeToken = null;
 
 // fetchContainers loads the current container list from the backend into the
 // shared `containers` ref.
-export async function fetchContainers() {
-  try {
-    const token = secureStorage.getItem('token');
-    const res = await apiFetch('/api/containers', {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (res.ok) {
-      containers.value = await res.json();
-    }
-  } catch (err) {
-    console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
-  } finally {
-    loading.value = false;
+export function fetchContainers() {
+  const token = secureStorage.getItem('token');
+  if (token !== activeToken) {
+    fetchController?.abort();
+    fetchPromise = null;
+    containers.value = [];
+    loading.value = true;
+    activeToken = token;
   }
+  if (!token) {
+    loading.value = false;
+    return Promise.resolve();
+  }
+  if (fetchPromise) return fetchPromise;
+  const controller = new AbortController();
+  fetchController = controller;
+  fetchPromise = (async () => {
+    try {
+      const res = await apiFetch('/api/containers', {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (!controller.signal.aborted && secureStorage.getItem('token') === token) {
+          containers.value = Array.isArray(data) ? data : [];
+        }
+      }
+    } catch (error) {
+      if (error.name !== 'AbortError' && secureStorage.getItem('token') === token) {
+        apiStatus['/api/containers'] = { unavailableNodes: [], error: 'Container inventory could not be refreshed.' };
+      }
+    } finally {
+      if (fetchController === controller) {
+        loading.value = false;
+        fetchController = null;
+        fetchPromise = null;
+      }
+    }
+  })();
+  return fetchPromise;
 }
 
 // startPolling begins the shared 8-second refresh loop (idempotent — safe to
@@ -45,6 +75,9 @@ function stopPolling() {
     clearInterval(pollInterval);
     pollInterval = null;
   }
+  fetchController?.abort();
+  fetchController = null;
+  fetchPromise = null;
 }
 
 // formatContainerDate renders a Unix timestamp (seconds) as a locale date/time string.
@@ -65,6 +98,7 @@ export function formatContainerDate(unix) {
 export function useContainers(options = {}) {
   const { autoPoll = true } = options;
   const router = useRouter();
+  if (secureStorage.getItem('token') !== activeToken) containers.value = [];
 
   const showConfirm = ref(false);
   const pendingId = ref(null);
@@ -131,11 +165,10 @@ export function useContainers(options = {}) {
         showToast('Success', `Action ${pendingAction.value} executed.`, 'success');
         await fetchContainers();
       } else {
-        showToast('Error', 'Action failed.', 'error');
+        showToast('Error', await getAPIError(res, 'Container action failed.'), 'error');
       }
     } catch (err) {
-      console.error(err); showToast('Error', 'An error occurred. Check console for details.', 'error');
-      showToast('Error', 'Action failed.', 'error');
+      showToast('Error', 'Container action failed. The server could not be reached.', 'error');
     } finally {
       isActionLoading.value = false;
     }

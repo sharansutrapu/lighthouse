@@ -14,6 +14,7 @@
           <span class="c-name">{{ container.name }}</span>
           <span class="c-id">{{ container.id.substring(0, 12) }}</span>
         </div>
+        <span :class="['stream-status', `stream-${streamState}`]" role="status">{{ streamLabel }}</span>
       </div>
 
       <div class="header-right">
@@ -226,7 +227,7 @@
           <span class="line-text" v-html="formatLog(log)"></span>
         </div>
         <div v-if="displayLogs.length === 0" class="log-empty">
-          <p class="text-mute">Waiting for stream...</p>
+          <p class="text-mute">{{ streamState === 'live' ? 'No log output yet.' : streamLabel }}</p>
         </div>
       </div>
 
@@ -261,7 +262,7 @@
 import { ref, onMounted, onUnmounted, nextTick, watch, computed } from "vue";
 import { showToast } from "../utils/sharedState";
 import { secureStorage } from "../utils/storage";
-import { createAuthenticatedWebSocket } from "../utils/wsAuth";
+import { createAuthenticatedWebSocket, splitLogChunk, reconnectDelay } from "../utils/wsAuth";
 import { apiFetch } from "../utils/apiFetch";
 
 const props = defineProps({
@@ -283,11 +284,23 @@ const stats = ref({ cpu: "0.00", memory: "0B / 0B", memPercent: 0 });
 const isLoadingHistory = ref(false);
 const hasMoreHistory = ref(true);
 const totalLogs = ref(0);
+const streamState = ref('connecting');
+const streamLabel = computed(() => ({
+  connecting: 'Connecting',
+  live: 'Live',
+  reconnecting: 'Reconnecting',
+  closed: 'Stream ended',
+  unavailable: 'Stream unavailable',
+}[streamState.value]));
 let lastFetchedUntil = null;
 let socket = null;
 let statsController = null;
 let observer = null;
 let reconnectTimer = null;
+let statsReconnectTimer = null;
+let reconnectAttempt = 0;
+let logRemainder = '';
+let replayLines = new Set();
 let historyFetchId = 0;
 let viewerMounted = false;
 
@@ -497,7 +510,11 @@ const setupObserver = () => {
 
 // clearLogs empties the currently displayed buffer (does not affect the
 // backend's stored log history).
-const clearLogs = () => (logs.value = []);
+const clearLogs = () => {
+  logs.value = [];
+  logRemainder = '';
+  replayLines.clear();
+};
 
 // getStatColor maps a CPU/memory percentage to a semantic color threshold.
 const getStatColor = (val) => {
@@ -529,6 +546,7 @@ const downloadLogs = (format) => {
   a.href = url;
   a.download = `${props.container.name}_logs.${format}`;
   a.click();
+  URL.revokeObjectURL(url);
   showDownloadModal.value = false;
 };
 
@@ -547,9 +565,11 @@ const downloadFullLogs = async () => {
     if (res.ok) {
       const blob = await res.blob();
       const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
+      const url = URL.createObjectURL(blob);
+      a.href = url;
       a.download = `${props.container.name}_full.log`;
       a.click();
+      URL.revokeObjectURL(url);
       showDownloadModal.value = false;
     }
   } catch (err) {
@@ -562,24 +582,34 @@ const downloadFullLogs = async () => {
 // stats`'s own formula), since the API returns raw deltas rather than
 // pre-computed percentages. Auto-retries after 5s on any non-abort error.
 const fetchStats = async () => {
-  if (props.container.capabilities?.stats === false) return;
+  if (!viewerMounted || props.container.capabilities?.stats === false || props.container.state !== 'running') return;
+  if (statsReconnectTimer) clearTimeout(statsReconnectTimer);
+  statsReconnectTimer = null;
   if (statsController) statsController.abort();
-  statsController = new AbortController();
+  const controller = new AbortController();
+  statsController = controller;
+  let reader;
+  let retry = true;
   try {
     const token = secureStorage.getItem("token");
     const response = await apiFetch(
       `/api/containers/${props.container.id}/stats`,
       {
         headers: { Authorization: `Bearer ${token}` },
-        signal: statsController.signal,
+        signal: controller.signal,
       },
     );
-    const reader = response.body.getReader();
+    if (!response.ok || !response.body) {
+      retry = response.status !== 401 && response.status !== 403;
+      return;
+    }
+    reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
+      if (!viewerMounted || statsController !== controller) return;
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
       buffer = lines.pop() || "";
@@ -628,7 +658,12 @@ const fetchStats = async () => {
       }
     }
   } catch (e) {
-    if (e.name !== "AbortError") setTimeout(fetchStats, 5000);
+    retry = e.name !== 'AbortError';
+  } finally {
+    reader?.releaseLock();
+    if (retry && !controller.signal.aborted && viewerMounted && statsController === controller) {
+      statsReconnectTimer = setTimeout(fetchStats, 5000);
+    }
   }
 };
 
@@ -658,30 +693,61 @@ const fetchLogCount = async () => {
 // connect opens (or reopens) the live-tail WebSocket for the current
 // container, capping the client-side buffer at 5000 lines and auto-
 // reconnecting after 3s if the connection drops unexpectedly.
+const appendLogLines = (lines) => {
+  const incoming = lines.filter((line) => line && !replayLines.has(line));
+  logs.value.push(...incoming.slice(-5000));
+  if (logs.value.length > 5000) logs.value.splice(0, logs.value.length - 5000);
+  if (autoScroll.value) nextTick(scrollToBottom);
+};
+
 const connect = () => {
+  if (!viewerMounted) return;
   if (socket) {
+    socket.onmessage = null;
     socket.onclose = null;
     socket.close();
+    socket = null;
   }
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
-  socket = createAuthenticatedWebSocket(`/ws/logs/${props.container.id}`);
-  socket.onmessage = (e) => {
-    logs.value.push(e.data);
-    // Limit buffer to 5000 lines, only prune if auto-scrolling to preserve history exploration
-    if (autoScroll.value && logs.value.length > 5000) {
-      logs.value.shift();
-    }
-    if (autoScroll.value) nextTick(scrollToBottom);
+  if (props.container.capabilities?.logs === false) {
+    streamState.value = 'unavailable';
+    return;
+  }
+  streamState.value = reconnectAttempt > 0 ? 'reconnecting' : 'connecting';
+  logRemainder = '';
+  replayLines = new Set(logs.value.slice(-200).filter((line) => /^\d{4}-\d{2}-\d{2}T/.test(line)));
+  const connection = createAuthenticatedWebSocket(`/ws/logs/${props.container.id}`);
+  socket = connection;
+  let openedAt = 0;
+  connection.onopen = () => {
+    if (socket !== connection || !viewerMounted) return;
+    openedAt = Date.now();
+    streamState.value = 'live';
   };
-  socket.onclose = () => {
+  connection.onmessage = (event) => {
+    if (socket !== connection || !viewerMounted) return;
+    const chunk = splitLogChunk(event.data, logRemainder);
+    logRemainder = chunk.remainder;
+    appendLogLines(chunk.lines);
+  };
+  connection.onclose = () => {
+    if (socket !== connection) return;
     socket = null;
     if (!viewerMounted) return;
+    if (logRemainder) appendLogLines([logRemainder]);
+    logRemainder = '';
+    if (props.container.state !== 'running') {
+      streamState.value = 'closed';
+      return;
+    }
+    if (openedAt && Date.now() - openedAt > 10000) reconnectAttempt = 0;
+    streamState.value = 'reconnecting';
     reconnectTimer = setTimeout(() => {
       if (viewerMounted && props.container.id) connect();
-    }, 3000);
+    }, reconnectDelay(reconnectAttempt++));
   };
 };
 
@@ -695,11 +761,15 @@ onMounted(() => {
 });
 onUnmounted(() => {
   viewerMounted = false;
+  historyFetchId++;
+  if (statsReconnectTimer) clearTimeout(statsReconnectTimer);
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
   if (socket) {
+    socket.onmessage = null;
+    socket.onopen = null;
     socket.onclose = null;
     socket.close();
   }
@@ -707,21 +777,45 @@ onUnmounted(() => {
   if (observer) observer.disconnect();
 });
 watch(
-  () => props.container.id,
+  [() => props.container.node_id, () => props.container.id],
   () => {
     historyFetchId++;
+    isLoadingHistory.value = false;
+    hasMoreHistory.value = !props.container.is_remote;
     lastFetchedUntil = null;
     logs.value = [];
     totalLogs.value = 0;
+    reconnectAttempt = 0;
+    if (statsReconnectTimer) clearTimeout(statsReconnectTimer);
+    if (statsController) statsController.abort();
     connect();
     if (props.container.capabilities?.stats !== false) fetchStats();
     if (!props.container.is_remote) fetchLogCount();
     else hasMoreHistory.value = false;
   },
 );
+watch(
+  [() => props.container.state, () => props.container.capabilities?.stats],
+  () => {
+    if (statsReconnectTimer) clearTimeout(statsReconnectTimer);
+    if (statsController) statsController.abort();
+    fetchStats();
+    if (props.container.state === 'running' && streamState.value === 'closed') connect();
+  },
+);
 </script>
 
 <style scoped>
+.stream-status {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--text-mute);
+}
+
+.stream-live { color: var(--success); }
+.stream-connecting, .stream-reconnecting { color: var(--warning); }
+.stream-unavailable { color: var(--error); }
+
 .log-viewer {
   display: flex;
   flex-direction: column;

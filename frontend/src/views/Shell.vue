@@ -53,7 +53,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { createAuthenticatedWebSocket } from "../utils/wsAuth";
-import { sharedState, userCanShell } from "../utils/sharedState";
+import { sharedState, userCanShell, fetchCurrentUser } from "../utils/sharedState";
 import { useContainers } from "../composables/useContainers";
 
 const route = useRoute();
@@ -278,7 +278,8 @@ onMounted(async () => {
     return;
   }
 
-  await fetchContainers();
+  await Promise.all([fetchContainers(), fetchCurrentUser()]);
+  if (sessionEnded.value) return;
 
   if (container.value?.capabilities?.shell === false) {
     errorMessage.value = `Shell access through ${container.value.node_id} is not available yet.`;

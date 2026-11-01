@@ -315,7 +315,7 @@ const props = defineProps({
 
 const {
   containers, loading,
-  showConfirm, pendingAction, actionClass,
+  showConfirm, pendingAction, actionClass, isActionLoading,
   goToLogs, goToShell, goToDetail, triggerConfirm, executeAction,
   formatBytes, formatDate,
 } = useContainers();
