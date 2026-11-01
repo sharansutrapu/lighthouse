@@ -1,0 +1,9 @@
+{
+    admin off
+    auto_https disable_redirects
+}
+
+https://hub-proxy {
+    tls internal
+    reverse_proxy hub:8000
+}

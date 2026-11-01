@@ -1,0 +1,151 @@
+name: lighthouse-verification
+
+x-engine: &engine
+  image: docker:29-dind
+  privileged: true
+  environment:
+    DOCKER_TLS_CERTDIR: ""
+  command: ["--tls=false"]
+  mem_limit: 512m
+  networks: [fleet]
+  labels:
+    lighthouse.test: integration
+  healthcheck:
+    test: ["CMD", "docker", "info"]
+    interval: 3s
+    timeout: 5s
+    retries: 30
+    start_period: 15s
+
+x-app: &app
+  image: lighthouse:verification
+  mem_limit: 160m
+  networks: [fleet]
+  labels:
+    lighthouse.test: integration
+
+x-environment: &environment
+  GOMAXPROCS: "1"
+  GOMEMLIMIT: 96MiB
+  SECRET_KEY: integration-only-signing-key-not-for-production
+  HUB_TOKEN: integration-only-hub-token-not-for-production
+  CLIENT_ACCESS: strict
+  ALLOW_START: "true"
+  ALLOW_STOP: "true"
+  ALLOW_RESTART: "true"
+  ALLOW_DELETE: "true"
+  ALLOW_SHELL: "true"
+
+services:
+  engine-hub:
+    <<: *engine
+    volumes: [engine-hub-data:/var/lib/docker]
+
+  engine-one:
+    <<: *engine
+    volumes: [engine-one-data:/var/lib/docker]
+
+  engine-two:
+    <<: *engine
+    volumes: [engine-two-data:/var/lib/docker]
+
+  postgres:
+    image: postgres:18-alpine
+    mem_limit: 192m
+    command: ["postgres", "-c", "shared_buffers=16MB", "-c", "max_connections=30"]
+    environment:
+      POSTGRES_USER: lighthouse_test
+      POSTGRES_PASSWORD: integration-only-database-password
+      POSTGRES_DB: lighthouse_test
+    networks: [fleet]
+    labels:
+      lighthouse.test: integration
+    volumes: [postgres-data:/var/lib/postgresql]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lighthouse_test -d lighthouse_test"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  hub:
+    <<: *app
+    ports: [127.0.0.1:18080:8000]
+    environment:
+      <<: *environment
+      LIGHTHOUSE_MODE: hub
+      NODE_NAME: hub-test
+      DOCKER_HOST: tcp://engine-hub:2375
+      DB_TYPE: postgres
+      DB_DSN: host=postgres user=lighthouse_test password=integration-only-database-password dbname=lighthouse_test port=5432 sslmode=disable
+    depends_on:
+      engine-hub: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8000/"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  hub-proxy:
+    image: caddy:2-alpine
+    mem_limit: 64m
+    networks: [fleet]
+    labels:
+      lighthouse.test: integration
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - proxy-data:/data
+    depends_on:
+      hub: {condition: service_healthy}
+
+  spoke-one:
+    <<: *app
+    environment:
+      <<: *environment
+      LIGHTHOUSE_MODE: spoke
+      NODE_NAME: spoke-one-test
+      DOCKER_HOST: tcp://engine-one:2375
+      HUB_URL: https://hub-proxy
+      SSL_CERT_FILE: /test-ca/caddy/pki/authorities/local/root.crt
+      DB_PATH: ":memory:"
+    volumes: [proxy-data:/test-ca:ro]
+    depends_on:
+      engine-one: {condition: service_healthy}
+      hub-proxy: {condition: service_started}
+
+  spoke-two:
+    <<: *app
+    environment:
+      <<: *environment
+      LIGHTHOUSE_MODE: spoke
+      NODE_NAME: spoke-two-test
+      DOCKER_HOST: tcp://engine-two:2375
+      HUB_URL: https://hub-proxy/
+      SSL_CERT_FILE: /test-ca/caddy/pki/authorities/local/root.crt
+      DB_PATH: ":memory:"
+    volumes: [proxy-data:/test-ca:ro]
+    depends_on:
+      engine-two: {condition: service_healthy}
+      hub-proxy: {condition: service_started}
+
+  standalone:
+    <<: *app
+    ports: [127.0.0.1:18081:8000]
+    environment:
+      <<: *environment
+      LIGHTHOUSE_MODE: standalone
+      NODE_NAME: standalone-test
+      DOCKER_HOST: tcp://engine-hub:2375
+      DB_PATH: ":memory:"
+    depends_on:
+      engine-hub: {condition: service_healthy}
+
+networks:
+  fleet:
+
+volumes:
+  engine-hub-data:
+  engine-one-data:
+  engine-two-data:
+  postgres-data:
+  proxy-data:
