@@ -28,7 +28,8 @@ import (
 // those tests hand-crafted "valid-shaped" JSON and never exercised the real
 // PushToHub encoding path). These tests exercise the real encode/decode path.
 type wireWSConn struct {
-	sent [][]byte
+	sent    [][]byte
+	onWrite func([]byte)
 }
 
 func (w *wireWSConn) ReadMessage() (int, []byte, error) { return 0, nil, errors.New("not used") }
@@ -38,6 +39,9 @@ func (w *wireWSConn) WriteJSON(v interface{}) error {
 		return err
 	}
 	w.sent = append(w.sent, b)
+	if w.onWrite != nil {
+		w.onWrite(b)
+	}
 	return nil
 }
 func (w *wireWSConn) WriteMessage(messageType int, data []byte) error { return nil }
@@ -224,7 +228,15 @@ func TestHandleCommand_EndToEnd_ScanReportsResultToHub(t *testing.T) {
 				return map[string]interface{}{"ok": true}, nil
 			}
 
-			ws := &wireWSConn{}
+			done := make(chan struct{})
+			ws := &wireWSConn{onWrite: func(message []byte) {
+				var envelope struct {
+					Type string `json:"type"`
+				}
+				if json.Unmarshal(message, &envelope) == nil && envelope.Type == "command_result" {
+					close(done)
+				}
+			}}
 			spokeWs = ws
 
 			containerID := "scan-e2e-" + tc.name
@@ -233,7 +245,11 @@ func TestHandleCommand_EndToEnd_ScanReportsResultToHub(t *testing.T) {
 			GlobalHub.Unlock()
 
 			handleCommand("scan", containerID)
-			time.Sleep(100 * time.Millisecond) // scan runs in its own goroutine
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("scan did not report its outcome")
+			}
 
 			var commandMessages [][]byte
 			var scanMessages [][]byte
@@ -254,8 +270,23 @@ func TestHandleCommand_EndToEnd_ScanReportsResultToHub(t *testing.T) {
 			if len(commandMessages) != 1 {
 				t.Fatalf("expected exactly 1 command_result message for scan, got %d", len(commandMessages))
 			}
-			if tc.wantStatus == "success" {
-				assert.Len(t, scanMessages, 1, "a successful spoke scan should return its result to the hub")
+			if !tc.inspectFail && assert.Len(t, scanMessages, 1, "every completed scan attempt must return a result to the hub") {
+				var saved db.ImageScanResult
+				assert.NoError(t, db.GormDB.Where("image = ?", "alpine").Last(&saved).Error)
+				if tc.scanFail {
+					assert.JSONEq(t, `{"Error":"simulated scanner failure"}`, saved.Result)
+				} else {
+					assert.JSONEq(t, `{"ok":true}`, saved.Result)
+				}
+				var before int64
+				assert.NoError(t, db.GormDB.Model(&db.ImageScanResult{}).Count(&before).Error)
+				handleSpokeMessage("test-node", scanMessages[0])
+				var after int64
+				assert.NoError(t, db.GormDB.Model(&db.ImageScanResult{}).Count(&after).Error)
+				assert.Equal(t, before+1, after, "the hub must persist the forwarded scan result")
+				var hubResult db.ImageScanResult
+				assert.NoError(t, db.GormDB.Last(&hubResult).Error)
+				assert.JSONEq(t, saved.Result, hubResult.Result)
 			}
 			handleSpokeMessage("test-node", commandMessages[0])
 

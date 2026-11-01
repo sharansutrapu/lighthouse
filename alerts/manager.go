@@ -66,6 +66,8 @@ type AlertManager struct {
 	// debounceMu guards groupedDebounce
 	debounceMu      sync.Mutex
 	groupedDebounce map[string]*ContainerDebounceGroup
+	deliveryWG      sync.WaitGroup
+	stopped         bool
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -122,7 +124,18 @@ func (am *AlertManager) Start() {
 // Stop shuts down all background goroutines cleanly. The root context is
 // cancelled, which cascades to every log-tailer and the event listener.
 func (am *AlertManager) Stop() {
-	am.cancel()
+	if am.cancel != nil {
+		am.cancel()
+	}
+	am.debounceMu.Lock()
+	am.stopped = true
+	for containerName, group := range am.groupedDebounce {
+		if group.Timer != nil {
+			group.Timer.Stop()
+		}
+		delete(am.groupedDebounce, containerName)
+	}
+	am.debounceMu.Unlock()
 	// Also explicitly cancel any tailers that may have been started after the
 	// root context was created (belt-and-suspenders).
 	am.tailsMu.Lock()
@@ -130,6 +143,7 @@ func (am *AlertManager) Stop() {
 		cancel()
 	}
 	am.tailsMu.Unlock()
+	am.deliveryWG.Wait()
 }
 
 // ReloadRules refreshes the in-memory rules cache from SQLite.
@@ -601,6 +615,9 @@ var groupingWindow = 30 * time.Second
 func (am *AlertManager) triggerAlert(rule *AlertRule, containerName, alertType, details string) {
 	am.debounceMu.Lock()
 	defer am.debounceMu.Unlock()
+	if am.stopped {
+		return
+	}
 
 	group, ok := am.groupedDebounce[containerName]
 	if !ok {
@@ -613,10 +630,12 @@ func (am *AlertManager) triggerAlert(rule *AlertRule, containerName, alertType, 
 		group.Timer = time.AfterFunc(groupingWindow, func() {
 			am.debounceMu.Lock()
 			g, exists := am.groupedDebounce[containerName]
-			if !exists {
+			if !exists || am.stopped {
 				am.debounceMu.Unlock()
 				return
 			}
+			am.deliveryWG.Add(1)
+			defer am.deliveryWG.Done()
 			// Snapshot and clear the group before releasing the lock so new
 			// triggers for the same container can immediately start a fresh window.
 			var toDeliver []TriggeredRule
@@ -774,7 +793,7 @@ func (am *AlertManager) deliverGroup(containerName string, triggers []TriggeredR
 		Timestamp:     time.Now().UTC().Format(time.RFC3339),
 	}
 
-	go func() {
+	func() {
 		var statusMsgs []string
 		var channels []string
 		var channelsMu sync.Mutex

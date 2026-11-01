@@ -47,8 +47,34 @@ func setupTestManager(t *testing.T) *AlertManager {
 	db.GormDB.AutoMigrate(&db.AlertRule{}, &db.AlertHistory{}, &db.Setting{}, &db.ImageScanResult{})
 	db.GormDB.Create(&db.Setting{ID: 1}) // Needed for deliverAlert
 
-	am := NewAlertManager(nil)
+	am := newTestAlertManager(t, nil)
 	return am
+}
+
+func newTestAlertManager(t *testing.T, cli *client.Client) *AlertManager {
+	t.Helper()
+	manager := NewAlertManager(cli)
+	t.Cleanup(manager.Stop)
+	return manager
+}
+
+func TestStopCancelsPendingDebounceGroups(t *testing.T) {
+	manager := newTestAlertManager(t, nil)
+	rule := &AlertRule{ID: 9191, Name: "pending-stop"}
+	manager.triggerAlert(rule, "pending-container", "event", "pending")
+	manager.debounceMu.Lock()
+	pending := len(manager.groupedDebounce)
+	manager.debounceMu.Unlock()
+	if pending != 1 {
+		t.Fatalf("expected one pending group, got %d", pending)
+	}
+	manager.Stop()
+	manager.triggerAlert(rule, "after-stop", "event", "must not enqueue")
+	manager.debounceMu.Lock()
+	defer manager.debounceMu.Unlock()
+	if len(manager.groupedDebounce) != 0 {
+		t.Fatal("stopped manager still has pending delivery groups")
+	}
 }
 
 func TestReloadRules(t *testing.T) {
@@ -336,13 +362,17 @@ func TestAutoScanOnContainerStart(t *testing.T) {
 
 	// Mock scanner
 	originalScanImageFunc := scanner.ScanImageFunc
-	defer func() { scanner.ScanImageFunc = originalScanImageFunc }()
+	originalCallback := scanner.AlertCallback
+	defer func() {
+		scanner.ScanImageFunc = originalScanImageFunc
+		scanner.AlertCallback = originalCallback
+	}()
 
-	scanExecuted := false
+	scanCompleted := make(chan struct{}, 2)
 	scanner.ScanImageFunc = func(ctx context.Context, cli *client.Client, imageName string) (map[string]interface{}, error) {
-		scanExecuted = true
 		return map[string]interface{}{}, nil
 	}
+	scanner.AlertCallback = func(string, []byte) { scanCompleted <- struct{}{} }
 
 	// Trigger container start event
 	event := events.Message{
@@ -356,18 +386,18 @@ func TestAutoScanOnContainerStart(t *testing.T) {
 	}
 	am.processContainerEvent(event)
 
-	time.Sleep(100 * time.Millisecond)
-
-	if !scanExecuted {
-		t.Errorf("Expected auto-scan to execute for started container")
+	select {
+	case <-scanCompleted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Expected auto-scan to finish for started container")
 	}
 
 	// Test Throttle (30 minutes)
-	scanExecuted = false
 	am.processContainerEvent(event)
-	time.Sleep(100 * time.Millisecond)
-	if scanExecuted {
+	select {
+	case <-scanCompleted:
 		t.Errorf("Expected auto-scan to be throttled for the same image")
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
@@ -375,7 +405,7 @@ func TestAutoScanOnContainerStart(t *testing.T) {
 
 func TestAuditLogCallback(t *testing.T) {
 	setupTestDBExtra(t)
-	am := NewAlertManager(nil)
+	am := newTestAlertManager(t, nil)
 	am.Start()
 	db.OnAuditLogged("action", "resource", "status", "details")
 	am.Stop()
@@ -395,12 +425,12 @@ func TestReloadRulesRegexErrors(t *testing.T) {
 		Enabled:          true,
 	})
 
-	am := NewAlertManager(nil)
+	am := newTestAlertManager(t, nil)
 	am.ReloadRules()
 }
 
 func TestProcessContainerEventFull(t *testing.T) {
-	am := NewAlertManager(nil)
+	am := newTestAlertManager(t, nil)
 	am.rules = map[int64]*AlertRule{
 		1: {
 			EventTypes:       "start,die,health_status",
@@ -442,7 +472,7 @@ func TestModelsNilRegex(t *testing.T) {
 
 func TestEvaluateStorageMetricsFull(t *testing.T) {
 	setupTestDBExtra(t)
-	am := NewAlertManager(nil)
+	am := newTestAlertManager(t, nil)
 	am.rules = map[int64]*AlertRule{
 		1: {
 			ID:                     1,
@@ -647,7 +677,7 @@ func TestRunEventLoopErrors(t *testing.T) {
 }
 
 func TestTriggerAlertWithRule(t *testing.T) {
-	am := NewAlertManager(nil)
+	am := newTestAlertManager(t, nil)
 	rule := &AlertRule{
 		ID:              1,
 		CooldownSeconds: 60,
@@ -1013,7 +1043,7 @@ func TestAlertManager_StartStop(t *testing.T) {
 		},
 	}
 	cli, _ := client.NewClientWithOpts(client.WithHTTPClient(mockHTTPClient))
-	am := NewAlertManager(cli)
+	am := newTestAlertManager(t, cli)
 	am.Start()
 	time.Sleep(50 * time.Millisecond)
 	am.Stop()
@@ -1066,7 +1096,7 @@ func TestAlertManager_RunEventLoop_ChannelClose(t *testing.T) {
 
 func TestAlertManager_TriggerAlerts(t *testing.T) {
 	cli, _ := client.NewClientWithOpts()
-	am := NewAlertManager(cli)
+	am := newTestAlertManager(t, cli)
 	am.rules = map[int64]*AlertRule{
 		1: {
 			ID:               1,
@@ -1234,7 +1264,7 @@ func TestEvaluateStorageMetrics_FullMock(t *testing.T) {
 		memVirtualMemory = origMem
 	}()
 
-	am := NewAlertManager(nil)
+	am := newTestAlertManager(t, nil)
 	am.rules = map[int64]*AlertRule{
 		1: {
 			ID:                     1,
@@ -1427,7 +1457,7 @@ func TestEvaluateMetrics_FullMock(t *testing.T) {
 	}
 	cli, _ := client.NewClientWithOpts(client.WithHTTPClient(mockHTTPClient))
 
-	am := NewAlertManager(cli)
+	am := newTestAlertManager(t, cli)
 	am.rules = map[int64]*AlertRule{
 		1: {
 			ID:                  1,
@@ -1552,7 +1582,7 @@ func TestSyncLogTailers_Errors(t *testing.T) {
 		},
 	}
 	cli, _ := client.NewClientWithOpts(client.WithHTTPClient(mockHTTPClient))
-	am := NewAlertManager(cli)
+	am := newTestAlertManager(t, cli)
 	am.rules = map[int64]*AlertRule{
 		1: {
 			ID:                  1,
@@ -1569,7 +1599,7 @@ func TestTriggerSystemAlertNil(t *testing.T) {
 }
 
 func TestCheckCooldownDeliverGroup(t *testing.T) {
-	am := NewAlertManager(nil)
+	am := newTestAlertManager(t, nil)
 	am.rules = map[int64]*AlertRule{
 		1: {
 			ID:              1,
@@ -1619,7 +1649,7 @@ func TestTriggerAlertGroupingWindowFires(t *testing.T) {
 	// retain rows across repeated test runs in the same process.
 	containerName := "timer-container-" + time.Now().Format("150405.000000000")
 
-	am := NewAlertManager(nil)
+	am := newTestAlertManager(t, nil)
 	rule := &AlertRule{ID: 42, Name: "Timer Rule", CooldownSeconds: 60}
 
 	am.triggerAlert(rule, containerName, "event", "first")
@@ -1673,7 +1703,7 @@ func TestTriggerContainerEventPatternMatchAndMismatch(t *testing.T) {
 		Enabled:          true,
 	})
 
-	am := NewAlertManager(nil)
+	am := newTestAlertManager(t, nil)
 	am.ReloadRules()
 
 	// Mismatch: rule's compiled pattern doesn't match this container, so
@@ -1738,4 +1768,3 @@ func TestRunEventLoopProcessesMessage(t *testing.T) {
 	// decoded off the wire, and that the non-container event was skipped.
 	_ = sawDie
 }
-

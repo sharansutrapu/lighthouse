@@ -5,6 +5,7 @@
 package gitops
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -46,12 +47,20 @@ func ValidateRepoURL(raw string) error {
 
 // StartManager starts the GitOps background worker
 func StartManager() {
-	go func() {
-		for {
-			time.Sleep(syncInterval) // Poll every 30s
+	go runManager(context.Background(), syncInterval)
+}
+
+func runManager(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
 			processProjects()
 		}
-	}()
+	}
 }
 
 // processProjects loads every configured GitProject and syncs each one in

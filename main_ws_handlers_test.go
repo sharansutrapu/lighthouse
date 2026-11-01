@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -287,14 +288,18 @@ func TestHandleGETWsLogsId_PreUpgradeBranches(t *testing.T) {
 		},
 		{
 			name: "hostile: excluded container (non-admin)", id: "c1",
-			token:      func(t *testing.T) string { return issueTestAccessToken(t, &UserClaims{ID: 72, IsAdmin: false, PasswordVersion: 1, PasswordChanged: true}) },
+			token: func(t *testing.T) string {
+				return issueTestAccessToken(t, &UserClaims{ID: 72, IsAdmin: false, PasswordVersion: 1, PasswordChanged: true})
+			},
 			seedUser:   &db.User{ID: 72, Username: "wsUser72", Email: "wsuser72@test", IsActive: true, IsRestrictedAccess: true, AllowedContainers: ".*", PasswordVersion: 1, PasswordChanged: true},
 			handler:    inspectHandler("secret-internal", "alpine", false),
 			wantStatus: http.StatusNotFound,
 		},
 		{
 			name: "hostile: non-admin unauthorized", id: "c1",
-			token:      func(t *testing.T) string { return issueTestAccessToken(t, &UserClaims{ID: 70, IsAdmin: false, PasswordVersion: 1, PasswordChanged: true}) },
+			token: func(t *testing.T) string {
+				return issueTestAccessToken(t, &UserClaims{ID: 70, IsAdmin: false, PasswordVersion: 1, PasswordChanged: true})
+			},
 			seedUser:   &db.User{ID: 70, Username: "wsUser70", Email: "wsuser70@test", IsActive: true, IsRestrictedAccess: true, AllowedContainers: "nope", PasswordVersion: 1, PasswordChanged: true},
 			handler:    inspectHandler("target", "alpine", false),
 			wantStatus: http.StatusForbidden,
@@ -404,6 +409,75 @@ func TestHandleGETWsLogsId_RealConnection_StreamsLogFrame(t *testing.T) {
 	assert.Equal(t, "hello from container\n", string(msg))
 }
 
+func TestHandleGETWsLogsId_TTYAndDisconnect(t *testing.T) {
+	for _, tty := range []bool{false, true} {
+		name := "multiplexed"
+		if tty {
+			name = "tty"
+		}
+		t.Run(name, func(t *testing.T) {
+			assert.NoError(t, db.InitDB(":memory:"))
+			assert.NoError(t, db.GormDB.Save(&db.User{ID: 1, Username: "log-admin", Email: "log-admin@test", IsAdmin: true, IsActive: true, PasswordVersion: 1, PasswordChanged: true}).Error)
+			token := issueTestAccessToken(t, &UserClaims{ID: 1, IsAdmin: true, PasswordVersion: 1, PasswordChanged: true})
+			originalMode := LighthouseMode
+			originalOrigin := upgrader.CheckOrigin
+			LighthouseMode = "standalone"
+			upgrader.CheckOrigin = func(*http.Request) bool { return true }
+			t.Cleanup(func() {
+				LighthouseMode = originalMode
+				upgrader.CheckOrigin = originalOrigin
+			})
+
+			reader, writer := io.Pipe()
+			defer reader.Close()
+			defer writer.Close()
+			inspect, err := json.Marshal(map[string]interface{}{
+				"Id": "c1", "Name": "/target",
+				"Config": map[string]interface{}{"Image": "alpine", "Tty": tty},
+			})
+			assert.NoError(t, err)
+			cli := mockDockerClientWithRoundTripper(t, func(request *http.Request) (*http.Response, error) {
+				if strings.Contains(request.URL.Path, "/logs") {
+					return &http.Response{StatusCode: http.StatusOK, Body: reader, Header: make(http.Header)}, nil
+				}
+				return makeResponse(http.StatusOK, string(inspect)), nil
+			})
+			done := make(chan struct{})
+			echoServer := echo.New()
+			echoServer.GET("/ws/logs/:id", func(c echo.Context) error {
+				defer close(done)
+				return handleGETWsLogsId(cli)(c)
+			})
+			server := httptest.NewServer(echoServer)
+			defer server.Close()
+			connection, response, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/ws/logs/c1", wsBearerHeader(token))
+			if response != nil {
+				defer response.Body.Close()
+			}
+			if !assert.NoError(t, err) {
+				return
+			}
+			defer connection.Close()
+			payload := []byte("first line\nsecond line\n")
+			frame := payload
+			if !tty {
+				frame = dockerLogFrame(1, string(payload))
+			}
+			go func() { _, _ = writer.Write(frame) }()
+			assert.NoError(t, connection.SetReadDeadline(time.Now().Add(2*time.Second)))
+			_, received, err := connection.ReadMessage()
+			assert.NoError(t, err)
+			assert.Equal(t, payload, received)
+			assert.NoError(t, connection.Close())
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("quiet Docker log stream remained open after the browser disconnected")
+			}
+		})
+	}
+}
+
 // ---- handleGETWsShellId ----
 
 func TestHandleGETWsShellId_PreUpgradeBranches(t *testing.T) {
@@ -412,15 +486,15 @@ func TestHandleGETWsShellId_PreUpgradeBranches(t *testing.T) {
 	}
 
 	tests := []struct {
-		name          string
-		id            string
-		shellQuery    string
-		token         func(t *testing.T) string
-		allowShell    bool
-		canShellInDB  bool
-		seedUser      *db.User
-		handler       func(req *http.Request) (*http.Response, error)
-		wantStatus    int
+		name         string
+		id           string
+		shellQuery   string
+		token        func(t *testing.T) string
+		allowShell   bool
+		canShellInDB bool
+		seedUser     *db.User
+		handler      func(req *http.Request) (*http.Response, error)
+		wantStatus   int
 	}{
 		{name: "hostile: invalid container id", id: "../etc", token: adminToken, allowShell: true, canShellInDB: true, wantStatus: http.StatusBadRequest},
 		{name: "hostile: missing token", id: "c1", token: func(t *testing.T) string { return "" }, allowShell: true, canShellInDB: true, wantStatus: http.StatusUnauthorized},
@@ -432,13 +506,17 @@ func TestHandleGETWsShellId_PreUpgradeBranches(t *testing.T) {
 		},
 		{
 			name: "hostile: excluded container (non-admin)", id: "c1", allowShell: true, canShellInDB: true,
-			token:    func(t *testing.T) string { return issueTestAccessToken(t, &UserClaims{ID: 73, IsAdmin: false, PasswordVersion: 1, PasswordChanged: true}) },
+			token: func(t *testing.T) string {
+				return issueTestAccessToken(t, &UserClaims{ID: 73, IsAdmin: false, PasswordVersion: 1, PasswordChanged: true})
+			},
 			seedUser: &db.User{ID: 73, Username: "wsUser73", Email: "wsuser73@test", IsActive: true, IsRestrictedAccess: true, AllowedContainers: ".*", PasswordVersion: 1, PasswordChanged: true, CanShell: true},
 			handler:  inspectHandler("secret-internal", "alpine", false), wantStatus: http.StatusNotFound,
 		},
 		{
 			name: "hostile: non-admin unauthorized", id: "c1", allowShell: true, canShellInDB: true,
-			token:    func(t *testing.T) string { return issueTestAccessToken(t, &UserClaims{ID: 71, IsAdmin: false, PasswordVersion: 1, PasswordChanged: true}) },
+			token: func(t *testing.T) string {
+				return issueTestAccessToken(t, &UserClaims{ID: 71, IsAdmin: false, PasswordVersion: 1, PasswordChanged: true})
+			},
 			seedUser: &db.User{ID: 71, Username: "wsUser71", Email: "wsuser71@test", IsActive: true, IsRestrictedAccess: true, AllowedContainers: "nope", PasswordVersion: 1, PasswordChanged: true, CanShell: true},
 			handler:  inspectHandler("target", "alpine", false), wantStatus: http.StatusForbidden,
 		},
@@ -608,4 +686,3 @@ func TestHandleGETWsShellId_RealConnection_ExecAttachFailsNoDockerSocket(t *test
 	assert.NoError(t, err)
 	assert.Contains(t, string(msg), "Failed to attach to terminal session")
 }
-

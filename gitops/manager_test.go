@@ -1,6 +1,7 @@
 package gitops
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"gorm.io/gorm"
 	"lighthouse/alerts"
 	"lighthouse/db"
 )
@@ -83,13 +85,34 @@ func setupTestDB(t *testing.T) {
 
 func TestStartManager(t *testing.T) {
 	setupTestDB(t)
-	// Replace interval
-	origInterval := syncInterval
-	defer func() { syncInterval = origInterval }()
-	syncInterval = 1 * time.Millisecond
-
-	StartManager()
-	time.Sleep(10 * time.Millisecond) // Let goroutine tick
+	polled := make(chan struct{}, 1)
+	if err := db.GormDB.Callback().Query().Before("gorm:query").Register("test-manager-poll", func(*gorm.DB) {
+		select {
+		case polled <- struct{}{}:
+		default:
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.GormDB.Callback().Query().Remove("test-manager-poll") })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runManager(ctx, time.Millisecond)
+	}()
+	select {
+	case <-polled:
+	case <-time.After(2 * time.Second):
+		t.Error("GitOps manager did not poll")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("GitOps manager did not stop")
+	}
 }
 
 func TestProcessProjects_DBError(t *testing.T) {

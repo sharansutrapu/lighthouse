@@ -83,9 +83,10 @@ func TestAggregateClusterResourcesTagsOwningNode(t *testing.T) {
 		"list_images": json.RawMessage(`{"Items":[{"Id":"remote-image"}]}`),
 	})
 
-	items := aggregateClusterResources(context.Background(), "list_images", map[string]interface{}{
+	items, unavailable := aggregateClusterResources(context.Background(), "list_images", map[string]interface{}{
 		"Items": []map[string]interface{}{{"Id": "local-image"}},
 	})
+	assert.Empty(t, unavailable)
 
 	if assert.Len(t, items, 2) {
 		assert.Equal(t, "local-image", items[0]["Id"])
@@ -95,6 +96,47 @@ func TestAggregateClusterResourcesTagsOwningNode(t *testing.T) {
 		assert.Equal(t, "resource-spoke", items[1]["node_id"])
 		assert.Equal(t, true, items[1]["is_remote"])
 	}
+}
+
+func TestResourceListsSurviveLocalDockerFailure(t *testing.T) {
+	configureResourceSpoke(t, map[string]json.RawMessage{
+		"list_images":   json.RawMessage(`{"Items":[{"Id":"remote-image"}]}`),
+		"list_volumes":  json.RawMessage(`{"Volumes":[{"Name":"remote-volume"}]}`),
+		"list_networks": json.RawMessage(`[{"Id":"remote-network"}]`),
+	})
+	cli := mockDockerClientWithRoundTripper(t, func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("local Docker unavailable")
+	})
+	echoServer, group, _, _ := setupEchoWithClaimsHelper(&UserClaims{ID: 1, IsAdmin: true})
+	RegisterImageRoutes(group, cli)
+	RegisterVolumeRoutes(group, cli)
+	RegisterNetworkRoutes(group, cli)
+	for _, path := range []string{"/api/images", "/api/volumes", "/api/networks"} {
+		t.Run(path, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			echoServer.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+			assert.Equal(t, http.StatusOK, response.Code)
+			assert.JSONEq(t, `["hub-node"]`, response.Header().Get(unavailableNodesHeader))
+			var items []map[string]interface{}
+			assert.NoError(t, json.Unmarshal(response.Body.Bytes(), &items))
+			if assert.Len(t, items, 1) {
+				assert.Equal(t, "resource-spoke", items[0]["node_id"])
+			}
+		})
+	}
+	LighthouseMode = "standalone"
+	for _, path := range []string{"/api/images", "/api/volumes", "/api/networks"} {
+		response := httptest.NewRecorder()
+		echoServer.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		assert.Equal(t, http.StatusInternalServerError, response.Code)
+	}
+}
+
+func TestAggregateClusterResourcesReportsUnavailableSpoke(t *testing.T) {
+	configureResourceSpoke(t, nil)
+	items, unavailable := aggregateClusterResources(context.Background(), "list_images", []map[string]interface{}{})
+	assert.Empty(t, items)
+	assert.Equal(t, []string{"resource-spoke"}, unavailable)
 }
 
 func TestResourceMutationsRouteToSelectedNode(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -161,6 +162,40 @@ func TestRunArchival_UnknownProvider(t *testing.T) {
 	s := db.Setting{ArchivalProvider: "unknown"}
 	err := RunArchival(s)
 	assert.Error(t, err)
+}
+
+func TestRunArchivalPreservesWindowOnFailure(t *testing.T) {
+	assert.NoError(t, db.InitDB(":memory:"))
+	archivalMu.Lock()
+	originalWindow := lastArchivalTime
+	start := time.Now().Add(-time.Hour)
+	lastArchivalTime = start
+	archivalMu.Unlock()
+	t.Cleanup(func() {
+		archivalMu.Lock()
+		lastArchivalTime = originalWindow
+		archivalMu.Unlock()
+	})
+	assert.NoError(t, db.GormDB.Create(&db.Stat{ContainerID: "archive-window", Timestamp: time.Now().Add(-time.Minute), CPU: 12.5}).Error)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		_, _ = io.Copy(io.Discard, request.Body)
+		writer.Header().Set("ETag", `"fixture"`)
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	t.Setenv("TEST_NO_STATS_ERR", "1")
+	settings := db.Setting{ArchivalProvider: "s3", ArchivalEndpoint: server.URL, ArchivalBucket: "test-bucket", ArchivalRegion: "us-east-1", ArchiveMetrics: true}
+	assert.Error(t, RunArchival(settings), "a failed archive must not report success")
+	archivalMu.Lock()
+	assert.Equal(t, start, lastArchivalTime)
+	archivalMu.Unlock()
+	t.Setenv("TEST_NO_STATS_ERR", "")
+	before := time.Now()
+	assert.NoError(t, RunArchival(settings))
+	archivalMu.Lock()
+	assert.False(t, lastArchivalTime.Before(before))
+	assert.False(t, lastArchivalTime.After(time.Now()))
+	archivalMu.Unlock()
 }
 
 func TestRunArchival_GCS(t *testing.T) {

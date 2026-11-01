@@ -34,6 +34,57 @@ func TestInitSecretKey(t *testing.T) {
 	initSecretKey()
 }
 
+func TestSystemHealthAccessUsesCurrentDatabasePermissions(t *testing.T) {
+	if err := db.InitDB(":memory:"); err != nil {
+		t.Fatal(err)
+	}
+	user := db.User{ID: 8801, Username: "health-permission", Email: "health-permission@test", IsActive: true}
+	if err := db.GormDB.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	team := db.Team{Name: "health-permission-team", CanViewSystemHealth: true}
+	if err := db.GormDB.Create(&team).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name   string
+		admin  bool
+		health bool
+		team   bool
+		active bool
+		want   int
+	}{
+		{name: "stale admin claim cannot grant access", active: true, want: http.StatusForbidden},
+		{name: "current admin", admin: true, active: true, want: http.StatusOK},
+		{name: "individual permission", health: true, active: true, want: http.StatusOK},
+		{name: "team permission", team: true, active: true, want: http.StatusOK},
+		{name: "deactivated admin", admin: true, active: false, want: http.StatusForbidden},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var teamID *uint
+			if test.team {
+				teamID = &team.ID
+			}
+			if err := db.GormDB.Model(&db.User{}).Where("id = ?", user.ID).Updates(map[string]interface{}{
+				"is_admin": test.admin, "can_view_system_health": test.health, "team_id": teamID, "is_active": test.active,
+			}).Error; err != nil {
+				t.Fatal(err)
+			}
+			echoServer := echo.New()
+			response := httptest.NewRecorder()
+			requestContext := echoServer.NewContext(httptest.NewRequest(http.MethodGet, "/api/system/history", nil), response)
+			mockUserContext(requestContext, user.ID, true)
+			handler := requireSystemHealthAccess()(func(c echo.Context) error { return c.NoContent(http.StatusOK) })
+			if err := handler(requestContext); err != nil {
+				t.Fatal(err)
+			}
+			if response.Code != test.want {
+				t.Fatalf("status %d, want %d", response.Code, test.want)
+			}
+		})
+	}
+}
+
 func TestInitWSUpgrader(t *testing.T) {
 	initWSUpgrader()
 	if upgrader.CheckOrigin == nil {

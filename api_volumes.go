@@ -23,12 +23,14 @@ func RegisterVolumeRoutes(r *echo.Group, cli *client.Client) {
 // handleGETVolumes lists all Docker volumes.
 func handleGETVolumes(cli *client.Client) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		volumes, err := cli.VolumeList(context.Background(), client.VolumeListOptions{})
+		ctx, cancel := context.WithTimeout(c.Request().Context(), 10*time.Second)
+		defer cancel()
+		volumes, err := cli.VolumeList(ctx, client.VolumeListOptions{})
+		if LighthouseMode == "hub" {
+			return writeClusterResources(c, "list_volumes", volumes, err)
+		}
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		}
-		if LighthouseMode == "hub" {
-			return c.JSON(http.StatusOK, aggregateClusterResources(c.Request().Context(), "list_volumes", volumes))
 		}
 		return c.JSON(http.StatusOK, volumes)
 	}

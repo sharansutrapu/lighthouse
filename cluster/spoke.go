@@ -57,11 +57,43 @@ var reconnectInterval = 5 * time.Second
 
 var agentRunning = true
 
+func spokeConnectURL(hubURL, nodeID string) (string, error) {
+	endpoint, err := url.Parse(strings.TrimSpace(hubURL))
+	if err != nil {
+		return "", fmt.Errorf("invalid HUB_URL")
+	}
+	switch strings.ToLower(endpoint.Scheme) {
+	case "http", "ws":
+		endpoint.Scheme = "ws"
+	case "https", "wss":
+		endpoint.Scheme = "wss"
+	default:
+		return "", fmt.Errorf("HUB_URL must use http, https, ws, or wss")
+	}
+	if endpoint.Hostname() == "" || endpoint.User != nil || endpoint.Fragment != "" {
+		return "", fmt.Errorf("HUB_URL must have a host and no embedded credentials or fragment")
+	}
+	endpoint.Path = strings.TrimRight(endpoint.Path, "/")
+	if !strings.HasSuffix(endpoint.Path, "/api/spoke/connect") {
+		endpoint.Path += "/api/spoke/connect"
+	}
+	endpoint.RawPath = ""
+	query := endpoint.Query()
+	query.Del("token")
+	query.Set("node_id", nodeID)
+	endpoint.RawQuery = query.Encode()
+	return endpoint.String(), nil
+}
+
 // StartSpokeAgent connects to the Hub and handles communication
 func StartSpokeAgent(hubURL, hubToken, nodeID string, cli *client.Client) {
 	dockerClient = cli
 
-	connectURL := hubURL + "/api/spoke/connect?node_id=" + url.QueryEscape(nodeID)
+	connectURL, err := spokeConnectURL(hubURL, nodeID)
+	if err != nil {
+		log.Printf("[Spoke] %v", err)
+		return
+	}
 	requestHeader := http.Header{}
 	requestHeader.Set("Authorization", "Bearer "+hubToken)
 
@@ -87,16 +119,27 @@ func StartSpokeAgent(hubURL, hubToken, nodeID string, cli *client.Client) {
 
 		// Start background syncer for container list
 		ctx, cancel := context.WithCancel(context.Background())
+		syncDone := make(chan struct{})
+		syncEvery := syncInterval
 		go func() {
+			defer close(syncDone)
+			ticker := time.NewTicker(syncEvery)
+			defer ticker.Stop()
+			syncContainers := func() {
+				requestCtx, requestCancel := context.WithTimeout(ctx, 10*time.Second)
+				defer requestCancel()
+				res, err := cli.ContainerList(requestCtx, client.ContainerListOptions{All: true})
+				if err == nil && ctx.Err() == nil {
+					PushToHub("containers", res.Items)
+				}
+			}
+			syncContainers()
 			for {
 				select {
 				case <-ctx.Done():
 					return
-				case <-time.After(syncInterval):
-					res, err := dockerClient.ContainerList(context.Background(), client.ContainerListOptions{All: true})
-					if err == nil {
-						PushToHub("containers", res.Items)
-					}
+				case <-ticker.C:
+					syncContainers()
 				}
 			}
 		}()
@@ -112,6 +155,8 @@ func StartSpokeAgent(hubURL, hubToken, nodeID string, cli *client.Client) {
 		}
 
 		cancel()
+		_ = ws.Close()
+		<-syncDone
 		cancelAllLogStreams()
 		cancelAllExecSessions()
 		spokeWriteMu.Lock()
@@ -119,7 +164,6 @@ func StartSpokeAgent(hubURL, hubToken, nodeID string, cli *client.Client) {
 			spokeWs = nil
 		}
 		spokeWriteMu.Unlock()
-		ws.Close()
 		time.Sleep(reconnectInterval)
 	}
 }
@@ -148,9 +192,14 @@ func PushToHub(msgType string, data interface{}) {
 	if spokeWs == nil {
 		return
 	}
-	err = spokeWs.WriteJSON(payload)
+	err = setSocketWriteDeadline(spokeWs)
+	if err == nil {
+		err = spokeWs.WriteJSON(payload)
+	}
 	if err != nil {
 		log.Printf("[Spoke] Write error: %v", err)
+		_ = spokeWs.Close()
+		spokeWs = nil
 	}
 }
 
@@ -460,10 +509,16 @@ func handleCommand(action, containerID string) {
 		_, err = dockerClient.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true})
 	case "scan":
 		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			defer cancel()
 			c, inspectErr := dockerClient.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
 			if inspectErr != nil {
 				log.Printf("[Spoke] scan error: container inspect failed: %v", inspectErr)
 				PushToHub("command_result", commandResult{Action: "scan", ContainerID: containerID, Status: "failed", Error: inspectErr.Error()})
+				return
+			}
+			if c.Container.Config == nil || c.Container.Config.Image == "" {
+				PushToHub("command_result", commandResult{Action: "scan", ContainerID: containerID, Status: "failed", Error: "Container has no image to scan"})
 				return
 			}
 			imageName := c.Container.Config.Image
@@ -471,14 +526,15 @@ func handleCommand(action, containerID string) {
 			res, scanErr := scanImageFunc(ctx, dockerClient, imageName)
 			if scanErr != nil {
 				log.Printf("[Spoke] scan error: %v", scanErr)
-				PushToHub("command_result", commandResult{Action: "scan", ContainerID: containerID, Status: "failed", Error: scanErr.Error()})
-				return
+				res = map[string]interface{}{"Error": scanErr.Error()}
 			}
 			b, _ := json.Marshal(res)
-			db.GormDB.Create(&db.ImageScanResult{
+			if err := db.GormDB.Create(&db.ImageScanResult{
 				Image:  imageName,
 				Result: string(b),
-			})
+			}).Error; err != nil {
+				log.Printf("[Spoke] Failed to save scan result for %s: %v", imageName, err)
+			}
 			containerName := strings.TrimPrefix(c.Container.Name, "/")
 			PushToHub("scan_result", map[string]interface{}{
 				"container_id":   containerID,
@@ -486,6 +542,10 @@ func handleCommand(action, containerID string) {
 				"image":          imageName,
 				"result":         json.RawMessage(b),
 			})
+			if scanErr != nil {
+				PushToHub("command_result", commandResult{Action: "scan", ContainerID: containerID, Status: "failed", Error: scanErr.Error()})
+				return
+			}
 			log.Printf("[Spoke] Scan complete for %s", imageName)
 			PushToHub("command_result", commandResult{Action: "scan", ContainerID: containerID, Status: "success"})
 		}()

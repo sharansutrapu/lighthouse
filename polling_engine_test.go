@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -306,7 +307,7 @@ func TestPollOneStat_CPUDeltaAndMemoryNetworkBlkioBranches(t *testing.T) {
 		entry, ok := liveStatsCache[id]
 		liveStatsMu.RUnlock()
 		assert.True(t, ok)
-		assert.Greater(t, entry.CPU, 0.0)
+		assert.InDelta(t, 100.0, entry.CPU, 0.000001)
 	})
 
 	t.Run("happy path: online_cpus=0 falls back to runtime.NumCPU()", func(t *testing.T) {
@@ -324,9 +325,10 @@ func TestPollOneStat_CPUDeltaAndMemoryNetworkBlkioBranches(t *testing.T) {
 		pollOneStat(cli, id, tr)
 
 		liveStatsMu.RLock()
-		_, ok := liveStatsCache[id]
+		entry, ok := liveStatsCache[id]
 		liveStatsMu.RUnlock()
 		assert.True(t, ok)
+		assert.InDelta(t, 50.0*float64(runtime.NumCPU()), entry.CPU, 0.000001)
 	})
 
 	for _, key := range []string{"inactive_file", "total_inactive_file", "cache"} {
@@ -377,6 +379,63 @@ func TestPollOneStat_CPUDeltaAndMemoryNetworkBlkioBranches(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────
 // collectStats: host + per-container metric snapshotting.
 // ─────────────────────────────────────────────────────────────────────────
+
+func TestPollOneStat_ExactCPUValues(t *testing.T) {
+	tests := []struct {
+		name     string
+		prior    [2]uint64
+		hasPrior bool
+		total    uint64
+		system   uint64
+		cores    uint32
+		wantCPU  float64
+	}{
+		{name: "first sample", total: 3000, system: 6000, cores: 2, wantCPU: 0},
+		{name: "one core", prior: [2]uint64{1000, 2000}, hasPrior: true, total: 3000, system: 6000, cores: 1, wantCPU: 50},
+		{name: "two cores", prior: [2]uint64{1000, 2000}, hasPrior: true, total: 3000, system: 6000, cores: 2, wantCPU: 100},
+		{name: "multiple fully used cores", prior: [2]uint64{1000, 2000}, hasPrior: true, total: 5000, system: 6000, cores: 4, wantCPU: 400},
+		{name: "fractional usage", prior: [2]uint64{1000, 2000}, hasPrior: true, total: 1125, system: 6000, cores: 2, wantCPU: 6.25},
+		{name: "idle", prior: [2]uint64{1000, 2000}, hasPrior: true, total: 1000, system: 6000, cores: 2, wantCPU: 0},
+		{name: "zero system delta", prior: [2]uint64{1000, 2000}, hasPrior: true, total: 3000, system: 2000, cores: 2, wantCPU: 0},
+		{name: "container counter reset", prior: [2]uint64{1000, 2000}, hasPrior: true, total: 100, system: 6000, cores: 2, wantCPU: 0},
+		{name: "host counter reset", prior: [2]uint64{1000, 2000}, hasPrior: true, total: 3000, system: 100, cores: 2, wantCPU: 0},
+		{name: "missing cpu count", prior: [2]uint64{1000, 2000}, hasPrior: true, total: 3000, system: 6000, wantCPU: 50 * float64(runtime.NumCPU())},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			containerID := "exact-cpu-" + test.name
+			t.Cleanup(func() {
+				liveStatsMu.Lock()
+				delete(liveStatsCache, containerID)
+				liveStatsMu.Unlock()
+			})
+			tracker := newCPUTracker()
+			if test.hasPrior {
+				tracker.set(containerID, test.prior)
+			}
+			body, err := json.Marshal(map[string]interface{}{
+				"cpu_stats": map[string]interface{}{
+					"cpu_usage":        map[string]uint64{"total_usage": test.total},
+					"system_cpu_usage": test.system,
+					"online_cpus":      test.cores,
+				},
+			})
+			assert.NoError(t, err)
+			cli := mockDockerClientWithRoundTripper(t, func(*http.Request) (*http.Response, error) {
+				return makeResponse(http.StatusOK, string(body)), nil
+			})
+			pollOneStat(cli, containerID, tracker)
+			liveStatsMu.RLock()
+			actual, exists := liveStatsCache[containerID]
+			liveStatsMu.RUnlock()
+			assert.True(t, exists)
+			assert.InDelta(t, test.wantCPU, actual.CPU, 0.000001)
+			stored, exists := tracker.get(containerID)
+			assert.True(t, exists)
+			assert.Equal(t, [2]uint64{test.total, test.system}, stored)
+		})
+	}
+}
 
 // TestCollectStats_ContainerDeltaAndSpokeModeBranches exercises the
 // per-container prevStats-delta branch (second call sees growth from the
@@ -636,11 +695,14 @@ func TestHandleGETContainersIdStats_ErrorPaths(t *testing.T) {
 		wantStatus int
 	}{
 		{
-			name:       "hostile: invalid container id format",
-			id:         "../../etc/passwd",
-			userID:     1,
-			isAdmin:    true,
-			handler:    func(req *http.Request) (*http.Response, error) { t.Helper(); return makeResponse(http.StatusOK, `{}`), nil },
+			name:    "hostile: invalid container id format",
+			id:      "../../etc/passwd",
+			userID:  1,
+			isAdmin: true,
+			handler: func(req *http.Request) (*http.Response, error) {
+				t.Helper()
+				return makeResponse(http.StatusOK, `{}`), nil
+			},
 			wantStatus: http.StatusBadRequest,
 		},
 		{

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -71,6 +72,16 @@ func TestHandleGETContainers(t *testing.T) {
 		assert.True(t, containers[0].Capabilities.Inspect)
 		assert.True(t, containers[0].Capabilities.Actions)
 	}
+	apiContainersCache = nil
+	apiContainersCacheTS = time.Time{}
+	emptyClient := mockDockerClientWithRoundTripper(t, func(*http.Request) (*http.Response, error) {
+		return makeResponse(http.StatusOK, `[]`), nil
+	})
+	emptyResponse := httptest.NewRecorder()
+	emptyContext := e.NewContext(httptest.NewRequest(http.MethodGet, "/containers", nil), emptyResponse)
+	mockUserContext(emptyContext, 1, true)
+	assert.NoError(t, handleGETContainers(emptyClient)(emptyContext))
+	assert.JSONEq(t, `[]`, emptyResponse.Body.String())
 }
 
 func TestHandleGETContainersIncludesRemoteTopology(t *testing.T) {
@@ -142,6 +153,19 @@ func TestHandleGETContainersIncludesRemoteTopology(t *testing.T) {
 		assert.True(t, containers[0].Capabilities.Actions)
 		assert.True(t, containers[0].Capabilities.Scan)
 	}
+	apiContainersCache = nil
+	apiContainersCacheTS = time.Time{}
+	unavailableClient := mockDockerClientWithRoundTripper(t, func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("local Docker unavailable")
+	})
+	partialResponse := httptest.NewRecorder()
+	partialContext := e.NewContext(httptest.NewRequest(http.MethodGet, "/containers", nil), partialResponse)
+	mockUserContext(partialContext, 1, true)
+	assert.NoError(t, handleGETContainers(unavailableClient)(partialContext))
+	assert.Equal(t, http.StatusOK, partialResponse.Code)
+	assert.JSONEq(t, `["hub-1"]`, partialResponse.Header().Get(unavailableNodesHeader))
+	assert.NoError(t, json.Unmarshal(partialResponse.Body.Bytes(), &containers))
+	assert.Len(t, containers, 1)
 }
 
 func TestHandlePOSTContainersIdAction(t *testing.T) {

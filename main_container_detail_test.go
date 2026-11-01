@@ -464,6 +464,27 @@ func TestHandleGETContainersIdHistory_Table(t *testing.T) {
 
 // ─── handlePOSTContainersIdScan ─────────────────────────────────────────────
 
+func TestHandlePOSTContainersIdScanEnforcesLocalVisibility(t *testing.T) {
+	assert.NoError(t, db.InitDB(":memory:"))
+	user := db.User{ID: 91009, Username: "scan-scope", Email: "scan-scope@test", IsActive: true, IsRestrictedAccess: true, AllowedContainers: "^allowed-workload$", CanRunScans: true}
+	assert.NoError(t, db.GormDB.Create(&user).Error)
+	originalMode := LighthouseMode
+	t.Cleanup(func() {
+		LighthouseMode = originalMode
+		patternCache.Delete(int(user.ID))
+	})
+	for _, mode := range []string{"standalone", "hub"} {
+		t.Run(mode, func(t *testing.T) {
+			LighthouseMode = mode
+			cli := mockDockerClientWithRoundTripper(t, inspectHandler("private-workload", "alpine", false))
+			requestContext, response := newContainerScopedRequest(http.MethodPost, "/api/containers/scan-denied-id/scan", "scan-denied-id")
+			requestContext.Set("user", jwt.NewWithClaims(jwt.SigningMethodHS256, &UserClaims{ID: int(user.ID), CanRunScans: true}))
+			assert.NoError(t, handlePOSTContainersIdScan(cli)(requestContext))
+			assert.Equal(t, http.StatusForbidden, response.Code, "scan permission must not override container visibility")
+		})
+	}
+}
+
 func TestHandlePOSTContainersIdScan_Table(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -498,6 +519,11 @@ func TestHandlePOSTContainersIdScan_Table(t *testing.T) {
 			c.SetParamNames("id")
 			c.SetParamValues(tc.id)
 			claims := &UserClaims{ID: tc.userID, IsAdmin: tc.isAdmin, CanRunScans: tc.canScan}
+			if tc.userID > 0 {
+				assert.NoError(t, db.GormDB.Create(&db.User{ID: uint(tc.userID), Username: "scan-user", Email: "scan-user@test", IsActive: true, IsAdmin: tc.isAdmin, IsRestrictedAccess: true, AllowedContainers: "^c1$", CanRunScans: tc.canScan}).Error)
+				patternCache.Delete(tc.userID)
+				t.Cleanup(func() { patternCache.Delete(tc.userID) })
+			}
 			tok := jwt.New(jwt.SigningMethodHS256)
 			tok.Claims = claims
 			c.Set("user", tok)

@@ -196,13 +196,15 @@ func logAudit(userID int, username, action, resource, status, message string) {
 // cachedPattern holds a user's compiled container-visibility regexes plus an
 // expiry, so repeated requests from the same user skip DB + regex-compile work.
 type cachedPattern struct {
-	patterns []*regexp.Regexp
-	expiry   time.Time
+	patterns   []*regexp.Regexp
+	expiry     time.Time
+	generation uint64
 }
 
-// patternCache maps a user ID to its cachedPattern, refreshed every 30s so
-// permission changes propagate without needing a full cache invalidation.
+// patternCache stores compiled visibility patterns; permission mutations
+// advance the generation so in-flight stale fills cannot restore old grants.
 var patternCache sync.Map
+var patternGeneration atomic.Uint64
 
 // getAuthorizedPatterns returns the compiled regex patterns that decide which
 // container names a user is allowed to see, merging the user's own
@@ -210,9 +212,10 @@ var patternCache sync.Map
 // a match-everything pattern; on any lookup failure it fails closed to a
 // match-nothing pattern rather than over-exposing containers.
 func getAuthorizedPatterns(userID int) []*regexp.Regexp {
+	generation := patternGeneration.Load()
 	if cached, ok := patternCache.Load(userID); ok {
 		cp := cached.(cachedPattern)
-		if time.Now().Before(cp.expiry) {
+		if cp.generation == generation && time.Now().Before(cp.expiry) {
 			return cp.patterns
 		}
 	}
@@ -235,13 +238,13 @@ func getAuthorizedPatterns(userID int) []*regexp.Regexp {
 
 	if !isRestricted {
 		res := []*regexp.Regexp{regexp.MustCompile(".*")}
-		patternCache.Store(userID, cachedPattern{patterns: res, expiry: time.Now().Add(30 * time.Second)})
+		patternCache.Store(userID, cachedPattern{patterns: res, expiry: time.Now().Add(30 * time.Second), generation: generation})
 		return res
 	}
 
 	if pattern == "" {
 		res := []*regexp.Regexp{regexp.MustCompile("^$")}
-		patternCache.Store(userID, cachedPattern{patterns: res, expiry: time.Now().Add(30 * time.Second)})
+		patternCache.Store(userID, cachedPattern{patterns: res, expiry: time.Now().Add(30 * time.Second), generation: generation})
 		return res
 	}
 
@@ -271,7 +274,7 @@ func getAuthorizedPatterns(userID int) []*regexp.Regexp {
 		}
 		finalPatterns = appendValidatedPattern(finalPatterns, regP)
 	}
-	patternCache.Store(userID, cachedPattern{patterns: finalPatterns, expiry: time.Now().Add(30 * time.Second)})
+	patternCache.Store(userID, cachedPattern{patterns: finalPatterns, expiry: time.Now().Add(30 * time.Second), generation: generation})
 	return finalPatterns
 }
 
@@ -600,13 +603,13 @@ func main() {
 
 	r.GET("/containers/:id/history", handleGETContainersIdHistory(cli))
 
-	r.GET("/system/storage", handleGETSystemStorage())
+	r.GET("/system/storage", handleGETSystemStorage(), requireSystemHealthAccess())
 
-	r.GET("/system/history", handleGETSystemHistory())
+	r.GET("/system/history", handleGETSystemHistory(), requireSystemHealthAccess())
 
 	r.GET("/system/stats", handleGETSystemStats())
 
-	r.GET("/system/info", handleGETSystemInfo(cli))
+	r.GET("/system/info", handleGETSystemInfo(cli), requireSystemHealthAccess())
 
 	r.POST("/user/change-password", handlePOSTUserChangePassword())
 
@@ -1865,7 +1868,9 @@ func handleGETContainers(cli *client.Client) echo.HandlerFunc {
 			// dashboard tabs refreshing at once) into a single ContainerList call
 			// instead of one Docker API round-trip per in-flight request.
 			v, err, _ := containerListGroup.Do("container_list", func() (interface{}, error) {
-				res, err := cli.ContainerList(context.Background(), client.ContainerListOptions{All: true})
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				res, err := cli.ContainerList(ctx, client.ContainerListOptions{All: true})
 				if err != nil {
 					return nil, err
 				}
@@ -1879,10 +1884,14 @@ func handleGETContainers(cli *client.Client) echo.HandlerFunc {
 				return extracted, nil
 			})
 			if err != nil {
-				log.Printf("ContainerList error: %v", err)
-				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to list containers"})
+				if LighthouseMode != "hub" {
+					log.Printf("ContainerList error: %v", err)
+					return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to list containers"})
+				}
+				setUnavailableNodes(c, []string{NodeID})
+			} else {
+				baseContainers = v.([]map[string]interface{})
 			}
-			baseContainers = v.([]map[string]interface{})
 		}
 
 		// In hub mode we must inject NodeID into spoke containers — use a copy only
@@ -1919,7 +1928,9 @@ func handleGETContainers(cli *client.Client) echo.HandlerFunc {
 			name := "unknown"
 			names, _ := ctr["Names"].([]interface{})
 			if len(names) > 0 {
-				name = names[0].(string)[1:]
+				if rawName, ok := names[0].(string); ok && rawName != "" {
+					name = strings.TrimPrefix(rawName, "/")
+				}
 			}
 
 			image, _ := ctr["Image"].(string)
@@ -1974,7 +1985,7 @@ func handleGETContainers(cli *client.Client) echo.HandlerFunc {
 			}
 		}
 
-		var list []Container
+		list := make([]Container, 0, len(visibleContainers))
 		var listMu sync.Mutex
 		var wg sync.WaitGroup
 
@@ -2039,7 +2050,9 @@ func handleGETContainers(cli *client.Client) echo.HandlerFunc {
 				var lastCPU float64
 				var lastMem float64
 				liveStatsMu.RLock()
-				if st, ok := liveStatsCache[id]; ok && !isRemote {
+				st, hasLiveStats := liveStatsCache[id]
+				liveStatsMu.RUnlock()
+				if hasLiveStats && !isRemote {
 					lastCPU = st.CPU
 					lastMem = float64(st.Memory)
 				} else {
@@ -2050,12 +2063,11 @@ func handleGETContainers(cli *client.Client) echo.HandlerFunc {
 					if isRemote {
 						query = query.Where("node_id = ?", nodeID)
 					}
-					if err := query.Order("timestamp DESC").First(&stat).Error; err == nil {
+					if err := query.Order("timestamp DESC").Limit(1).Find(&stat).Error; err == nil {
 						lastCPU = stat.CPU
 						lastMem = float64(stat.Memory)
 					}
 				}
-				liveStatsMu.RUnlock()
 
 				sizeRwVal, _ := c["SizeRw"].(int64)
 				sizeRootFsVal, _ := c["SizeRootFs"].(int64)
@@ -2185,9 +2197,7 @@ func handleGETContainersIdInspect(cli *client.Client) echo.HandlerFunc {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "Container not found"})
 		}
 
-		if container.Container.Config != nil && len(container.Container.Config.Env) > 0 {
-			container.Container.Config.Env = sanitizeContainerEnv(container.Container.Config.Env)
-		}
+		sanitizeContainerInspect(&container)
 
 		return c.JSON(http.StatusOK, container)
 	}
@@ -2396,12 +2406,30 @@ func matchesAuthorizedContainer(userID int, containerName string) bool {
 	return false
 }
 
-func sanitizeInspectMap(result map[string]interface{}) {
-	containerData := result
-	if nested, ok := result["Container"].(map[string]interface{}); ok {
-		containerData = nested
+func sanitizeContainerInspect(result *client.ContainerInspectResult) {
+	if result.Container.Config != nil {
+		result.Container.Config.Env = sanitizeContainerEnv(result.Container.Config.Env)
 	}
-	config, ok := containerData["Config"].(map[string]interface{})
+	if len(result.Raw) > 0 {
+		var raw map[string]interface{}
+		if json.Unmarshal(result.Raw, &raw) != nil {
+			result.Raw = nil
+			return
+		}
+		sanitizeInspectMap(raw)
+		result.Raw, _ = json.Marshal(raw)
+	}
+}
+
+func sanitizeInspectMap(result map[string]interface{}) {
+	for _, key := range []string{"Container", "Raw"} {
+		if nested, ok := result[key].(map[string]interface{}); ok {
+			sanitizeInspectMap(nested)
+		} else if key == "Raw" && result[key] != nil {
+			result[key] = nil
+		}
+	}
+	config, ok := result["Config"].(map[string]interface{})
 	if !ok {
 		return
 	}
@@ -2461,21 +2489,36 @@ func handlePOSTContainersIdScan(cli *client.Client) echo.HandlerFunc {
 			}
 		}
 
+		inspectCtx, inspectCancel := context.WithTimeout(c.Request().Context(), 10*time.Second)
+		defer inspectCancel()
+		container, err := cli.ContainerInspect(inspectCtx, id, client.ContainerInspectOptions{})
+		if err != nil {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "Container not found"})
+		}
+		containerName := strings.TrimPrefix(container.Container.Name, "/")
+		containerImage := ""
+		if container.Container.Config != nil {
+			containerImage = container.Container.Config.Image
+		}
+		if inspectContainerExcluded(userClaims.IsAdmin, containerName, containerImage) {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "Container not found"})
+		}
+		if !userClaims.IsAdmin && !matchesAuthorizedContainer(userClaims.ID, containerName) {
+			return c.JSON(http.StatusForbidden, map[string]string{"error": "Access Denied"})
+		}
+		imageName := imageParam
+		if imageName == "" {
+			imageName = containerImage
+		}
+		if err := scanner.ValidateImageName(imageName); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid image reference"})
+		}
+
 		go func() {
-			ctx := context.Background()
-			ctr, err := cli.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
-			if err != nil {
-				log.Printf("scan error: %v", err)
-				return
-			}
-			imageName := imageParam
-			if imageName == "" {
-				if ctr.Container.Config != nil {
-					imageName = ctr.Container.Config.Image
-				}
-			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			defer cancel()
 			log.Printf("Scanning image %s...", imageName)
-			_, err = scanner.ExecuteAndSaveScan(ctx, cli, imageName)
+			_, err := scanner.ExecuteAndSaveScan(ctx, cli, imageName)
 			if err != nil {
 				log.Printf("scan error: %v", err)
 				return
@@ -2961,19 +3004,23 @@ func handleGETContainersIdHistory(cli *client.Client) echo.HandlerFunc {
 
 		var stats []db.Stat
 		query := db.GormDB.Where("container_id = ?", longID)
-
-		if from != "" && to != "" {
-			query = query.Where("timestamp BETWEEN ? AND ?", from, to)
-		} else if duration != "" && strings.HasSuffix(duration, "h") {
-			hours, err := strconv.Atoi(strings.TrimSuffix(duration, "h"))
-			if err == nil && hours > 0 {
-				query = query.Where("timestamp >= ?", time.Now().Add(-time.Duration(hours)*time.Hour))
-			}
+		if LighthouseMode == "hub" {
+			query = query.Where("node_id = ? OR node_id = ''", NodeID)
 		}
 
-		query.Order("timestamp DESC").Limit(200).Find(&stats)
+		fromTime, fromErr := time.Parse(time.RFC3339Nano, from)
+		toTime, toErr := time.Parse(time.RFC3339Nano, to)
+		if fromErr == nil && toErr == nil {
+			query = query.Where("timestamp BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
+		} else if window, err := time.ParseDuration(duration); err == nil && window > 0 {
+			query = query.Where("timestamp >= ?", time.Now().Add(-window))
+		}
 
-		var results []map[string]interface{}
+		if err := query.Order("timestamp DESC").Limit(200).Find(&stats).Error; err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to query container history"})
+		}
+
+		results := make([]map[string]interface{}, 0, len(stats))
 		for _, s := range stats {
 			results = append(results, map[string]interface{}{
 				"cpu":        s.CPU,
@@ -3031,19 +3078,20 @@ func handleGETSystemHistory() echo.HandlerFunc {
 			}
 		}
 
-		if from != "" && to != "" {
-			query = query.Where("timestamp BETWEEN ? AND ?", from, to)
-		} else if duration != "" && strings.HasSuffix(duration, "h") {
-			hours, err := strconv.Atoi(strings.TrimSuffix(duration, "h"))
-			if err == nil && hours > 0 {
-				query = query.Where("timestamp >= ?", time.Now().Add(-time.Duration(hours)*time.Hour))
-			}
+		fromTime, fromErr := time.Parse(time.RFC3339Nano, from)
+		toTime, toErr := time.Parse(time.RFC3339Nano, to)
+		if fromErr == nil && toErr == nil {
+			query = query.Where("timestamp BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
 		} else {
 			days := 30
-			if d, err := strconv.Atoi(daysStr); err == nil {
+			if d, err := strconv.Atoi(daysStr); err == nil && d > 0 && d <= 106751 {
 				days = d
 			}
-			query = query.Where("timestamp > ?", time.Now().AddDate(0, 0, -days))
+			since := time.Now().AddDate(0, 0, -days)
+			if window, err := time.ParseDuration(duration); err == nil && window > 0 {
+				since = time.Now().Add(-window)
+			}
+			query = query.Where("timestamp >= ?", since)
 		}
 
 		err := query.Order("timestamp DESC").Find(&systemStats).Error
@@ -3051,7 +3099,7 @@ func handleGETSystemHistory() echo.HandlerFunc {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to query DB"})
 		}
 
-		var history []map[string]interface{}
+		history := make([]map[string]interface{}, 0, len(systemStats))
 		for _, stat := range systemStats {
 			history = append(history, map[string]interface{}{
 				"node_id":    stat.NodeID,
@@ -3381,7 +3429,10 @@ func handlePUTTeamsId() echo.HandlerFunc {
 			}
 		}
 
-		db.GormDB.Model(&db.Team{}).Where("id = ?", id).Updates(updates)
+		if err := db.GormDB.Model(&db.Team{}).Where("id = ?", id).Updates(updates).Error; err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to update team"})
+		}
+		patternGeneration.Add(1)
 		return c.NoContent(http.StatusOK)
 	}
 }
@@ -3395,7 +3446,10 @@ func handleDELETETeamsId() echo.HandlerFunc {
 		if err != nil || id <= 0 {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid team ID format"})
 		}
-		db.GormDB.Where("id = ?", id).Delete(&db.Team{})
+		if err := db.GormDB.Where("id = ?", id).Delete(&db.Team{}).Error; err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to delete team"})
+		}
+		patternGeneration.Add(1)
 		return c.NoContent(http.StatusOK)
 	}
 }
@@ -3662,7 +3716,7 @@ func handlePUTUsersIdPermissions() echo.HandlerFunc {
 			}
 		}
 
-		db.GormDB.Model(&db.User{}).Where("id = ?", id).Updates(map[string]interface{}{
+		result := db.GormDB.Model(&db.User{}).Where("id = ?", id).Updates(map[string]interface{}{
 			"can_start": canStart, "can_stop": canStop, "can_restart": canRestart,
 			"can_delete": canDelete, "can_shell": canShell, "is_restricted_access": isRestricted,
 			"can_view_system_health": c.FormValue("can_view_system_health") == "true",
@@ -3672,10 +3726,14 @@ func handlePUTUsersIdPermissions() echo.HandlerFunc {
 			"can_delete_deployments": c.FormValue("can_delete_deployments") == "true",
 			"allowed_containers":     allowedContainers, "team_id": teamID,
 		})
+		if result.Error != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to update user permissions"})
+		}
 		// If teamIDStr is explicitly "null", we should set team_id to null
 		if teamIDStr == "null" {
 			db.GormDB.Model(&db.User{}).Where("id = ?", id).Update("team_id", nil)
 		}
+		patternGeneration.Add(1)
 
 		token := c.Get("user").(*jwt.Token)
 		claims := token.Claims.(*UserClaims)
@@ -4795,8 +4853,17 @@ func handleGETWsLogsId(cli *client.Client) echo.HandlerFunc {
 		}
 		defer ws.Close()
 
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(c.Request().Context())
 		defer cancel()
+
+		go func() {
+			defer cancel()
+			for {
+				if _, _, err := ws.ReadMessage(); err != nil {
+					return
+				}
+			}
+		}()
 
 		out, err := cli.ContainerLogs(ctx, id, client.ContainerLogsOptions{
 			ShowStdout: true,
@@ -4811,27 +4878,34 @@ func handleGETWsLogsId(cli *client.Client) echo.HandlerFunc {
 			return nil
 		}
 		defer out.Close()
+		stopClose := context.AfterFunc(ctx, func() { _ = out.Close() })
+		defer stopClose()
 
-		header := make([]byte, 8)
-		for {
-			_, err = io.ReadFull(out, header)
-			if err != nil {
-				break
-			}
-
-			size := uint32(header[4])<<24 | uint32(header[5])<<16 | uint32(header[6])<<8 | uint32(header[7])
-			payload := make([]byte, size)
-			_, err = io.ReadFull(out, payload)
-			if err != nil {
-				break
-			}
-
-			if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
-				break
-			}
+		writer := &logWebSocketWriter{conn: ws}
+		if container.Container.Config != nil && container.Container.Config.Tty {
+			_, err = io.Copy(writer, out)
+		} else {
+			_, err = stdcopy.StdCopy(writer, writer, out)
+		}
+		if err != nil && ctx.Err() == nil {
+			log.Printf("Container log stream error for %s: %v", id, err)
 		}
 		return nil
 	}
+}
+
+type logWebSocketWriter struct {
+	conn *websocket.Conn
+}
+
+func (writer *logWebSocketWriter) Write(data []byte) (int, error) {
+	if err := writer.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return 0, err
+	}
+	if err := writer.conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		return 0, err
+	}
+	return len(data), nil
 }
 
 // handleGETWsShellId opens an interactive TTY shell session inside a

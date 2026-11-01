@@ -18,12 +18,14 @@ import (
 func RegisterNetworkRoutes(r *echo.Group, cli *client.Client) {
 	// GET /networks lists all Docker networks.
 	r.GET("/networks", func(c echo.Context) error {
-		networks, err := cli.NetworkList(context.Background(), client.NetworkListOptions{})
+		ctx, cancel := context.WithTimeout(c.Request().Context(), 10*time.Second)
+		defer cancel()
+		networks, err := cli.NetworkList(ctx, client.NetworkListOptions{})
+		if LighthouseMode == "hub" {
+			return writeClusterResources(c, "list_networks", networks, err)
+		}
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		}
-		if LighthouseMode == "hub" {
-			return c.JSON(http.StatusOK, aggregateClusterResources(c.Request().Context(), "list_networks", networks))
 		}
 		return c.JSON(http.StatusOK, networks)
 	})

@@ -1,9 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/moby/moby/client"
+	"github.com/stretchr/testify/require"
 )
 
 func TestInitExcludedContainers(t *testing.T) {
@@ -80,6 +85,36 @@ func TestSanitizeContainerEnv(t *testing.T) {
 	result := sanitizeContainerEnv(env)
 	if !reflect.DeepEqual(result, expected) {
 		t.Errorf("expected %v, got %v", expected, result)
+	}
+}
+
+func TestSanitizeContainerInspectMasksParsedAndRawPayloads(t *testing.T) {
+	raw := json.RawMessage(`{"Id":"test-container","Config":{"Env":["VERIFY_SECRET=must-not-leak","PUBLIC_VALUE=visible"]}}`)
+	var result client.ContainerInspectResult
+	require.NoError(t, json.Unmarshal(raw, &result.Container))
+	result.Raw = raw
+	sanitizeContainerInspect(&result)
+	encoded, err := json.Marshal(result)
+	require.NoError(t, err)
+	require.False(t, strings.Contains(string(encoded), "must-not-leak"), "inspect leaked a secret through parsed or raw data")
+	require.Contains(t, string(encoded), "PUBLIC_VALUE=visible")
+	require.Contains(t, string(result.Raw), "PUBLIC_VALUE=visible")
+	require.NotEmpty(t, result.Raw)
+}
+
+func TestSanitizeInspectMapMasksEveryRepresentation(t *testing.T) {
+	for _, payload := range []string{
+		`{"Config":{"Env":["VERIFY_SECRET=must-not-leak","PUBLIC_VALUE=visible"]}}`,
+		`{"Container":{"Config":{"Env":["VERIFY_SECRET=must-not-leak","PUBLIC_VALUE=visible"]}},"Raw":{"Config":{"Env":["VERIFY_SECRET=must-not-leak","PUBLIC_VALUE=visible"]}}}`,
+		`{"Container":{"Config":{"Env":["PUBLIC_VALUE=visible"]}},"Raw":"must-not-leak"}`,
+	} {
+		var result map[string]interface{}
+		require.NoError(t, json.Unmarshal([]byte(payload), &result))
+		sanitizeInspectMap(result)
+		encoded, err := json.Marshal(result)
+		require.NoError(t, err)
+		require.False(t, strings.Contains(string(encoded), "must-not-leak"), "remote inspect leaked a secret")
+		require.Contains(t, string(encoded), "PUBLIC_VALUE=visible")
 	}
 }
 

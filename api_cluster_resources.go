@@ -3,21 +3,56 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"sort"
 	"sync"
 	"time"
 
+	"github.com/labstack/echo/v4"
 	"lighthouse/cluster"
 )
 
-func aggregateClusterResources(ctx context.Context, action string, local interface{}) []map[string]interface{} {
+const unavailableNodesHeader = "X-LightHouse-Unavailable-Nodes"
+
+func setUnavailableNodes(c echo.Context, nodes []string) {
+	if len(nodes) == 0 {
+		return
+	}
+	for index, nodeID := range nodes {
+		if nodeID == "" {
+			nodes[index] = "local"
+		}
+	}
+	sort.Strings(nodes)
+	encoded, _ := json.Marshal(nodes)
+	c.Response().Header().Set(unavailableNodesHeader, string(encoded))
+}
+
+func writeClusterResources(c echo.Context, action string, local interface{}, localErr error) error {
+	items, unavailable := aggregateClusterResources(c.Request().Context(), action, local)
+	if localErr != nil {
+		unavailable = append(unavailable, NodeID)
+	}
+	setUnavailableNodes(c, unavailable)
+	return c.JSON(http.StatusOK, items)
+}
+
+func aggregateClusterResources(ctx context.Context, action string, local interface{}) ([]map[string]interface{}, []string) {
 	items := tagResourceItems(resourceItems(local), NodeID, false)
 	if LighthouseMode != "hub" {
-		return items
+		return items, nil
 	}
 
+	var unavailable []string
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	for _, nodeID := range cluster.ConnectedSpokeIDsWithCapability("resources") {
+	for _, nodeID := range cluster.ConnectedSpokeIDs() {
+		if !cluster.SpokeSupports(nodeID, "resources") {
+			mu.Lock()
+			unavailable = append(unavailable, nodeID)
+			mu.Unlock()
+			continue
+		}
 		nodeID := nodeID
 		wg.Add(1)
 		go func() {
@@ -25,11 +60,11 @@ func aggregateClusterResources(ctx context.Context, action string, local interfa
 			requestCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 			defer cancel()
 			data, err := cluster.CallSpoke(requestCtx, nodeID, action, nil)
-			if err != nil {
-				return
-			}
 			var decoded interface{}
-			if err := json.Unmarshal(data, &decoded); err != nil {
+			if err != nil || json.Unmarshal(data, &decoded) != nil {
+				mu.Lock()
+				unavailable = append(unavailable, nodeID)
+				mu.Unlock()
 				return
 			}
 			remoteItems := tagResourceItems(resourceItems(decoded), nodeID, true)
@@ -39,7 +74,7 @@ func aggregateClusterResources(ctx context.Context, action string, local interfa
 		}()
 	}
 	wg.Wait()
-	return items
+	return items, unavailable
 }
 
 func resourceItems(value interface{}) []map[string]interface{} {

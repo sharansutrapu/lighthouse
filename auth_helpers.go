@@ -28,6 +28,33 @@ import (
 // production; initSecretKey refuses to start in production with this value.
 const defaultSecretKey = "secret-key-change-this"
 
+func requireSystemHealthAccess() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			token, ok := c.Get("user").(*jwt.Token)
+			if !ok || token == nil {
+				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Authentication required"})
+			}
+			claims, ok := token.Claims.(*UserClaims)
+			if !ok || claims == nil {
+				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Authentication required"})
+			}
+			var user db.User
+			if err := db.GormDB.Preload("Team").Where("id = ? AND is_active = ?", claims.ID, true).First(&user).Error; err != nil {
+				return c.JSON(http.StatusForbidden, map[string]string{"error": "System health access required"})
+			}
+			allowed := user.IsAdmin || user.CanViewSystemHealth
+			if user.Team != nil {
+				allowed = allowed || user.Team.CanViewSystemHealth
+			}
+			if !allowed {
+				return c.JSON(http.StatusForbidden, map[string]string{"error": "System health access required"})
+			}
+			return next(c)
+		}
+	}
+}
+
 // loginRateLimiter tracks recent failed-login timestamps per key (typically
 // client IP) to enforce brute-force protection on /api/token.
 type loginRateLimiter struct {

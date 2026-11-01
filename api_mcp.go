@@ -291,6 +291,7 @@ func mcpInspectContainerHandler(cli *client.Client) server.ToolHandlerFunc {
 			return mcp.NewToolResultError("Unauthorized access to this container"), nil
 		}
 
+		sanitizeContainerInspect(&container)
 		b, _ := json.MarshalIndent(container.Container, "", "  ")
 		return mcp.NewToolResultText(string(b)), nil
 	}

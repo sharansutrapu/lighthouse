@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"lighthouse/backup"
@@ -27,6 +28,7 @@ import (
 var scheduler *cron.Cron
 var currentEntryID cron.EntryID
 var lastArchivalTime time.Time
+var archivalMu sync.Mutex
 
 // InitScheduler starts the archival background process
 func InitScheduler() {
@@ -34,7 +36,9 @@ func InitScheduler() {
 		scheduler = cron.New(cron.WithSeconds())
 		scheduler.Start()
 	}
+	archivalMu.Lock()
 	lastArchivalTime = time.Now().Add(-1 * time.Hour) // Initial window: last hour
+	archivalMu.Unlock()
 	ReloadSchedule()
 }
 
@@ -58,7 +62,6 @@ func ReloadSchedule() {
 				log.Printf("[Archival] Failed: %v", err)
 			} else {
 				log.Println("[Archival] Successfully completed scheduled archival")
-				lastArchivalTime = time.Now()
 			}
 		})
 		if err == nil {
@@ -72,6 +75,8 @@ func ReloadSchedule() {
 
 // RunArchival archives logs and metrics to the configured cloud provider
 func RunArchival(s db.Setting) error {
+	archivalMu.Lock()
+	defer archivalMu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 
@@ -99,17 +104,18 @@ func RunArchival(s db.Setting) error {
 	if s.ArchiveMetrics {
 		log.Println("[Archival] Archiving metrics...")
 		if err := archiveMetrics(ctx, provider, s.ArchivalBucket, datePrefix, timestamp, lastArchivalTime, windowEnd); err != nil {
-			log.Printf("[Archival] Metrics archival failed: %v", err)
+			return fmt.Errorf("metrics archival failed: %w", err)
 		}
 	}
 
 	if s.ArchiveLogs {
 		log.Println("[Archival] Archiving logs...")
 		if err := archiveLogs(ctx, provider, s.ArchivalBucket, datePrefix, timestamp, lastArchivalTime, windowEnd); err != nil {
-			log.Printf("[Archival] Logs archival failed: %v", err)
+			return fmt.Errorf("logs archival failed: %w", err)
 		}
 	}
 
+	lastArchivalTime = windowEnd
 	return nil
 }
 

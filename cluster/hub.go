@@ -39,17 +39,19 @@ var upgraderFunc = func(w http.ResponseWriter, r *http.Request) (WSConn, error) 
 type Hub struct {
 	sync.RWMutex
 	Spokes              map[string]WSConn
+	SpokeWriteLocks     map[string]*sync.Mutex
 	SpokeContainers     map[string][]map[string]interface{}
 	SpokeLastSeen       map[string]time.Time
 	SpokeCapabilities   map[string]map[string]bool
 	ExecStreams         map[string]WSConn // maps exec_id to UI websocket
 	LogStreams          map[string]WSConn // maps stream_id to UI websocket
+	ExecStreamNodes     map[string]string
+	LogStreamNodes      map[string]string
 	PendingRequests     map[string]chan RPCResponse
 	PendingRequestNodes map[string]string
 	CommandResults      map[string]CommandResult // container_id -> most recent dispatched command outcome
 }
 
-var hubSpokeWriteMu sync.Mutex
 var requestSequence uint64
 
 // NodeStatus is the read-only topology snapshot exposed by the Hub API.
@@ -78,11 +80,14 @@ type RPCResponse struct {
 
 var GlobalHub = &Hub{
 	Spokes:              make(map[string]WSConn),
+	SpokeWriteLocks:     make(map[string]*sync.Mutex),
 	SpokeContainers:     make(map[string][]map[string]interface{}),
 	SpokeLastSeen:       make(map[string]time.Time),
 	SpokeCapabilities:   make(map[string]map[string]bool),
 	ExecStreams:         make(map[string]WSConn),
 	LogStreams:          make(map[string]WSConn),
+	ExecStreamNodes:     make(map[string]string),
+	LogStreamNodes:      make(map[string]string),
 	PendingRequests:     make(map[string]chan RPCResponse),
 	PendingRequestNodes: make(map[string]string),
 	CommandResults:      make(map[string]CommandResult),
@@ -114,7 +119,9 @@ func RegisterHubRoutes(e *echo.Echo, hubToken string) {
 		GlobalHub.Lock()
 		previousWS := GlobalHub.Spokes[nodeID]
 		var supersededRequests []chan RPCResponse
+		var supersededStreams []WSConn
 		if previousWS != nil && previousWS != ws {
+			supersededStreams = GlobalHub.detachStreamsLocked(nodeID)
 			for requestID, requestNodeID := range GlobalHub.PendingRequestNodes {
 				if requestNodeID == nodeID {
 					supersededRequests = append(supersededRequests, GlobalHub.PendingRequests[requestID])
@@ -130,6 +137,9 @@ func RegisterHubRoutes(e *echo.Echo, hubToken string) {
 		if previousWS != nil && previousWS != ws {
 			_ = previousWS.Close()
 		}
+		for _, stream := range supersededStreams {
+			_ = stream.Close()
+		}
 		for _, responseChan := range supersededRequests {
 			select {
 			case responseChan <- RPCResponse{Error: "spoke reconnected"}:
@@ -144,8 +154,10 @@ func RegisterHubRoutes(e *echo.Echo, hubToken string) {
 			if err != nil {
 				log.Printf("[Hub] Spoke %s disconnected: %v", nodeID, err)
 				var pending []chan RPCResponse
+				var streams []WSConn
 				GlobalHub.Lock()
 				if GlobalHub.Spokes[nodeID] == ws {
+					streams = GlobalHub.detachStreamsLocked(nodeID)
 					delete(GlobalHub.Spokes, nodeID)
 					delete(GlobalHub.SpokeContainers, nodeID)
 					GlobalHub.SpokeLastSeen[nodeID] = time.Now()
@@ -158,6 +170,9 @@ func RegisterHubRoutes(e *echo.Echo, hubToken string) {
 					}
 				}
 				GlobalHub.Unlock()
+				for _, stream := range streams {
+					_ = stream.Close()
+				}
 				for _, responseChan := range pending {
 					select {
 					case responseChan <- RPCResponse{Error: "spoke disconnected"}:
@@ -215,22 +230,34 @@ func handleSpokeMessage(nodeID string, msg []byte) {
 
 	case "containers":
 		var containers []map[string]interface{}
-		json.Unmarshal(payload.Data, &containers)
+		if err := json.Unmarshal(payload.Data, &containers); err != nil {
+			return
+		}
 		GlobalHub.Lock()
 		GlobalHub.SpokeContainers[nodeID] = containers
 		GlobalHub.Unlock()
 
 	case "stat", "container_stat":
 		var stat db.Stat
-		json.Unmarshal(payload.Data, &stat)
+		if err := json.Unmarshal(payload.Data, &stat); err != nil || string(payload.Data) == "null" {
+			return
+		}
+		stat.ID = 0
 		stat.NodeID = nodeID
-		db.GormDB.Create(&stat)
+		if err := db.GormDB.Create(&stat).Error; err != nil {
+			log.Printf("[Hub] Failed to save container metrics from %s: %v", nodeID, err)
+		}
 
 	case "system_stat":
 		var stat db.SystemStat
-		json.Unmarshal(payload.Data, &stat)
+		if err := json.Unmarshal(payload.Data, &stat); err != nil || string(payload.Data) == "null" {
+			return
+		}
+		stat.ID = 0
 		stat.NodeID = nodeID
-		db.GormDB.Create(&stat)
+		if err := db.GormDB.Create(&stat).Error; err != nil {
+			log.Printf("[Hub] Failed to save system metrics from %s: %v", nodeID, err)
+		}
 
 	case "scan_result":
 		var result struct {
@@ -261,8 +288,9 @@ func handleSpokeMessage(nodeID string, msg []byte) {
 		}
 		GlobalHub.RLock()
 		uiWs, ok := GlobalHub.ExecStreams[output.ExecID]
+		owner := GlobalHub.ExecStreamNodes[output.ExecID]
 		GlobalHub.RUnlock()
-		if !ok {
+		if !ok || (owner != "" && owner != nodeID) {
 			return
 		}
 		if payload.Type == "exec_output" {
@@ -285,8 +313,9 @@ func handleSpokeMessage(nodeID string, msg []byte) {
 		}
 		GlobalHub.RLock()
 		uiWs, ok := GlobalHub.LogStreams[output.StreamID]
+		owner := GlobalHub.LogStreamNodes[output.StreamID]
 		GlobalHub.RUnlock()
-		if !ok {
+		if !ok || (owner != "" && owner != nodeID) {
 			return
 		}
 		if payload.Type == "log_output" {
@@ -438,6 +467,7 @@ func RegisterExecStream(execID string, ws WSConn) {
 func UnregisterExecStream(execID string) {
 	GlobalHub.Lock()
 	delete(GlobalHub.ExecStreams, execID)
+	delete(GlobalHub.ExecStreamNodes, execID)
 	GlobalHub.Unlock()
 }
 
@@ -445,24 +475,101 @@ func UnregisterExecStream(execID string) {
 func UnregisterLogStream(streamID string) {
 	GlobalHub.Lock()
 	delete(GlobalHub.LogStreams, streamID)
+	delete(GlobalHub.LogStreamNodes, streamID)
 	GlobalHub.Unlock()
 }
 
-func writeToSpoke(nodeID string, payload interface{}) error {
-	GlobalHub.RLock()
+func (hub *Hub) detachStreamsLocked(nodeID string) []WSConn {
+	var streams []WSConn
+	for execID, owner := range hub.ExecStreamNodes {
+		if owner == nodeID {
+			if stream := hub.ExecStreams[execID]; stream != nil {
+				streams = append(streams, stream)
+			}
+			delete(hub.ExecStreams, execID)
+			delete(hub.ExecStreamNodes, execID)
+		}
+	}
+	for streamID, owner := range hub.LogStreamNodes {
+		if owner == nodeID {
+			if stream := hub.LogStreams[streamID]; stream != nil {
+				streams = append(streams, stream)
+			}
+			delete(hub.LogStreams, streamID)
+			delete(hub.LogStreamNodes, streamID)
+		}
+	}
+	return streams
+}
+
+func sendStreamStart(nodeID, streamID string, execStream bool, payload interface{}) error {
+	GlobalHub.Lock()
 	ws, ok := GlobalHub.Spokes[nodeID]
-	GlobalHub.RUnlock()
 	if !ok {
+		GlobalHub.Unlock()
 		return fmt.Errorf("spoke not connected")
 	}
-	hubSpokeWriteMu.Lock()
-	defer hubSpokeWriteMu.Unlock()
-	return ws.WriteJSON(payload)
+	if execStream && GlobalHub.ExecStreams[streamID] != nil {
+		if GlobalHub.ExecStreamNodes == nil {
+			GlobalHub.ExecStreamNodes = make(map[string]string)
+		}
+		GlobalHub.ExecStreamNodes[streamID] = nodeID
+	} else if !execStream && GlobalHub.LogStreams[streamID] != nil {
+		if GlobalHub.LogStreamNodes == nil {
+			GlobalHub.LogStreamNodes = make(map[string]string)
+		}
+		GlobalHub.LogStreamNodes[streamID] = nodeID
+	}
+	writeLock := GlobalHub.spokeWriteLockLocked(nodeID)
+	GlobalHub.Unlock()
+	return writeSpokeMessage(ws, writeLock, payload)
+}
+
+func writeToSpoke(nodeID string, payload interface{}) error {
+	GlobalHub.Lock()
+	ws, ok := GlobalHub.Spokes[nodeID]
+	if !ok {
+		GlobalHub.Unlock()
+		return fmt.Errorf("spoke not connected")
+	}
+	writeLock := GlobalHub.spokeWriteLockLocked(nodeID)
+	GlobalHub.Unlock()
+	return writeSpokeMessage(ws, writeLock, payload)
+}
+
+func (hub *Hub) spokeWriteLockLocked(nodeID string) *sync.Mutex {
+	if hub.SpokeWriteLocks == nil {
+		hub.SpokeWriteLocks = make(map[string]*sync.Mutex)
+	}
+	if hub.SpokeWriteLocks[nodeID] == nil {
+		hub.SpokeWriteLocks[nodeID] = &sync.Mutex{}
+	}
+	return hub.SpokeWriteLocks[nodeID]
+}
+
+func setSocketWriteDeadline(ws WSConn) error {
+	if connection, ok := ws.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		return connection.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	}
+	return nil
+}
+
+func writeSpokeMessage(ws WSConn, writeLock *sync.Mutex, payload interface{}) error {
+	writeLock.Lock()
+	defer writeLock.Unlock()
+	err := setSocketWriteDeadline(ws)
+	if err == nil {
+		err = ws.WriteJSON(payload)
+	}
+	if err != nil {
+		_ = ws.Close()
+	}
+	return err
 }
 
 // SendLogStart asks a spoke to start following one container's logs.
 func SendLogStart(nodeID, streamID, containerID string) error {
-	return writeToSpoke(nodeID, map[string]string{
+	return sendStreamStart(nodeID, streamID, false, map[string]string{
 		"type":         "log_start",
 		"stream_id":    streamID,
 		"container_id": containerID,
@@ -479,7 +586,7 @@ func SendLogStop(nodeID, streamID string) error {
 
 // SendExecStart asks a spoke to create and attach a TTY session.
 func SendExecStart(nodeID, execID, containerID, shell string) error {
-	return writeToSpoke(nodeID, map[string]string{
+	return sendStreamStart(nodeID, execID, true, map[string]string{
 		"type":         "exec_start",
 		"exec_id":      execID,
 		"container_id": containerID,

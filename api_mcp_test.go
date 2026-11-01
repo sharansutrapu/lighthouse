@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
-	"github.com/moby/moby/client"
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -126,10 +126,7 @@ func TestRegisterMCPRoutes(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/mcp/sse", nil).WithContext(ctx)
 	rec := httptest.NewRecorder()
 
-	go func() {
-		e.ServeHTTP(rec, req)
-	}()
-	time.Sleep(20 * time.Millisecond) // Give it time to start and then be canceled by timeout
+	e.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
 
 	reqPost := httptest.NewRequest(http.MethodPost, "/api/mcp/message", nil)
@@ -458,7 +455,6 @@ func TestMCPListNetworksHandler(t *testing.T) {
 	assert.True(t, res.IsError)
 }
 
-
 func TestRegisterMCPRoutes_Coverage(t *testing.T) {
 	e := echo.New()
 	g := e.Group("/api")
@@ -483,9 +479,6 @@ func TestRegisterMCPRoutes_InjectClaimsWithValidToken(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/mcp/sse", nil).WithContext(ctx)
 	rec := httptest.NewRecorder()
 
-	go func() { e.ServeHTTP(rec, req) }()
-	time.Sleep(20 * time.Millisecond)
+	e.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
-
-

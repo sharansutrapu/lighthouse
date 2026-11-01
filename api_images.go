@@ -19,12 +19,14 @@ import (
 func RegisterImageRoutes(r *echo.Group, cli *client.Client) {
 	// GET /images lists all locally pulled images.
 	r.GET("/images", func(c echo.Context) error {
-		images, err := cli.ImageList(context.Background(), client.ImageListOptions{All: false})
+		ctx, cancel := context.WithTimeout(c.Request().Context(), 10*time.Second)
+		defer cancel()
+		images, err := cli.ImageList(ctx, client.ImageListOptions{All: false})
+		if LighthouseMode == "hub" {
+			return writeClusterResources(c, "list_images", images, err)
+		}
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		}
-		if LighthouseMode == "hub" {
-			return c.JSON(http.StatusOK, aggregateClusterResources(c.Request().Context(), "list_images", images))
 		}
 		return c.JSON(http.StatusOK, images)
 	})

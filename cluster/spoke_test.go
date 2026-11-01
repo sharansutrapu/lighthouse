@@ -34,6 +34,7 @@ type mockSpokeWSConn struct {
 	readIdx  int
 	writes   []interface{}
 	writeErr error
+	closed   bool
 }
 
 func (m *mockSpokeWSConn) ReadMessage() (int, []byte, error) {
@@ -57,6 +58,7 @@ func (m *mockSpokeWSConn) WriteMessage(messageType int, data []byte) error {
 	return nil
 }
 func (m *mockSpokeWSConn) Close() error {
+	m.closed = true
 	return nil
 }
 
@@ -97,6 +99,37 @@ func getMockDockerClient() *client.Client {
 	return cli
 }
 
+func TestSpokeConnectURL(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"http", "http://hub:8000", "ws://hub:8000/api/spoke/connect?node_id=node+1%26east"},
+		{"https", "https://hub/", "wss://hub/api/spoke/connect?node_id=node+1%26east"},
+		{"ws", "ws://hub", "ws://hub/api/spoke/connect?node_id=node+1%26east"},
+		{"wss prefix", "wss://hub/lighthouse/", "wss://hub/lighthouse/api/spoke/connect?node_id=node+1%26east"},
+		{"endpoint", "https://hub/api/spoke/connect", "wss://hub/api/spoke/connect?node_id=node+1%26east"},
+		{"query", "https://hub/?region=east&token=obsolete", "wss://hub/api/spoke/connect?node_id=node+1%26east&region=east"},
+		{"missing scheme", "hub:8000", ""},
+		{"unsupported scheme", "ftp://hub", ""},
+		{"missing host", "https:///", ""},
+		{"credentials", "https://user:password@hub", ""},
+		{"fragment", "https://hub/#settings", ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			actual, err := spokeConnectURL(test.input, "node 1&east")
+			if test.want == "" {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, test.want, actual)
+		})
+	}
+}
+
 func TestStartSpokeAgent(t *testing.T) {
 	originalDialFunc := dialFunc
 	originalSyncInterval := syncInterval
@@ -119,6 +152,7 @@ func TestStartSpokeAgent(t *testing.T) {
 	dialCount := 0
 	var authHeader string
 	dialFunc = func(url string, requestHeader http.Header) (WSConn, error) {
+		assert.Equal(t, "ws://hub/api/spoke/connect?node_id=node1", url)
 		authHeader = requestHeader.Get("Authorization")
 		dialCount++
 		if dialCount == 1 {
@@ -128,19 +162,14 @@ func TestStartSpokeAgent(t *testing.T) {
 		mws := &mockSpokeWSConn{
 			readMsgs: [][]byte{
 				[]byte(`{"type":"command","action":"start","container_id":"c1"}`),
-				[]byte(`{"type":"exec_start","exec_id":"e1","container_id":"c1"}`),
-				[]byte(`{"type":"exec_input","data":""}`),
 			},
-			readErrs: []error{nil, nil, nil},
+			readErrs: []error{nil},
 		}
 		return mws, nil
 	}
 
 	cli := getMockDockerClient()
-	go StartSpokeAgent("http://hub", "tok", "node1", cli)
-
-	time.Sleep(300 * time.Millisecond)
-	agentRunning = false
+	StartSpokeAgent("http://hub", "tok", "node1", cli)
 	assert.GreaterOrEqual(t, dialCount, 1)
 	assert.Equal(t, "Bearer tok", authHeader)
 }
@@ -156,10 +185,13 @@ func TestPushToHub(t *testing.T) {
 
 	PushToHub("test", make(chan int))
 
-	spokeWs = &mockSpokeWSConn{
+	failedWS := &mockSpokeWSConn{
 		writeErr: errors.New("write err"),
 	}
+	spokeWs = failedWS
 	PushToHub("test", map[string]string{"foo": "bar"})
+	assert.True(t, failedWS.closed)
+	assert.Nil(t, spokeWs)
 }
 
 func TestHandleHubMessage(t *testing.T) {
@@ -219,8 +251,120 @@ func TestHandleRPCRequest(t *testing.T) {
 	}
 }
 
+func TestRPCDispatchAllActionsAndErrors(t *testing.T) {
+	originalClient, originalWS := dockerClient, spokeWs
+	t.Cleanup(func() { dockerClient, spokeWs = originalClient, originalWS })
+	tests := []struct {
+		action string
+		data   string
+		body   string
+	}{
+		{"container_inspect", `{"container_id":"c1"}`, `{"Id":"c1","Config":{"Image":"alpine"}}`},
+		{"container_action", `{"container_id":"c1","action":"start"}`, `{}`},
+		{"container_action", `{"container_id":"c1","action":"stop"}`, `{}`},
+		{"container_action", `{"container_id":"c1","action":"restart"}`, `{}`},
+		{"container_action", `{"container_id":"c1","action":"remove"}`, `{}`},
+		{"list_images", `null`, `[]`},
+		{"list_volumes", `null`, `{"Volumes":[]}`},
+		{"list_networks", `null`, `[]`},
+		{"image_remove", `{"id":"image"}`, `[]`},
+		{"volume_remove", `{"name":"volume"}`, `{}`},
+		{"network_remove", `{"id":"network"}`, `{}`},
+		{"image_prune", `{"all_unused":true,"remove_containers":true}`, `{"ImagesDeleted":[],"SpaceReclaimed":7}`},
+		{"image_prune", `{"all_unused":false,"remove_containers":false}`, `{"ImagesDeleted":[],"SpaceReclaimed":7}`},
+		{"volume_prune", `{"remove_containers":true}`, `{"VolumesDeleted":[],"SpaceReclaimed":7}`},
+		{"network_prune", `{"remove_containers":false}`, `{"NetworksDeleted":[]}`},
+	}
+	for _, test := range tests {
+		for _, failDocker := range []bool{false, true} {
+			name := test.action + test.data
+			if failDocker {
+				name += " Docker error"
+			}
+			t.Run(name, func(t *testing.T) {
+				connection := &wireWSConn{}
+				spokeWs = connection
+				var err error
+				dockerClient, err = client.NewClientWithOpts(client.WithVersion("1.41"), client.WithHTTPClient(&http.Client{
+					Transport: &dockerMockTransport{fn: func(request *http.Request) (*http.Response, error) {
+						if failDocker {
+							return nil, errors.New("fixture Docker failure")
+						}
+						body := test.body
+						if strings.Contains(request.URL.Path, "/containers/json") {
+							body = `[{"Id":"stopped"}]`
+						}
+						if strings.Contains(request.URL.Path, "/containers/prune") {
+							body = `{"ContainersDeleted":[],"SpaceReclaimed":0}`
+						}
+						return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: ioutil.NopCloser(strings.NewReader(body))}, nil
+					}},
+				}))
+				assert.NoError(t, err)
+				handleRPCRequest("correlation-id", test.action, json.RawMessage(test.data))
+				if !assert.Len(t, connection.sent, 1) {
+					return
+				}
+				var envelope struct {
+					Type string      `json:"type"`
+					Data RPCResponse `json:"data"`
+				}
+				assert.NoError(t, json.Unmarshal(connection.sent[0], &envelope))
+				assert.Equal(t, "response", envelope.Type)
+				assert.Equal(t, "correlation-id", envelope.Data.RequestID)
+				if failDocker {
+					assert.Contains(t, envelope.Data.Error, "fixture Docker failure")
+				} else {
+					assert.Empty(t, envelope.Data.Error)
+					assert.NotEmpty(t, envelope.Data.Data)
+				}
+			})
+		}
+	}
+	for _, action := range []string{"container_inspect", "container_action", "image_remove", "volume_remove", "network_remove", "unsupported"} {
+		connection := &wireWSConn{}
+		spokeWs = connection
+		handleRPCRequest("malformed-id", action, json.RawMessage(`"not an object"`))
+		if !assert.Len(t, connection.sent, 1) {
+			continue
+		}
+		var envelope struct {
+			Data RPCResponse `json:"data"`
+		}
+		assert.NoError(t, json.Unmarshal(connection.sent[0], &envelope))
+		assert.NotEmpty(t, envelope.Data.Error)
+	}
+}
+
 func TestHandleCommand(t *testing.T) {
+	originalClient := dockerClient
+	originalWS := spokeWs
+	originalScan := scanImageFunc
+	t.Cleanup(func() {
+		dockerClient = originalClient
+		spokeWs = originalWS
+		scanImageFunc = originalScan
+	})
 	dockerClient = getMockDockerClient()
+
+	runScan := func() {
+		t.Helper()
+		done := make(chan struct{})
+		spokeWs = &wireWSConn{onWrite: func(message []byte) {
+			var envelope struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(message, &envelope) == nil && envelope.Type == "command_result" {
+				close(done)
+			}
+		}}
+		handleCommand("scan", "c1")
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("scan command did not complete")
+		}
+	}
 
 	handleCommand("start", "c1")
 	handleCommand("stop", "c1")
@@ -231,8 +375,7 @@ func TestHandleCommand(t *testing.T) {
 	scanImageFunc = func(ctx context.Context, cli *client.Client, image string) (map[string]interface{}, error) {
 		return map[string]interface{}{}, nil
 	}
-	handleCommand("scan", "c1")
-	time.Sleep(50 * time.Millisecond)
+	runScan()
 
 	// scan error in inspect
 	origCli := dockerClient
@@ -246,16 +389,14 @@ func TestHandleCommand(t *testing.T) {
 		}),
 		client.WithVersion("1.41"),
 	)
-	handleCommand("scan", "c1")
-	time.Sleep(50 * time.Millisecond)
+	runScan()
 	dockerClient = origCli
 
 	// scan error in scanner
 	scanImageFunc = func(ctx context.Context, cli *client.Client, image string) (map[string]interface{}, error) {
 		return map[string]interface{}{}, errors.New("scan err")
 	}
-	handleCommand("scan", "c1")
-	time.Sleep(50 * time.Millisecond)
+	runScan()
 }
 
 func TestHandleExecSession(t *testing.T) {
