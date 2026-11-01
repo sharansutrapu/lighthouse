@@ -1,8 +1,8 @@
 # Stage 1: Build the Vue frontend
-FROM --platform=$BUILDPLATFORM node:20-alpine AS frontend-builder
+FROM --platform=$BUILDPLATFORM node:24-alpine3.24 AS frontend-builder
 WORKDIR /app/frontend
-RUN npm install -g pnpm
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
+RUN npm install -g "$(node -p 'require("./package.json").packageManager')"
 RUN pnpm install --frozen-lockfile
 COPY frontend/ ./
 RUN pnpm run build
@@ -22,7 +22,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -p 2 -ldflags="-s -w" -o lighthouse .
 
 # Stage 3: Final runtime image
-FROM alpine:3.21
+FROM alpine:3.24
 WORKDIR /app
 RUN apk add --no-cache ca-certificates docker-cli docker-cli-compose git
 COPY --from=backend-builder /app/lighthouse /usr/local/bin/lighthouse

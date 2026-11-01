@@ -27,6 +27,9 @@ data/
 # Frontend
 frontend/node_modules/
 frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
+tests/integration/artifacts/
 frontend/.env
 frontend/.env.local
 frontend/.env.*.local

@@ -16,6 +16,13 @@ frontend/dist/
 frontend/.env
 frontend/.env.*
 
+# Test infrastructure and generated reports (not needed in the image)
+tests/
+frontend/tests/
+frontend/playwright.config.js
+frontend/test-results/
+frontend/playwright-report/
+
 # Database
 *.db
 *.db-journal
