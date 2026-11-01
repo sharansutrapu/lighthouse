@@ -29,20 +29,32 @@ Enhancement suggestions are tracked as GitHub issues. When creating an enhanceme
 
 ### Prerequisites
 * Go 1.26+
-* Node.js 20+ and pnpm
+* Node.js 22.12+ (Node.js 24 LTS recommended) and pnpm 10.34.9
 * Docker
 
 ### Backend (Go)
 1. Navigate to the root directory.
 2. Install dependencies: `go mod tidy`
-3. Run the development server: `go run main.go`
+3. Run the development server: `go run .`
 
 ### Frontend (Vue 3)
 1. Navigate to the `frontend` directory.
-2. Install dependencies: `pnpm install`
-3. Run the dev server: `pnpm run dev`
+2. Install dependencies: `pnpm install --frozen-lockfile`
+3. Run transport tests: `pnpm test`
+4. Run the dev server: `pnpm run dev`
 
-By default, the backend runs on `http://localhost:8000` and the frontend proxy targets it automatically if configured via Vite.
+By default, the backend runs on `http://localhost:8000`. Vite proxies `/api`,
+`/auth`, and `/ws` to `http://127.0.0.1:8000`; set `LIGHTHOUSE_API_TARGET` when
+the development backend runs elsewhere. Production images serve the frontend
+directly from the Go server.
+
+### Full Verification
+
+Run the unit, race, and isolated integration gates described in
+[the verification matrix](docs/VERIFICATION_MATRIX.md). The integration runner
+requires explicit approval for privileged Docker-in-Docker containers and
+does not use your local Docker workloads for destructive resource tests.
+Do not treat skipped tests or a successful build alone as a completed review.
 
 ## Pull Request Guidelines
 

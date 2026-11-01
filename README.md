@@ -159,7 +159,7 @@ LightHouse reads several environment variables to configure its runtime behavior
 | **`ALLOW_DELETE`** | `false` | `true`, `false` | Global setting to allow removing containers. |
 | **`ALLOW_SHELL`** / **`ALLOW_BASH`**| `false` | `true`, `false` | Global setting to allow terminal shell access. |
 | **`EXCLUDE_CONTAINERS`** | *None* | Comma-separated list | List of container names to hide from the dashboard. |
-| **`HUB_URL`** | *None* | Host endpoint address | The WebSocket endpoint of the Hub (required for Spokes). |
+| **`HUB_URL`** | *None* | `https://`, `http://`, `wss://`, or `ws://` endpoint | Hub address, required for spokes. HTTPS is converted to WSS; reverse-proxy path prefixes are preserved. |
 | **`HUB_TOKEN`** | *None* | Secure token string | Shared authorization token (required for Spokes and Hub). |
 
 *(Note: The LightHouse container itself is always hidden from the dashboard)*
@@ -194,17 +194,29 @@ volumes:
 
 ## Hub & Spoke (PostgreSQL)
 
+Use one strong `HUB_TOKEN` shared by the hub and its spokes, and a stable,
+unique `NODE_NAME` for every node. A reachable PostgreSQL server and a TLS
+reverse proxy are prerequisites for the examples below. Keep database TLS
+enabled for production connections outside a trusted local network.
+
 **1. Deploy the Hub**
 ```yaml
 version: '3.8'
 services:
   lighthouse-hub:
     image: sharankumar619/lighthouse:latest
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
     environment:
       - LIGHTHOUSE_MODE=hub
+      - NODE_NAME=hub-primary
+      - HUB_TOKEN=${HUB_TOKEN:?Set the shared hub token}
       - DB_TYPE=postgres
       - DB_DSN=host=db user=lighthouse password=secure dbname=lighthouse port=5432 sslmode=disable
       - SECRET_KEY=your-secure-secret
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
 ```
 
 **2. Deploy a Spoke on a target node**
@@ -213,13 +225,20 @@ version: '3.8'
 services:
   lighthouse-spoke:
     image: sharankumar619/lighthouse:latest
+    restart: unless-stopped
     environment:
       - LIGHTHOUSE_MODE=spoke
-      - HUB_URL=ws://hub-address.com
-      - HUB_TOKEN=generated-spoke-token
+      - NODE_NAME=edge-east-01
+      - HUB_URL=https://hub.example.com
+      - HUB_TOKEN=${HUB_TOKEN:?Set the same token as the hub}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 ```
+
+Upgrade the hub first, then each spoke. Nodes sharing a `NODE_NAME` replace
+each other's connections and cause repeated disconnects. See
+[architecture and protocol details](docs/ARCHITECTURE.md) and the
+[upgrade review](docs/UPGRADE_REVIEW.md) for compatibility notes and checks.
 
 ---
 
@@ -285,7 +304,7 @@ sequenceDiagram
     participant DB as Central Database (GORM)
 
     Note over Spoke, Hub: Spoke starts connection loop
-    Spoke->>Hub: Dial HTTP GET /api/spoke/connect?token=HUB_TOKEN&node_id=NODE_ID
+    Spoke->>Hub: GET /api/spoke/connect?node_id=NODE_ID with Bearer authorization
     Note over Hub: Hub validates token matching HUB_TOKEN
     alt Invalid Token
         Hub-->>Spoke: HTTP 401 Unauthorized

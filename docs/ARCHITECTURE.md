@@ -79,6 +79,31 @@ Upgrade the hub first, then upgrade each spoke. The newer hub accepts the
 previous spoke handshake while spokes are replaced; spoke-first upgrades are
 not guaranteed to be understood by an older hub.
 
+#### Failure handling
+
+`HUB_URL` accepts HTTP(S) and WS(S) addresses, with an optional reverse-proxy
+path prefix. Credentials belong in `HUB_TOKEN`, not in the URL. Each node
+must have a stable, unique `NODE_NAME`.
+
+The hub serializes writes separately for each spoke and bounds them with a
+10-second write deadline. A failed write closes the transport so the spoke
+can reconnect. Inventory is sent immediately after connection, and the
+polling worker is cancelled and joined before the next connection starts.
+Browser log and shell streams are owned by one node and are closed when that
+node disconnects or is replaced; unrelated nodes keep their streams.
+
+Hub inventories remain available when the hub's local Docker daemon or a
+resource RPC fails. Partial container, image, volume, and network responses
+retain their original JSON shapes and expose unavailable nodes through the
+`X-LightHouse-Unavailable-Nodes` JSON-array response header. The UI displays
+an incomplete-inventory warning. Standalone Docker failures remain errors.
+
+Remote scan failures are persisted and forwarded as `{"Error":"..."}` scan
+results, matching standalone behavior. Log viewers split Docker output into
+lines, retain a bounded buffer, and use capped reconnect backoff. Local log
+streaming handles both TTY output and Docker's multiplexed format, and closes
+quiet Docker streams when their browser disconnects.
+
 ### 1. The Backend (Go)
 The backend is the core of the application. It handles:
 - **Authentication**: JWT-based auth with `SECRET_KEY` signing, and OAuth 2.0 integrations (Google SSO).
