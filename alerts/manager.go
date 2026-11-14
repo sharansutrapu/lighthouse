@@ -116,9 +116,11 @@ func (am *AlertManager) Start() {
 	db.OnAuditLogged = func(action, resource, status, details string) {
 		am.TriggerSystemAlert("audit", fmt.Sprintf("Action: %s\nResource: %s\nStatus: %s\n%s", action, resource, status, details))
 	}
-	go am.listenToDockerEvents()
-	go am.syncLogTailersLoop()
-	go am.checkMetricsLoop()
+	if am.cli != nil {
+		go am.listenToDockerEvents()
+		go am.syncLogTailersLoop()
+		go am.checkMetricsLoop()
+	}
 }
 
 // Stop shuts down all background goroutines cleanly. The root context is
@@ -210,6 +212,9 @@ func (am *AlertManager) ReloadRules() {
 // container lifecycle events (die, oom, health_status) against the rule cache.
 // If the stream drops it automatically reconnects after a short backoff.
 func (am *AlertManager) listenToDockerEvents() {
+	if am.cli == nil {
+		return
+	}
 	for {
 		select {
 		case <-am.ctx.Done():
@@ -232,6 +237,9 @@ func (am *AlertManager) listenToDockerEvents() {
 // runEventLoop is the inner event-processing loop. It returns when the stream
 // closes or when the manager's root context is cancelled.
 func (am *AlertManager) runEventLoop() {
+	if am.cli == nil {
+		return
+	}
 	evCtx, evCancel := context.WithCancel(am.ctx)
 	defer evCancel()
 
@@ -418,6 +426,9 @@ func (am *AlertManager) processContainerEvent(msg events.Message) { //nolint:goc
 // syncLogTailersLoop periodically calls syncLogTailers to handle containers
 // that appeared after the initial startup and containers whose rules changed.
 func (am *AlertManager) syncLogTailersLoop() {
+	if am.cli == nil {
+		return
+	}
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -507,6 +518,9 @@ func (am *AlertManager) syncLogTailers() {
 //   - the Docker log stream returns io.EOF (container exited)
 //   - any unrecoverable read error occurs
 func (am *AlertManager) tailContainerLogs(tailCtx context.Context, containerID, containerName string) {
+	if am.cli == nil {
+		return
+	}
 	// Remove ourselves from the active-tailers map when we exit so that
 	// syncLogTailers can spawn a replacement if the container restarts.
 	defer func() {
@@ -922,6 +936,9 @@ func (am *AlertManager) checkCooldown(ruleID int64, containerName string, cooldo
 // checkMetricsLoop periodically queries the stats table for baseline deviations
 // according to user thresholds (e.g. MetricCPUThreshold, MetricMemThreshold).
 func (am *AlertManager) checkMetricsLoop() {
+	if am.cli == nil {
+		return
+	}
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
@@ -975,6 +992,9 @@ func (am *AlertManager) evaluateMetrics() {
 	// For resolving container_id to name: we can get names from am.cli if needed,
 	// but container_id in DB is usually the ID.
 	// To map container_id to name, let's fetch containers.
+	if am.cli == nil {
+		return
+	}
 	listResult, err := am.cli.ContainerList(am.ctx, client.ContainerListOptions{All: true})
 	if err != nil {
 		return

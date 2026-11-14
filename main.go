@@ -1123,17 +1123,16 @@ func systemStatsBroadcaster(cli *client.Client) {
 			cpuVal := latestCPU
 			cpuMu.Unlock()
 
-			sysStatsMu.Lock()
-			if latestSystemStats == nil {
-				// First tick: allocate once. Never reallocated after this point.
-				latestSystemStats = &systemStatsSnapshot{}
+			snap := &systemStatsSnapshot{
+				CPU:               cpuVal,
+				Memory:            v.Used,
+				TotalMemory:       v.Total,
+				Cores:             cores,
+				RunningContainers: runningContainers,
+				TotalContainers:   totalContainers,
 			}
-			latestSystemStats.CPU = cpuVal
-			latestSystemStats.Memory = v.Used
-			latestSystemStats.TotalMemory = v.Total
-			latestSystemStats.Cores = cores
-			latestSystemStats.RunningContainers = runningContainers
-			latestSystemStats.TotalContainers = totalContainers
+			sysStatsMu.Lock()
+			latestSystemStats = snap
 			sysStatsMu.Unlock()
 		}
 	}
