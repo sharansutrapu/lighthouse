@@ -370,6 +370,8 @@ func main() {
 	e := echo.New()
 	if TrustProxy {
 		e.IPExtractor = echo.ExtractIPFromXFFHeader()
+	} else {
+		e.IPExtractor = echo.ExtractIPDirect()
 	}
 	// Skip request logging for high-frequency polling routes to avoid allocating
 	// a log-line string on every 4-5 second frontend poll.

@@ -124,8 +124,8 @@ github.com/jinzhu/inflection v1.0.0 h1:K317FqzuhWc8YvSVlFMCCUb36O/S9MCKRDI7QkRKD
 github.com/jinzhu/inflection v1.0.0/go.mod h1:h+uFLlag+Qp1Va5pdKtLDYj+kHp5pxUVkryuEj+Srlc=
 github.com/jinzhu/now v1.1.5 h1:/o9tlHleP7gOFmsnYNz3RGnqzefHA47wQpKrrdTIwXQ=
 github.com/jinzhu/now v1.1.5/go.mod h1:d3SSVoowX0Lcu0IBviAWJpolVfI5UJVZZ7cO71lE/z8=
-github.com/klauspost/compress v1.19.2 h1:hMRETovs/pu/dVWN7zIT1PGG8t509MwT6bO7XSi26R8=
-github.com/klauspost/compress v1.19.2/go.mod h1:cwPg85FWrGar70rWktvGQj8/hthj3wpl0PGDogxkrSQ=
+github.com/klauspost/compress v1.20.4 h1:dD0v/bvxtjCBqQu6sx1TNWkalEY5lNTIe+HY9w8TeNI=
+github.com/klauspost/compress v1.20.4/go.mod h1:LUdAzn7YLVvxLpc7y3V1m40wESHTgc1422pwwBSKYuI=
 github.com/klauspost/cpuid/v2 v2.0.1/go.mod h1:FInQzS24/EEf25PyTYn52gqo7WaD8xa0213Md/qVLRg=
 github.com/klauspost/cpuid/v2 v2.4.0 h1:S6Hrbc7+ywsr0r+RLapfGBHfyefhCTwEh3A0tV913Dw=
 github.com/klauspost/cpuid/v2 v2.4.0/go.mod h1:19jmZ9mjzoF//ddRSUsv0zfBTJWh3QJh9FNxZTMrGxU=
@@ -139,8 +139,8 @@ github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0
 github.com/kylelemons/godebug v1.1.0/go.mod h1:9/0rRGxNHcop5bhtWyNeEfOS8JIWk580+fNqagV/RAw=
 github.com/labstack/echo-jwt/v4 v4.4.0 h1:nrXaEnJupfc2R4XChcLRDyghhMZup77F8nIzHnBK19U=
 github.com/labstack/echo-jwt/v4 v4.4.0/go.mod h1:kYXWgWms9iFqI3ldR+HAEj/Zfg5rZtR7ePOgktG4Hjg=
-github.com/labstack/echo/v4 v4.16.3 h1:wAzM49wiBxHpZJQ621lminvdxbwfd1Cn6KwRThKV6nA=
-github.com/labstack/echo/v4 v4.16.3/go.mod h1:V/EQaTVHYJH92QhbQe7kFQ4mjgcjxLQQUQtAN87zZdw=
+github.com/labstack/echo/v4 v4.16.4 h1:sQ9yq/FgkY7zWZKaRIvNJAQ1ybWVJrm+z37SWI8keRY=
+github.com/labstack/echo/v4 v4.16.4/go.mod h1:V/EQaTVHYJH92QhbQe7kFQ4mjgcjxLQQUQtAN87zZdw=
 github.com/labstack/gommon v0.5.0 h1:6VSQ2NOzsnEJ5W6+84E0RbcaDDmgB6NIAzWCczTEe6c=
 github.com/labstack/gommon v0.5.0/go.mod h1:Rzlg7HHy1maLfzBYGg9NZcVuz1sA68HHhLjhcEllYE0=
 github.com/lufia/plan9stats v0.0.0-20260802145828-341c2f0c90b5 h1:eveIIGn4BGM3qknO74omf6HYr30/exH+eVUTuAgwjZ0=
