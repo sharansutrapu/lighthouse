@@ -3087,9 +3087,9 @@ func handleGETSystemHistory() echo.HandlerFunc {
 			if d, err := strconv.Atoi(daysStr); err == nil && d > 0 && d <= 106751 {
 				days = d
 			}
-			since := time.Now().AddDate(0, 0, -days)
+			since := time.Now().UTC().AddDate(0, 0, -days)
 			if window, err := time.ParseDuration(duration); err == nil && window > 0 {
-				since = time.Now().Add(-window)
+				since = time.Now().UTC().Add(-window)
 			}
 			query = query.Where("timestamp >= ?", since)
 		}

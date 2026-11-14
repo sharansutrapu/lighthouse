@@ -8,7 +8,7 @@ COPY frontend/ ./
 RUN pnpm run build
 
 # Stage 2: Build the Go backend (build entire package, not main.go alone)
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS backend-builder
+FROM --platform=$BUILDPLATFORM golang:1.26.11-alpine3.24 AS backend-builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN GOTOOLCHAIN=local go mod download
@@ -24,7 +24,8 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 # Stage 3: Final runtime image
 FROM alpine:3.24
 WORKDIR /app
-RUN apk add --no-cache ca-certificates docker-cli docker-cli-compose git
+RUN apk upgrade --no-cache && \
+    apk add --no-cache ca-certificates docker-cli docker-cli-compose git
 COPY --from=backend-builder /app/lighthouse /usr/local/bin/lighthouse
 COPY --from=backend-builder /app/frontend/dist ./frontend/dist
 
