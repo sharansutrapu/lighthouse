@@ -25,7 +25,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 FROM alpine:3.24
 WORKDIR /app
 RUN apk upgrade --no-cache && \
-    apk add --no-cache ca-certificates docker-cli docker-cli-compose git
+    apk add --no-cache ca-certificates docker-cli docker-cli-compose git "libcrypto3>=3.5.9-r1" "libssl3>=3.5.9-r1"
 COPY --from=backend-builder /app/lighthouse /usr/local/bin/lighthouse
 COPY --from=backend-builder /app/frontend/dist ./frontend/dist
 
