@@ -542,6 +542,14 @@ func TestMCPTriggerVulnerabilityScanHandler(t *testing.T) {
 	}
 	defer func() { scanner.ScanImageFunc = origScan }()
 
+	// Mock background scanner function to prevent background goroutines from racing with subsequent tests
+	bgScanCalls := 0
+	origBgScan := mcpRunBackgroundScan
+	mcpRunBackgroundScan = func(cli *client.Client, imageName string) {
+		bgScanCalls++
+	}
+	defer func() { mcpRunBackgroundScan = origBgScan }()
+
 	// Admin triggering scan with wait=true
 	ctxAdmin := context.WithValue(context.Background(), "userClaims", &UserClaims{ID: 1, IsAdmin: true})
 	res, _ = h(ctxAdmin, mockMCPRequestWithMap("trigger_vulnerability_scan", map[string]interface{}{
@@ -563,6 +571,7 @@ func TestMCPTriggerVulnerabilityScanHandler(t *testing.T) {
 		"wait":         false,
 	}))
 	assert.False(t, res.IsError)
+	assert.Equal(t, 2, bgScanCalls)
 }
 
 func TestMCPListVulnerabilityScansHandler(t *testing.T) {

@@ -667,6 +667,21 @@ func summarizeVulnerabilitiesFromMap(res map[string]interface{}) (mcpVulnSummary
 	return summarizeVulnerabilities(string(b))
 }
 
+// mcpRunBackgroundScan executes a scan asynchronously. Defined as a package variable so tests can mock or synchronize it.
+var mcpRunBackgroundScan = func(cli *client.Client, imageName string) {
+	go func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		log.Printf("[MCP] Running background scan for image %s...", imageName)
+		_, err := scanner.ExecuteAndSaveScan(bgCtx, cli, imageName)
+		if err != nil {
+			log.Printf("[MCP] Background scan error for %s: %v", imageName, err)
+			return
+		}
+		log.Printf("[MCP] Background scan complete for %s", imageName)
+	}()
+}
+
 // mcpTriggerVulnerabilityScanHandler implements the "trigger_vulnerability_scan" MCP tool.
 func mcpTriggerVulnerabilityScanHandler(cli *client.Client) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -785,17 +800,7 @@ func mcpTriggerVulnerabilityScanHandler(cli *client.Client) server.ToolHandlerFu
 		}
 
 		// Background mode
-		go func() {
-			bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-			defer cancel()
-			log.Printf("[MCP] Running background scan for image %s...", imageName)
-			_, err := scanner.ExecuteAndSaveScan(bgCtx, cli, imageName)
-			if err != nil {
-				log.Printf("[MCP] Background scan error for %s: %v", imageName, err)
-				return
-			}
-			log.Printf("[MCP] Background scan complete for %s", imageName)
-		}()
+		mcpRunBackgroundScan(cli, imageName)
 
 		return mcp.NewToolResultText(fmt.Sprintf("Vulnerability scan started in background for image %q. Use 'get_vulnerability_scan' or 'list_vulnerability_scans' to view results when finished.", imageName)), nil
 	}
