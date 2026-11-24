@@ -85,8 +85,10 @@ test('real login form authenticates and loads inventory', async ({ page }) => {
   await page.locator('input[type="password"]').fill(password);
   await page.getByRole('button', { name: 'Access Dashboard', exact: true }).click();
   await expect(page).toHaveURL(/\/dashboard/);
+  const dataResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/containers');
   await page.goto('/containers');
-  await expect(page.locator('#app')).toContainText('verify-hub-web');
+  await dataResponse;
+  await expect(page.locator('tbody')).toContainText('verify-hub-web');
 });
 
 test('container inspection and log stream use the selected node', async ({ page }, testInfo) => {
@@ -110,8 +112,10 @@ test('container inspection and log stream use the selected node', async ({ page 
 });
 
 test('node filter and theme controls stay usable', async ({ page }, testInfo) => {
+  const dataResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/containers');
   await page.goto('/containers');
-  await expect(page.locator('#app')).toContainText('verify-hub-web');
+  await dataResponse;
+  await expect(page.locator('tbody')).toContainText('verify-hub-web');
   if (testInfo.project.metadata.mode === 'hub') {
     await page.getByRole('combobox', { name: 'Node', exact: true }).selectOption('spoke-one-test');
     await expect(page.locator('tbody')).toContainText('verify-one-web');

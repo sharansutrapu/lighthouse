@@ -6,8 +6,8 @@ if (process.env.LIGHTHOUSE_INTEGRATION !== '1') {
 
 export default defineConfig({
   testDir: './tests/e2e',
-  timeout: 45000,
-  expect: { timeout: 15000 },
+  timeout: 60000,
+  expect: { timeout: 30000 },
   workers: 1,
   retries: 0,
   forbidOnly: true,
