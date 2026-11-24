@@ -62,8 +62,9 @@ Supercharge your AI agents with direct access to your Docker infrastructure:
 - **Seamless Integration:** Native support for the Model Context Protocol (MCP) using SSE (Server-Sent Events) and stateless message exchanges.
 - **Secure Access:** Generate, manage, and revoke dedicated API tokens for your AI assistants directly from the UI. Tokens are shown once at creation and stored hashed (never in plaintext).
 - **RBAC Enforced:** AI Agents are bound by the exact same Role-Based Access Control (RBAC) and visibility filters as the user who generated their token. An AI cannot see or interact with a container its owner doesn't have access to.
+- **Vulnerability Scanning Tools:** AI agents can trigger on-demand Trivy security scans (`trigger_vulnerability_scan`), list historical scan records (`list_vulnerability_scans`), and inspect detailed CVE vulnerability breakdowns filtered by severity (`get_vulnerability_scan`).
 - **Easy Configuration:** Get instant, copy-paste ready `npx` connection commands from the dedicated MCP Configuration panel.
-- **AI-Driven DevOps:** Allow your LLMs and agents to query container health, read logs, and trigger deployments safely.
+- **AI-Driven DevOps:** Allow your LLMs and agents to query container health, read logs, audit vulnerabilities, and trigger deployments safely.
 
 ### 🚨 Alerting & Webhooks
 Never miss a critical event with the highly customizable Alerting Engine:

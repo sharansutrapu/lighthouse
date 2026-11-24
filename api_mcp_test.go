@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"lighthouse/db"
+	"lighthouse/scanner"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -481,4 +482,203 @@ func TestRegisterMCPRoutes_InjectClaimsWithValidToken(t *testing.T) {
 
 	e.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func mockMCPRequestWithMap(method string, args map[string]interface{}) mcp.CallToolRequest {
+	req := mcp.CallToolRequest{}
+	req.Method = method
+	if args == nil {
+		req.Params.Arguments = map[string]interface{}{}
+	} else {
+		req.Params.Arguments = args
+	}
+	return req
+}
+
+func TestMCPTriggerVulnerabilityScanHandler(t *testing.T) {
+	setupMCPTestDB()
+	db.GormDB.Create(&db.User{ID: 3, Username: "scanuser", Email: "scanuser@example.com", IsAdmin: false, CanRunScans: true, AllowedContainers: "c1"})
+
+	cli := mockDockerClientWithRoundTripper(t, mockHandlerForMCP)
+	h := mcpTriggerVulnerabilityScanHandler(cli)
+
+	// Unauthorized (no claims)
+	res, _ := h(context.Background(), mockMCPRequestWithMap("trigger_vulnerability_scan", nil))
+	assert.True(t, res.IsError)
+
+	// User without scan permissions (User 2)
+	ctxUserNoScan := context.WithValue(context.Background(), "userClaims", &UserClaims{ID: 2, IsAdmin: false, CanRunScans: false})
+	res, _ = h(ctxUserNoScan, mockMCPRequestWithMap("trigger_vulnerability_scan", map[string]interface{}{"image_name": "nginx:latest"}))
+	assert.True(t, res.IsError)
+
+	// User with scan permissions (User 3)
+	ctxScanUser := context.WithValue(context.Background(), "userClaims", &UserClaims{ID: 3, IsAdmin: false, CanRunScans: true})
+
+	// Missing both container_id and image_name
+	res, _ = h(ctxScanUser, mockMCPRequestWithMap("trigger_vulnerability_scan", map[string]interface{}{}))
+	assert.True(t, res.IsError)
+
+	// Invalid image reference
+	res, _ = h(ctxScanUser, mockMCPRequestWithMap("trigger_vulnerability_scan", map[string]interface{}{"image_name": "--invalid-flag"}))
+	assert.True(t, res.IsError)
+
+	// Mock scanner function
+	origScan := scanner.ScanImageFunc
+	scanner.ScanImageFunc = func(ctx context.Context, cli *client.Client, imageName string) (map[string]interface{}, error) {
+		return map[string]interface{}{
+			"Results": []interface{}{
+				map[string]interface{}{
+					"Target": "alpine:latest",
+					"Vulnerabilities": []interface{}{
+						map[string]interface{}{
+							"VulnerabilityID": "CVE-2024-9999",
+							"Severity":        "CRITICAL",
+							"PkgName":         "openssl",
+						},
+					},
+				},
+			},
+		}, nil
+	}
+	defer func() { scanner.ScanImageFunc = origScan }()
+
+	// Admin triggering scan with wait=true
+	ctxAdmin := context.WithValue(context.Background(), "userClaims", &UserClaims{ID: 1, IsAdmin: true})
+	res, _ = h(ctxAdmin, mockMCPRequestWithMap("trigger_vulnerability_scan", map[string]interface{}{
+		"image_name": "alpine:latest",
+		"wait":       true,
+	}))
+	assert.False(t, res.IsError)
+
+	// Admin triggering scan in background
+	res, _ = h(ctxAdmin, mockMCPRequestWithMap("trigger_vulnerability_scan", map[string]interface{}{
+		"image_name": "alpine:latest",
+		"wait":       false,
+	}))
+	assert.False(t, res.IsError)
+
+	// Triggering via container_id
+	res, _ = h(ctxAdmin, mockMCPRequestWithMap("trigger_vulnerability_scan", map[string]interface{}{
+		"container_id": "c1",
+		"wait":         false,
+	}))
+	assert.False(t, res.IsError)
+}
+
+func TestMCPListVulnerabilityScansHandler(t *testing.T) {
+	setupMCPTestDB()
+	cli := mockDockerClientWithRoundTripper(t, mockHandlerForMCP)
+	h := mcpListVulnerabilityScansHandler(cli)
+
+	// Unauthorized
+	res, _ := h(context.Background(), mockMCPRequestWithMap("list_vulnerability_scans", nil))
+	assert.True(t, res.IsError)
+
+	ctxAdmin := context.WithValue(context.Background(), "userClaims", &UserClaims{ID: 1, IsAdmin: true})
+
+	// Empty list
+	db.GormDB.Exec("DELETE FROM image_scan_results")
+	res, _ = h(ctxAdmin, mockMCPRequestWithMap("list_vulnerability_scans", nil))
+	assert.False(t, res.IsError)
+	assert.Contains(t, res.Content[0].(mcp.TextContent).Text, "No vulnerability scans found")
+
+	// Insert scan results
+	db.GormDB.Create(&db.ImageScanResult{
+		Image:     "alpine:latest",
+		Result:    `{"Results":[{"Target":"alpine:latest","Vulnerabilities":[{"VulnerabilityID":"CVE-1","Severity":"HIGH"}]}]}`,
+		CreatedAt: time.Now(),
+	})
+	db.GormDB.Create(&db.ImageScanResult{
+		Image:     "nginx:latest",
+		Result:    `{"Error":"failed to download image"}`,
+		CreatedAt: time.Now(),
+	})
+
+	// List all
+	res, _ = h(ctxAdmin, mockMCPRequestWithMap("list_vulnerability_scans", map[string]interface{}{"limit": 10}))
+	assert.False(t, res.IsError)
+	assert.Contains(t, res.Content[0].(mcp.TextContent).Text, "alpine:latest")
+	assert.Contains(t, res.Content[0].(mcp.TextContent).Text, "nginx:latest")
+
+	// Filter by image
+	res, _ = h(ctxAdmin, mockMCPRequestWithMap("list_vulnerability_scans", map[string]interface{}{"image_name": "alpine:latest"}))
+	assert.False(t, res.IsError)
+	assert.Contains(t, res.Content[0].(mcp.TextContent).Text, "alpine:latest")
+	assert.NotContains(t, res.Content[0].(mcp.TextContent).Text, "nginx:latest")
+}
+
+func TestMCPGetVulnerabilityScanHandler(t *testing.T) {
+	setupMCPTestDB()
+	cli := mockDockerClientWithRoundTripper(t, mockHandlerForMCP)
+	h := mcpGetVulnerabilityScanHandler(cli)
+
+	// Unauthorized
+	res, _ := h(context.Background(), mockMCPRequestWithMap("get_vulnerability_scan", nil))
+	assert.True(t, res.IsError)
+
+	ctxAdmin := context.WithValue(context.Background(), "userClaims", &UserClaims{ID: 1, IsAdmin: true})
+
+	// Missing parameters
+	res, _ = h(ctxAdmin, mockMCPRequestWithMap("get_vulnerability_scan", map[string]interface{}{}))
+	assert.True(t, res.IsError)
+
+	// Scan not found
+	db.GormDB.Exec("DELETE FROM image_scan_results")
+	res, _ = h(ctxAdmin, mockMCPRequestWithMap("get_vulnerability_scan", map[string]interface{}{"image_name": "nonexistent:latest"}))
+	assert.True(t, res.IsError)
+
+	// Insert scan result with CVEs
+	db.GormDB.Create(&db.ImageScanResult{
+		Image: "redis:alpine",
+		Result: `{
+			"Results": [
+				{
+					"Target": "redis:alpine",
+					"Vulnerabilities": [
+						{
+							"VulnerabilityID": "CVE-2024-1111",
+							"PkgName": "libssl3",
+							"InstalledVersion": "3.0.0",
+							"FixedVersion": "3.0.1",
+							"Severity": "CRITICAL",
+							"Title": "Memory corruption in OpenSSL"
+						},
+						{
+							"VulnerabilityID": "CVE-2024-2222",
+							"PkgName": "curl",
+							"InstalledVersion": "7.8.0",
+							"Severity": "MEDIUM",
+							"Title": "Buffer overflow"
+						}
+					]
+				}
+			]
+		}`,
+		CreatedAt: time.Now(),
+	})
+
+	// Get full report
+	res, _ = h(ctxAdmin, mockMCPRequestWithMap("get_vulnerability_scan", map[string]interface{}{"image_name": "redis:alpine"}))
+	assert.False(t, res.IsError)
+	assert.Contains(t, res.Content[0].(mcp.TextContent).Text, "CVE-2024-1111")
+	assert.Contains(t, res.Content[0].(mcp.TextContent).Text, "CVE-2024-2222")
+
+	// Get with severity filter (CRITICAL only)
+	res, _ = h(ctxAdmin, mockMCPRequestWithMap("get_vulnerability_scan", map[string]interface{}{
+		"image_name": "redis:alpine",
+		"severity":   "CRITICAL",
+	}))
+	assert.False(t, res.IsError)
+	assert.Contains(t, res.Content[0].(mcp.TextContent).Text, "CVE-2024-1111")
+	assert.NotContains(t, res.Content[0].(mcp.TextContent).Text, "CVE-2024-2222")
+
+	// Insert error scan result
+	db.GormDB.Create(&db.ImageScanResult{
+		Image:     "broken:latest",
+		Result:    `{"Error": "Scan execution timed out"}`,
+		CreatedAt: time.Now(),
+	})
+	res, _ = h(ctxAdmin, mockMCPRequestWithMap("get_vulnerability_scan", map[string]interface{}{"image_name": "broken:latest"}))
+	assert.False(t, res.IsError)
+	assert.Contains(t, res.Content[0].(mcp.TextContent).Text, "Scan execution timed out")
 }
