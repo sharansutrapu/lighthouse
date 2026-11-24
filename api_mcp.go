@@ -506,49 +506,73 @@ type mcpVulnSummary struct {
 	Unknown    int `json:"unknown"`
 }
 
-func getMCPStringParam(req mcp.CallToolRequest, key string) string {
-	if req.Params.Arguments == nil {
-		return ""
+func getMCPArguments(req mcp.CallToolRequest) map[string]interface{} {
+	if req.Params.Arguments != nil {
+		if m, ok := req.Params.Arguments.(map[string]interface{}); ok {
+			return m
+		}
 	}
-	if v, ok := req.Params.Arguments[key]; ok && v != nil {
-		if s, ok := v.(string); ok {
-			return strings.TrimSpace(s)
+	if m := req.GetArguments(); m != nil {
+		return m
+	}
+	return nil
+}
+
+func getMCPStringParam(req mcp.CallToolRequest, key string) string {
+	if s := req.GetString(key, ""); s != "" {
+		return strings.TrimSpace(s)
+	}
+	if args := getMCPArguments(req); args != nil {
+		if v, ok := args[key]; ok && v != nil {
+			if s, ok := v.(string); ok {
+				return strings.TrimSpace(s)
+			}
 		}
 	}
 	return ""
 }
 
 func getMCPBoolParam(req mcp.CallToolRequest, key string) bool {
-	if req.Params.Arguments == nil {
-		return false
+	if req.GetBool(key, false) {
+		return true
 	}
-	if v, ok := req.Params.Arguments[key]; ok && v != nil {
-		if b, ok := v.(bool); ok {
-			return b
-		}
-		if s, ok := v.(string); ok {
-			return strings.ToLower(strings.TrimSpace(s)) == "true"
+	if args := getMCPArguments(req); args != nil {
+		if v, ok := args[key]; ok && v != nil {
+			if b, ok := v.(bool); ok {
+				return b
+			}
+			if s, ok := v.(string); ok {
+				return strings.ToLower(strings.TrimSpace(s)) == "true"
+			}
 		}
 	}
 	return false
 }
 
 func getMCPIntParam(req mcp.CallToolRequest, key string, defaultValue int) int {
-	if req.Params.Arguments == nil {
-		return defaultValue
+	if val := req.GetInt(key, 0); val > 0 {
+		return val
 	}
-	if v, ok := req.Params.Arguments[key]; ok && v != nil {
-		switch val := v.(type) {
-		case float64:
-			return int(val)
-		case int:
-			return val
-		case int64:
-			return int(val)
-		case string:
-			var i int
-			if _, err := fmt.Sscanf(strings.TrimSpace(val), "%d", &i); err == nil && i > 0 {
-				return i
+	if args := getMCPArguments(req); args != nil {
+		if v, ok := args[key]; ok && v != nil {
+			switch val := v.(type) {
+			case float64:
+				if int(val) > 0 {
+					return int(val)
+				}
+			case int:
+				if val > 0 {
+					return val
+				}
+			case int64:
+				if int(val) > 0 {
+					return int(val)
+				}
+			case string:
+				var i int
+				if _, err := fmt.Sscanf(strings.TrimSpace(val), "%d", &i); err == nil && i > 0 {
+					return i
+				}
 			}
 		}
 	}
