@@ -62,7 +62,7 @@ var ScanImageFunc = func(ctx context.Context, cli *client.Client, imageName stri
 	// trivy container itself is --rm'd), which on a slow/constrained host can alone
 	// exceed the exec timeout below and make every single scan silently time out.
 	cmd := execCommandContext(execCtx, "docker", "run", "--rm",
-		"-v", "/var/run/docker.sock:/var/run/docker.sock:ro",
+		"-v", "/var/run/docker.sock:/var/run/docker.sock",
 		"-v", "trivy-vuln-db:/root/.cache/trivy",
 		"aquasec/trivy:latest", "image", "-f", "json", "--quiet", "--timeout", "5m", "--", imageName)
 
