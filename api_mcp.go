@@ -334,6 +334,9 @@ func mcpStartContainerHandler(cli *client.Client) server.ToolHandlerFunc {
 		}
 
 		isAdmin := getMCPUserIsAdmin(claims.ID)
+		if !isAdmin && !containerActionEnvAllowed("start") {
+			return mcp.NewToolResultError("Start action is disabled on this server"), nil
+		}
 		if !isAdmin && !claims.CanStart {
 			return mcp.NewToolResultError("Unauthorized: User lacks Start permission"), nil
 		}
@@ -372,6 +375,9 @@ func mcpStopContainerHandler(cli *client.Client) server.ToolHandlerFunc {
 		}
 
 		isAdmin := getMCPUserIsAdmin(claims.ID)
+		if !isAdmin && !containerActionEnvAllowed("stop") {
+			return mcp.NewToolResultError("Stop action is disabled on this server"), nil
+		}
 		if !isAdmin && !claims.CanStop {
 			return mcp.NewToolResultError("Unauthorized: User lacks Stop permission"), nil
 		}
@@ -389,6 +395,9 @@ func mcpStopContainerHandler(cli *client.Client) server.ToolHandlerFunc {
 		image := ""
 		if container.Container.Config != nil {
 			image = container.Container.Config.Image
+		}
+		if isLightHouseSelfContainer(container.Container.Name, image) {
+			return mcp.NewToolResultError("Cannot stop the LightHouse platform container"), nil
 		}
 		if !isMCPContainerAuthorized(claims.ID, isAdmin, container.Container.Name, image) {
 			return mcp.NewToolResultError("Unauthorized to stop this container"), nil
@@ -410,6 +419,9 @@ func mcpRestartContainerHandler(cli *client.Client) server.ToolHandlerFunc {
 		}
 
 		isAdmin := getMCPUserIsAdmin(claims.ID)
+		if !isAdmin && !containerActionEnvAllowed("restart") {
+			return mcp.NewToolResultError("Restart action is disabled on this server"), nil
+		}
 		if !isAdmin && !claims.CanRestart {
 			return mcp.NewToolResultError("Unauthorized: User lacks Restart permission"), nil
 		}

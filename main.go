@@ -3186,6 +3186,13 @@ func handlePOSTUserChangePassword() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		token := c.Get("user").(*jwt.Token)
 		userClaims := token.Claims.(*UserClaims)
+
+		ip := c.RealIP()
+		rateKey := fmt.Sprintf("pwd_change:%d:%s", userClaims.ID, ip)
+		if loginRateLimit.isLimited(rateKey, 5, 15*time.Minute) {
+			return c.JSON(http.StatusTooManyRequests, map[string]string{"error": "Too many password change attempts. Try again later."})
+		}
+
 		newPassword := c.FormValue("password")
 
 		if len(newPassword) < minPasswordLength {
@@ -3209,9 +3216,12 @@ func handlePOSTUserChangePassword() echo.HandlerFunc {
 				return c.JSON(http.StatusBadRequest, map[string]string{"error": "Current password is required"})
 			}
 			if bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(currentPassword)) != nil {
+				loginRateLimit.recordFailure(rateKey)
 				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Current password is incorrect"})
 			}
 		}
+
+		loginRateLimit.clear(rateKey)
 
 		h, _ := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
 		db.GormDB.Model(&user).Updates(map[string]interface{}{

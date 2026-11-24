@@ -321,14 +321,12 @@ const formatLog = (text) => {
 
   // SECURITY INVARIANT: escapeHtml() MUST run before any .replace() that inserts HTML tags.
   // The $1 backreferences contain already-escaped text and are safe to wrap in <span>/<mark>.
-  let formatted = escapeHtml(cleanText.replace(/\033\[[0-9;]*m/g, ""))
-    .replace(/(ERROR|ERR|Fail|Failed)/gi, '<span class="text-error">$1</span>')
-    .replace(/(WARN|Warning)/gi, '<span class="text-warning">$1</span>')
-    .replace(/(INFO|OK|Success)/gi, '<span class="text-success">$1</span>');
+  let formatted = escapeHtml(cleanText.replace(/\033\[[0-9;]*m/g, ""));
 
   if (logSearchQuery.value && logSearchQuery.value.length >= 2) {
+    const escapedQuery = escapeHtml(logSearchQuery.value);
     const regex = new RegExp(
-      `(${logSearchQuery.value.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&")})`,
+      `(${escapedQuery.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&")})`,
       "gi",
     );
     formatted = formatted.replace(
@@ -336,6 +334,13 @@ const formatLog = (text) => {
       '<mark class="log-highlight">$1</mark>',
     );
   }
+
+  // Highlight status tokens after search queries so search tags cannot be split
+  formatted = formatted
+    .replace(/(ERROR|ERR|Fail|Failed)/gi, '<span class="text-error">$1</span>')
+    .replace(/(WARN|Warning)/gi, '<span class="text-warning">$1</span>')
+    .replace(/(INFO|OK|Success)/gi, '<span class="text-success">$1</span>');
+
   return formatted;
 };
 

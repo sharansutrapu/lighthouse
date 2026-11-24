@@ -7,7 +7,7 @@ services:
     environment:
       - DB_PATH=${DB_PATH:-/app/data/lighthouse.db}
       - SECRET_KEY=${SECRET_KEY:-secret-key-change-this}
-      - DISABLE_AUTH=${DISABLE_AUTH:-false}
+      - ENV=${ENV:-production}
       - ALLOW_START=${ALLOW_START:-false}
       - ALLOW_STOP=${ALLOW_STOP:-false}
       - ALLOW_RESTART=${ALLOW_RESTART:-false}
