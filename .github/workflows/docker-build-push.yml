@@ -71,17 +71,18 @@ jobs:
 
           # govulncheck exits 3 when vulnerabilities affect the binary. Verify whether
           # they only consist of upstream Echo v4 advisories (GO-2026-6875, GO-2026-6872)
-          # that have no upstream v4 fix (Fixed in: N/A) and are mitigated via IPExtractor in main.go.
+          # that have no upstream v4 fix (Fixed in: N/A) and are mitigated via IPExtractor in main.go,
+          # or upstream Gorilla WebSocket advisory GO-2026-6278.
           python3 -c '
           import sys, re
           text = open(sys.argv[1]).read()
           affected = set(re.findall(r"Vulnerability\s*#\d+:\s*(GO-\S+)", text))
-          known = {"GO-2026-6875", "GO-2026-6872"}
+          known = {"GO-2026-6875", "GO-2026-6872", "GO-2026-6278"}
           unexpected = affected - known
           if unexpected:
               print(f"::error::Unexpected vulnerabilities affecting code: {list(unexpected)}", file=sys.stderr)
               sys.exit(1)
-          print("Only mitigated upstream Echo v4 advisories (GO-2026-6875, GO-2026-6872) affect this binary; safe to proceed.")
+          print("Only known/mitigated upstream advisories (GO-2026-6875, GO-2026-6872, GO-2026-6278) affect this binary; safe to proceed.")
           ' "$RUNNER_TEMP/vuln.txt"
 
   frontend-test:
