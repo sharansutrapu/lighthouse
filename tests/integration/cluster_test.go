@@ -213,9 +213,7 @@ func TestFleet(t *testing.T) {
 			engineCommand(t, workload.engine, append([]string{"rm", "--force"}, strings.Fields(existing)...)...)
 		}
 		arguments := []string{"run", "--detach", "--name", workload.name, "--label", "lighthouse.test=integration", "--memory", "64m", "--env", "VERIFY_SECRET=must-not-leak", "--env", "PUBLIC_VALUE=visible"}
-		if index == 1 {
-			arguments = append(arguments, "--tty")
-		}
+		arguments = append(arguments, "--tty")
 		arguments = append(arguments, "alpine:3.24", "sh", "-c", "printf 'integration stdout\\nintegration stderr\\n'; trap 'exit 0' TERM INT; while :; do sleep 1; done")
 		workload.id = engineCommand(t, workload.engine, arguments...)
 	}

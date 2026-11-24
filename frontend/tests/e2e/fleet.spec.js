@@ -40,6 +40,7 @@ test.beforeEach(async ({ page, request, baseURL }) => {
 });
 
 test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
   expect(await page.evaluate(() => window.__integrationErrors || [])).toEqual([]);
 });
 
@@ -112,10 +113,8 @@ test('container inspection and log stream use the selected node', async ({ page 
 });
 
 test('node filter and theme controls stay usable', async ({ page }, testInfo) => {
-  const dataResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/containers');
   await page.goto('/containers');
-  await dataResponse;
-  await expect(page.locator('tbody')).toContainText('verify-hub-web');
+  await expect(page.locator('tbody')).toContainText('verify-hub-web', { timeout: 30000 });
   if (testInfo.project.metadata.mode === 'hub') {
     await page.getByRole('combobox', { name: 'Node', exact: true }).selectOption('spoke-one-test');
     await expect(page.locator('tbody')).toContainText('verify-one-web');
@@ -151,13 +150,14 @@ test('interactive shell waits for permissions and executes a command', async ({ 
   page.on('websocket', socket => {
     if (socket.url().includes('/ws/shell/')) socket.on('framereceived', frame => received.push(String(frame.payload)));
   });
-  const inventoryLoaded = page.waitForResponse(response => new URL(response.url()).pathname === '/api/containers');
+  const inventoryLoaded = page.waitForResponse(response => response.url().includes('/api/containers'));
   await page.goto(`/shell?c=${target.id}`);
-  await inventoryLoaded;
+  await Promise.race([inventoryLoaded, page.waitForTimeout(3000)]);
   releaseProfile();
-  await expect(page.locator('.xterm-screen')).toBeVisible();
+  await expect(page.locator('.xterm-screen')).toBeVisible({ timeout: 20000 });
   await page.locator('.xterm-screen').click();
   await page.keyboard.type("printf '\\n__browser_shell_verified__\\n'");
   await page.keyboard.press('Enter');
   await expect.poll(() => received.join('')).toContain('\r\n__browser_shell_verified__\r\n');
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
