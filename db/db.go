@@ -442,14 +442,17 @@ func seedDefaults() {
 	defaultRules := []AlertRule{
 		{Name: "Container Crash", ContainerPattern: ".*", EventTypes: "die", MetricCpuThreshold: 0, MetricMemThreshold: 0, MetricStorageThreshold: 0, EnableGenericWebhook: true, Enabled: false},
 		{Name: "Container High CPU", ContainerPattern: ".*", MetricCpuThreshold: 85, EnableGenericWebhook: true, Enabled: false},
-		{Name: "Container High Memory", ContainerPattern: ".*", MetricMemThreshold: 85, EnableGenericWebhook: true, Enabled: false},
+		{Name: "Container High Memory", ContainerPattern: ".*", MetricMemThreshold: 1024, EnableGenericWebhook: true, Enabled: false},
 		// NOTE: Docker does not emit a 'restart' event. Container restarts are
 		// detected via rapid 'die' events. We listen to 'die' with a short cooldown.
 		{Name: "Container Restart Loop", ContainerPattern: ".*", EventTypes: "die", CooldownSeconds: 60, EnableGenericWebhook: true, Enabled: false},
+		{Name: "Container Health Check Failed", ContainerPattern: ".*", EventTypes: "health_status: unhealthy,unhealthy", CooldownSeconds: 120, EnableGenericWebhook: true, Enabled: false},
+		{Name: "Container Flapping / CrashLoop", ContainerPattern: ".*", EventTypes: "die", CooldownSeconds: 30, EnableGenericWebhook: true, Enabled: false},
 		{Name: "System High CPU", ContainerPattern: "system", MetricCpuThreshold: 90, EnableGenericWebhook: true, Enabled: false},
 		{Name: "System High Memory", ContainerPattern: "system", MetricMemThreshold: 90, EnableGenericWebhook: true, Enabled: false},
 		{Name: "System Low Storage", ContainerPattern: "system", MetricStorageThreshold: 90, EnableGenericWebhook: true, Enabled: false},
-		{Name: "OOM Killed", ContainerPattern: ".*", EventTypes: "oom", EnableGenericWebhook: true, Enabled: false},
+		{Name: "System Storage Critical", ContainerPattern: "system", MetricStorageThreshold: 95, CooldownSeconds: 120, EnableGenericWebhook: true, Enabled: false},
+		{Name: "OOM Killed", ContainerPattern: ".*", EventTypes: "oom", CooldownSeconds: 60, EnableGenericWebhook: true, Enabled: false},
 		{Name: "Deployment Failed", ContainerPattern: ".*", EventTypes: "deployment_failed", EnableGenericWebhook: true, Enabled: false},
 		{Name: "High Vulnerability Detected", ContainerPattern: ".*", EventTypes: "vulnerability_found", EnableGenericWebhook: true, Enabled: false},
 		{Name: "Image Pull BackOff", ContainerPattern: ".*", EventTypes: "image_pull_error", EnableGenericWebhook: true, Enabled: false},
@@ -474,4 +477,9 @@ func seedDefaults() {
 	// Fix to 'die' with a 60s cooldown so rapid container deaths are detected.
 	GormDB.Model(&AlertRule{}).Where("name = ? AND event_types = ?", "Container Restart Loop", "restart").
 		Updates(map[string]interface{}{"event_types": "die", "cooldown_seconds": 60})
+
+	// Hotfix: "Container High Memory" was originally seeded with 85 MB which triggered false positives for normal containers.
+	// Update default threshold to 1024 MB (1GB).
+	GormDB.Model(&AlertRule{}).Where("name = ? AND metric_mem_threshold = ?", "Container High Memory", 85).
+		Update("metric_mem_threshold", 1024)
 }

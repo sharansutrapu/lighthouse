@@ -415,6 +415,15 @@ func main() {
 		},
 	}))
 	e.Use(clientAccessMiddleware())
+	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			p := c.Path()
+			if strings.HasPrefix(p, "/api") || strings.HasPrefix(p, "/ws") {
+				atomic.StoreInt64(&lastAPIActivityUnix, time.Now().Unix())
+			}
+			return next(c)
+		}
+	})
 
 	// Docker Client
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
@@ -480,6 +489,8 @@ func main() {
 
 	// Public configuration route
 	e.GET("/api/config", handleGETApiConfig())
+	e.GET("/health", handleGETHealth(cli))
+	e.GET("/metrics", handleGETMetrics(cli))
 
 	// Restricted Group
 	r := e.Group("/api")
@@ -627,6 +638,10 @@ func main() {
 	r.GET("/system/stats", handleGETSystemStats())
 
 	r.GET("/system/info", handleGETSystemInfo(cli), requireSystemHealthAccess())
+
+	r.GET("/system/diagnostics", handleGETSystemDiagnostics(cli), requireSystemHealthAccess())
+
+	r.GET("/containers/efficiency", handleGETContainersEfficiency(cli))
 
 	r.POST("/user/change-password", handlePOSTUserChangePassword())
 
@@ -863,6 +878,8 @@ var (
 	lastPollSuccessUnix    int64 // atomic; unix seconds of the most recent successful poll
 	statPollInFlight       int32 // atomic; guards against overlapping ticks
 	statPollMaxConcurrency = 20  // bounded worker pool size for per-container stat fetches
+	activeWSConnections    int64 // atomic; count of open WebSocket connections
+	lastAPIActivityUnix    = time.Now().Unix() // atomic; unix timestamp of recent API/WS activity
 )
 
 // cpuTracker holds the previous CPU sample per container behind a mutex so it
@@ -901,9 +918,12 @@ func (t *cpuTracker) delete(id string) {
 }
 
 // statPollLoop is the background goroutine (started once at boot) that keeps
-// per-container CPU/memory/network/disk stats fresh every 2 seconds.
+// per-container CPU/memory/network/disk stats fresh. It uses an adaptive cadence:
+// 2 seconds during active sessions (connected WebSockets or recent API calls within 60s),
+// backing off to 10 seconds during idle periods to slash background CPU and Docker daemon round trips.
 func statPollLoop(cli *client.Client) {
-	ticker := time.NewTicker(2 * time.Second)
+	pollInterval := 2 * time.Second
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	cpuT := newCPUTracker()
@@ -912,6 +932,18 @@ func statPollLoop(cli *client.Client) {
 		if cli == nil {
 			continue
 		}
+
+		// Adaptive interval check: if no active WebSockets and idle for >60s, slow down to 10s
+		isActive := atomic.LoadInt64(&activeWSConnections) > 0 || (time.Now().Unix()-atomic.LoadInt64(&lastAPIActivityUnix)) < 60
+		targetInterval := 10 * time.Second
+		if isActive {
+			targetInterval = 2 * time.Second
+		}
+		if targetInterval != pollInterval {
+			pollInterval = targetInterval
+			ticker.Reset(pollInterval)
+		}
+
 		// A single stuck/overloaded tick must never queue up behind the next
 		// one — that would make the whole loop fall further and further
 		// behind under load (e.g. thousands of containers). Skip instead.
@@ -3193,6 +3225,277 @@ func handleGETSystemInfo(cli *client.Client) echo.HandlerFunc {
 	}
 }
 
+// handleGETHealth returns basic service and Docker daemon health status.
+func handleGETHealth(cli *client.Client) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		dockerHealthy := true
+		if cli != nil {
+			if _, err := cli.Ping(c.Request().Context(), client.PingOptions{}); err != nil {
+				dockerHealthy = false
+			}
+		}
+		status := "ok"
+		code := http.StatusOK
+		if !dockerHealthy {
+			status = "degraded"
+		}
+		return c.JSON(code, map[string]interface{}{
+			"status":         status,
+			"docker_healthy": dockerHealthy,
+			"timestamp":      time.Now().UTC().Format(time.RFC3339),
+		})
+	}
+}
+
+// handleGETMetrics exports Prometheus-compatible plain-text metrics covering
+// goroutine count, memory allocations, garbage collection pauses, active WebSockets,
+// and discovered containers.
+func handleGETMetrics(cli *client.Client) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		var memStats runtime.MemStats
+		runtime.ReadMemStats(&memStats)
+
+		globalContainerListMu.RLock()
+		total := globalContainersCount
+		running := globalRunningCount
+		globalContainerListMu.RUnlock()
+
+		activeWS := atomic.LoadInt64(&activeWSConnections)
+		goroutines := runtime.NumGoroutine()
+
+		var b strings.Builder
+		b.WriteString("# HELP lighthouse_goroutines Current number of active goroutines\n")
+		b.WriteString("# TYPE lighthouse_goroutines gauge\n")
+		fmt.Fprintf(&b, "lighthouse_goroutines %d\n", goroutines)
+
+		b.WriteString("# HELP lighthouse_mem_alloc_bytes Number of bytes allocated and currently in use\n")
+		b.WriteString("# TYPE lighthouse_mem_alloc_bytes gauge\n")
+		fmt.Fprintf(&b, "lighthouse_mem_alloc_bytes %d\n", memStats.Alloc)
+
+		b.WriteString("# HELP lighthouse_mem_sys_bytes Total bytes obtained from the OS\n")
+		b.WriteString("# TYPE lighthouse_mem_sys_bytes gauge\n")
+		fmt.Fprintf(&b, "lighthouse_mem_sys_bytes %d\n", memStats.Sys)
+
+		b.WriteString("# HELP lighthouse_gc_pause_total_ns Total GC pause duration in nanoseconds\n")
+		b.WriteString("# TYPE lighthouse_gc_pause_total_ns counter\n")
+		fmt.Fprintf(&b, "lighthouse_gc_pause_total_ns %d\n", memStats.PauseTotalNs)
+
+		b.WriteString("# HELP lighthouse_active_websockets Number of open WebSocket client streams\n")
+		b.WriteString("# TYPE lighthouse_active_websockets gauge\n")
+		fmt.Fprintf(&b, "lighthouse_active_websockets %d\n", activeWS)
+
+		b.WriteString("# HELP lighthouse_containers_total Discovered Docker containers on host\n")
+		b.WriteString("# TYPE lighthouse_containers_total gauge\n")
+		fmt.Fprintf(&b, "lighthouse_containers_total %d\n", total)
+
+		b.WriteString("# HELP lighthouse_containers_running Currently running Docker containers\n")
+		b.WriteString("# TYPE lighthouse_containers_running gauge\n")
+		fmt.Fprintf(&b, "lighthouse_containers_running %d\n", running)
+
+		return c.String(http.StatusOK, b.String())
+	}
+}
+
+// handleGETSystemDiagnostics reports deep runtime telemetry for LightHouse itself,
+// including memory allocation, GC cycles, goroutine counts, adaptive polling status,
+// and database file metrics.
+func handleGETSystemDiagnostics(cli *client.Client) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		var memStats runtime.MemStats
+		runtime.ReadMemStats(&memStats)
+
+		globalContainerListMu.RLock()
+		totalCtrs := globalContainersCount
+		runningCtrs := globalRunningCount
+		globalContainerListMu.RUnlock()
+
+		liveStatsMu.RLock()
+		cachedStatsCount := len(liveStatsCache)
+		liveStatsMu.RUnlock()
+
+		var dbSizeBytes int64
+		if fi, err := os.Stat("lighthouse.db"); err == nil {
+			dbSizeBytes = fi.Size()
+		} else if fi, err := os.Stat("/data/lighthouse.db"); err == nil {
+			dbSizeBytes = fi.Size()
+		}
+
+		data := map[string]interface{}{
+			"go_version":             runtime.Version(),
+			"num_cpu":                runtime.NumCPU(),
+			"goroutines":             runtime.NumGoroutine(),
+			"memory_alloc_mb":        float64(memStats.Alloc) / 1024 / 1024,
+			"memory_sys_mb":          float64(memStats.Sys) / 1024 / 1024,
+			"gc_cycles":              memStats.NumGC,
+			"active_websockets":      atomic.LoadInt64(&activeWSConnections),
+			"last_api_activity_unix": atomic.LoadInt64(&lastAPIActivityUnix),
+			"polling_mode": func() string {
+				if atomic.LoadInt64(&activeWSConnections) > 0 || (time.Now().Unix()-atomic.LoadInt64(&lastAPIActivityUnix)) < 60 {
+					return "active (2s)"
+				}
+				return "idle_adaptive (10s)"
+			}(),
+			"monitored_containers":   runningCtrs,
+			"total_containers":       totalCtrs,
+			"cached_container_stats": cachedStatsCount,
+			"database_size_mb":       float64(dbSizeBytes) / 1024 / 1024,
+			"poll_healthy":           atomic.LoadInt64(&lastPollErrorUnix) == 0 || atomic.LoadInt64(&lastPollSuccessUnix) > atomic.LoadInt64(&lastPollErrorUnix),
+		}
+		return c.JSON(http.StatusOK, data)
+	}
+}
+
+// ContainerEfficiencyReport summarizes resource limits and working-set utilization for a container.
+type ContainerEfficiencyReport struct {
+	ContainerID        string  `json:"container_id"`
+	Name               string  `json:"name"`
+	Image              string  `json:"image"`
+	Status             string  `json:"status"`
+	MemoryLimitMB      float64 `json:"memory_limit_mb"`
+	MemoryUsedMB       float64 `json:"memory_used_mb"`
+	MemoryUsagePercent float64 `json:"memory_usage_percent"`
+	CPUPercent         float64 `json:"cpu_percent"`
+	CPULimitCores      float64 `json:"cpu_limit_cores"`
+	Flag               string  `json:"flag"`
+	Recommendation     string  `json:"recommendation"`
+}
+
+// handleGETContainersEfficiency audits all running containers for resource waste,
+// over-allocation, and cgroup throttling risks.
+func handleGETContainersEfficiency(cli *client.Client) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		if cli == nil {
+			return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "Docker unavailable"})
+		}
+
+		res, err := cli.ContainerList(c.Request().Context(), client.ContainerListOptions{All: false})
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+
+		var reports []ContainerEfficiencyReport
+		totalAllocatedRAM := int64(0)
+		totalUsedRAM := int64(0)
+		reclaimableRAM := int64(0)
+		unboundedCount := 0
+		optimalCount := 0
+
+		liveStatsMu.RLock()
+		statsCopy := make(map[string]struct {
+			CPU            float64
+			Memory         int64
+			NetRxBytes     int64
+			NetTxBytes     int64
+			DiskReadBytes  int64
+			DiskWriteBytes int64
+		}, len(liveStatsCache))
+		for k, v := range liveStatsCache {
+			statsCopy[k] = v
+		}
+		liveStatsMu.RUnlock()
+
+		for _, ctr := range res.Items {
+			name := ""
+			if len(ctr.Names) > 0 {
+				name = strings.TrimPrefix(ctr.Names[0], "/")
+			}
+
+			st, hasStat := statsCopy[ctr.ID]
+			memUsedBytes := int64(0)
+			cpuPct := 0.0
+			if hasStat {
+				memUsedBytes = st.Memory
+				cpuPct = st.CPU
+			}
+
+			totalUsedRAM += memUsedBytes
+
+			insp, err := cli.ContainerInspect(c.Request().Context(), ctr.ID, client.ContainerInspectOptions{})
+			memLimitBytes := int64(0)
+			nanoCPUs := int64(0)
+			if err == nil && insp.Container.HostConfig != nil {
+				memLimitBytes = insp.Container.HostConfig.Memory
+				nanoCPUs = insp.Container.HostConfig.NanoCPUs
+			}
+
+			cid := ctr.ID
+			if len(cid) > 12 {
+				cid = cid[:12]
+			}
+
+			report := ContainerEfficiencyReport{
+				ContainerID:  cid,
+				Name:         name,
+				Image:        ctr.Image,
+				Status:       string(ctr.State),
+				MemoryUsedMB: float64(memUsedBytes) / 1024 / 1024,
+				CPUPercent:   cpuPct,
+			}
+
+			if nanoCPUs > 0 {
+				report.CPULimitCores = float64(nanoCPUs) / 1e9
+			}
+
+			if memLimitBytes > 0 {
+				totalAllocatedRAM += memLimitBytes
+				report.MemoryLimitMB = float64(memLimitBytes) / 1024 / 1024
+				report.MemoryUsagePercent = (float64(memUsedBytes) / float64(memLimitBytes)) * 100.0
+
+				if report.MemoryUsagePercent > 90.0 {
+					report.Flag = "near_oom_risk"
+					report.Recommendation = fmt.Sprintf("Container is using %.1f%% of its memory limit. Increase memory ceiling to prevent OOMKill.", report.MemoryUsagePercent)
+				} else if report.MemoryLimitMB >= 512 && report.MemoryUsagePercent < 15.0 {
+					report.Flag = "over_provisioned"
+					suggestedMB := report.MemoryUsedMB * 2.5
+					if suggestedMB < 128 {
+						suggestedMB = 128
+					}
+					savedMB := report.MemoryLimitMB - suggestedMB
+					if savedMB > 0 {
+						reclaimableRAM += int64(savedMB * 1024 * 1024)
+					}
+					report.Recommendation = fmt.Sprintf("Allocated %.0f MB but only using %.0f MB (%.1f%%). Consider downsizing limit to %.0f MB.", report.MemoryLimitMB, report.MemoryUsedMB, report.MemoryUsagePercent, suggestedMB)
+				} else {
+					report.Flag = "optimal"
+					report.Recommendation = "Resource allocation is well-balanced for current workload."
+					optimalCount++
+				}
+			} else {
+				unboundedCount++
+				report.Flag = "unbounded"
+				report.Recommendation = "No memory ceiling set. Set a memory limit (e.g. docker run -m) to prevent runaway processes from starving host RAM."
+			}
+
+			if report.CPULimitCores > 0 && report.CPUPercent > (report.CPULimitCores*90.0) {
+				report.Flag = "cpu_throttling_risk"
+				report.Recommendation = fmt.Sprintf("CPU usage (%.1f%%) is near quota limit (%.1f cores). Container is at risk of cgroup throttling.", report.CPUPercent, report.CPULimitCores)
+			}
+
+			reports = append(reports, report)
+		}
+
+		efficiencyScore := 100
+		if len(reports) > 0 {
+			penalty := unboundedCount * 10
+			efficiencyScore = 100 - penalty
+			if efficiencyScore < 20 {
+				efficiencyScore = 20
+			}
+		}
+
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"efficiency_score":          efficiencyScore,
+			"containers_analyzed":       len(reports),
+			"optimal_containers":        optimalCount,
+			"unbounded_containers":      unboundedCount,
+			"total_used_memory_mb":      float64(totalUsedRAM) / 1024 / 1024,
+			"total_allocated_memory_mb": float64(totalAllocatedRAM) / 1024 / 1024,
+			"reclaimable_memory_mb":     float64(reclaimableRAM) / 1024 / 1024,
+			"containers":                reports,
+		})
+	}
+}
+
 // handlePOSTUserChangePassword lets the logged-in user set a new password. If
 // they've already completed their mandatory first-login change, it requires
 // re-entering the current password so a hijacked session token alone can't be
@@ -4705,7 +5008,11 @@ func handleGETWsSystemStats() echo.HandlerFunc {
 			log.Printf("WebSocket upgrade failed: %v", err)
 			return nil
 		}
-		defer ws.Close()
+		atomic.AddInt64(&activeWSConnections, 1)
+		defer func() {
+			atomic.AddInt64(&activeWSConnections, -1)
+			ws.Close()
+		}()
 
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
@@ -4744,7 +5051,11 @@ func handleGETWsEvents(cli *client.Client) echo.HandlerFunc {
 			log.Printf("WebSocket upgrade failed: %v", err)
 			return nil
 		}
-		defer ws.Close()
+		atomic.AddInt64(&activeWSConnections, 1)
+		defer func() {
+			atomic.AddInt64(&activeWSConnections, -1)
+			ws.Close()
+		}()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -4877,7 +5188,11 @@ func handleGETWsLogsId(cli *client.Client) echo.HandlerFunc {
 			log.Printf("WebSocket upgrade failed: %v", err)
 			return nil
 		}
-		defer ws.Close()
+		atomic.AddInt64(&activeWSConnections, 1)
+		defer func() {
+			atomic.AddInt64(&activeWSConnections, -1)
+			ws.Close()
+		}()
 
 		ctx, cancel := context.WithCancel(c.Request().Context())
 		defer cancel()
@@ -5053,7 +5368,11 @@ func handleGETWsShellId(cli *client.Client) echo.HandlerFunc {
 			log.Printf("WebSocket upgrade failed: %v", err)
 			return nil
 		}
-		defer ws.Close()
+		atomic.AddInt64(&activeWSConnections, 1)
+		defer func() {
+			atomic.AddInt64(&activeWSConnections, -1)
+			ws.Close()
+		}()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()

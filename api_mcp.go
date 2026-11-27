@@ -9,11 +9,13 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -275,6 +277,14 @@ func registerMCPRoutes(r *echo.Group, cli *client.Client) {
 		mcp.WithBoolean("prune_volumes", mcp.Description("Prune unused volumes.")),
 		mcp.WithBoolean("prune_build_cache", mcp.Description("Prune Docker build cache.")),
 	), mcpPruneSystemHandler(cli))
+
+	mcpServer.AddTool(mcp.NewTool("get_container_efficiency",
+		mcp.WithDescription("Audit containers for resource waste, over-provisioned memory, and CPU throttling risk with optimization recommendations."),
+	), mcpGetContainerEfficiencyHandler(cli))
+
+	mcpServer.AddTool(mcp.NewTool("get_system_diagnostics",
+		mcp.WithDescription("Get LightHouse runtime performance telemetry: active goroutines, memory allocation, GC pauses, open WebSockets, and adaptive polling cadence."),
+	), mcpGetSystemDiagnosticsHandler(cli))
 
 	// Create SSE server
 	sseServer := server.NewSSEServer(mcpServer,
@@ -782,8 +792,9 @@ func mcpGetContainerStatsHandler(cli *client.Client) server.ToolHandlerFunc {
 				SystemUsage uint64 `json:"system_cpu_usage"`
 			} `json:"precpu_stats"`
 			MemoryStats struct {
-				Usage uint64 `json:"usage"`
-				Limit uint64 `json:"limit"`
+				Usage uint64            `json:"usage"`
+				Limit uint64            `json:"limit"`
+				Stats map[string]uint64 `json:"stats"`
 			} `json:"memory_stats"`
 			Networks map[string]struct {
 				RxBytes uint64 `json:"rx_bytes"`
@@ -814,6 +825,9 @@ func mcpGetContainerStatsHandler(cli *client.Client) server.ToolHandlerFunc {
 				cpus = float64(runtime.NumCPU())
 			}
 			cpuPercent = (cpuDelta / sysDelta) * cpus * 100.0
+			if cpuPercent > cpus*100.0 {
+				cpuPercent = cpus * 100.0
+			}
 		}
 
 		var totalRx, totalTx uint64
@@ -832,16 +846,26 @@ func mcpGetContainerStatsHandler(cli *client.Client) server.ToolHandlerFunc {
 			}
 		}
 
+		// Calculate working-set memory by deducting inactive file cache, consistent with Linux cgroups & Docker CLI
+		memUsed := rawStats.MemoryStats.Usage
+		if v, ok := rawStats.MemoryStats.Stats["inactive_file"]; ok && v < memUsed {
+			memUsed -= v
+		} else if v, ok := rawStats.MemoryStats.Stats["total_inactive_file"]; ok && v < memUsed {
+			memUsed -= v
+		} else if v, ok := rawStats.MemoryStats.Stats["cache"]; ok && v < memUsed {
+			memUsed -= v
+		}
+
 		memPercent := 0.0
 		if rawStats.MemoryStats.Limit > 0 {
-			memPercent = (float64(rawStats.MemoryStats.Usage) / float64(rawStats.MemoryStats.Limit)) * 100.0
+			memPercent = (float64(memUsed) / float64(rawStats.MemoryStats.Limit)) * 100.0
 		}
 
 		result := map[string]interface{}{
 			"container_id":       container.Container.ID,
 			"name":               name,
 			"cpu_percent":        fmt.Sprintf("%.2f%%", cpuPercent),
-			"memory_usage_bytes": rawStats.MemoryStats.Usage,
+			"memory_usage_bytes": memUsed,
 			"memory_limit_bytes": rawStats.MemoryStats.Limit,
 			"memory_percent":     fmt.Sprintf("%.2f%%", memPercent),
 			"network_rx_bytes":   totalRx,
@@ -2614,5 +2638,195 @@ func mcpPruneSystemHandler(cli *client.Client) server.ToolHandlerFunc {
 			}
 		}
 		return mcp.NewToolResultText(fmt.Sprintf("System prune complete. Reclaimed %d bytes of disk space.", totalReclaimed)), nil
+	}
+}
+
+// mcpGetContainerEfficiencyHandler implements "get_container_efficiency"
+func mcpGetContainerEfficiencyHandler(cli *client.Client) server.ToolHandlerFunc {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if cli == nil {
+			return mcp.NewToolResultError("Docker client unavailable"), nil
+		}
+		res, err := cli.ContainerList(ctx, client.ContainerListOptions{All: false})
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to list containers: %v", err)), nil
+		}
+
+		type efficiencyItem struct {
+			ContainerID        string  `json:"container_id"`
+			Name               string  `json:"name"`
+			Image              string  `json:"image"`
+			Status             string  `json:"status"`
+			MemoryLimitMB      float64 `json:"memory_limit_mb"`
+			MemoryUsedMB       float64 `json:"memory_used_mb"`
+			MemoryUsagePercent float64 `json:"memory_usage_percent"`
+			CPUPercent         float64 `json:"cpu_percent"`
+			CPULimitCores      float64 `json:"cpu_limit_cores"`
+			Flag               string  `json:"flag"`
+			Recommendation     string  `json:"recommendation"`
+		}
+
+		var items []efficiencyItem
+		totalAllocatedRAM := int64(0)
+		totalUsedRAM := int64(0)
+		reclaimableRAM := int64(0)
+		unboundedCount := 0
+		optimalCount := 0
+
+		liveStatsMu.RLock()
+		statsCopy := make(map[string]struct {
+			CPU            float64
+			Memory         int64
+			NetRxBytes     int64
+			NetTxBytes     int64
+			DiskReadBytes  int64
+			DiskWriteBytes int64
+		}, len(liveStatsCache))
+		for k, v := range liveStatsCache {
+			statsCopy[k] = v
+		}
+		liveStatsMu.RUnlock()
+
+		for _, ctr := range res.Items {
+			name := ""
+			if len(ctr.Names) > 0 {
+				name = strings.TrimPrefix(ctr.Names[0], "/")
+			}
+
+			st, hasStat := statsCopy[ctr.ID]
+			memUsedBytes := int64(0)
+			cpuPct := 0.0
+			if hasStat {
+				memUsedBytes = st.Memory
+				cpuPct = st.CPU
+			}
+			totalUsedRAM += memUsedBytes
+
+			insp, err := cli.ContainerInspect(ctx, ctr.ID, client.ContainerInspectOptions{})
+			memLimitBytes := int64(0)
+			nanoCPUs := int64(0)
+			if err == nil && insp.Container.HostConfig != nil {
+				memLimitBytes = insp.Container.HostConfig.Memory
+				nanoCPUs = insp.Container.HostConfig.NanoCPUs
+			}
+
+			cid := ctr.ID
+			if len(cid) > 12 {
+				cid = cid[:12]
+			}
+
+			item := efficiencyItem{
+				ContainerID:  cid,
+				Name:         name,
+				Image:        ctr.Image,
+				Status:       string(ctr.State),
+				MemoryUsedMB: float64(memUsedBytes) / 1024 / 1024,
+				CPUPercent:   cpuPct,
+			}
+
+			if nanoCPUs > 0 {
+				item.CPULimitCores = float64(nanoCPUs) / 1e9
+			}
+
+			if memLimitBytes > 0 {
+				totalAllocatedRAM += memLimitBytes
+				item.MemoryLimitMB = float64(memLimitBytes) / 1024 / 1024
+				item.MemoryUsagePercent = (float64(memUsedBytes) / float64(memLimitBytes)) * 100.0
+
+				if item.MemoryUsagePercent > 90.0 {
+					item.Flag = "near_oom_risk"
+					item.Recommendation = fmt.Sprintf("Using %.1f%% of memory limit. Increase memory ceiling to prevent OOM termination.", item.MemoryUsagePercent)
+				} else if item.MemoryLimitMB >= 512 && item.MemoryUsagePercent < 15.0 {
+					item.Flag = "over_provisioned"
+					suggestedMB := item.MemoryUsedMB * 2.5
+					if suggestedMB < 128 {
+						suggestedMB = 128
+					}
+					savedMB := item.MemoryLimitMB - suggestedMB
+					if savedMB > 0 {
+						reclaimableRAM += int64(savedMB * 1024 * 1024)
+					}
+					item.Recommendation = fmt.Sprintf("Allocated %.0f MB but only using %.0f MB (%.1f%%). Consider downsizing limit to %.0f MB.", item.MemoryLimitMB, item.MemoryUsedMB, item.MemoryUsagePercent, suggestedMB)
+				} else {
+					item.Flag = "optimal"
+					item.Recommendation = "Resource allocation is well-balanced for current workload."
+					optimalCount++
+				}
+			} else {
+				unboundedCount++
+				item.Flag = "unbounded"
+				item.Recommendation = "No memory ceiling set. Set a memory limit to protect host RAM."
+			}
+
+			if item.CPULimitCores > 0 && item.CPUPercent > (item.CPULimitCores*90.0) {
+				item.Flag = "cpu_throttling_risk"
+				item.Recommendation = fmt.Sprintf("CPU usage (%.1f%%) is near quota limit (%.1f cores). Container is at risk of cgroup throttling.", item.CPUPercent, item.CPULimitCores)
+			}
+
+			items = append(items, item)
+		}
+
+		efficiencyScore := 100
+		if len(items) > 0 {
+			penalty := unboundedCount * 10
+			efficiencyScore = 100 - penalty
+			if efficiencyScore < 20 {
+				efficiencyScore = 20
+			}
+		}
+
+		resp := map[string]interface{}{
+			"efficiency_score":          efficiencyScore,
+			"containers_analyzed":       len(items),
+			"optimal_containers":        optimalCount,
+			"unbounded_containers":      unboundedCount,
+			"total_used_memory_mb":      float64(totalUsedRAM) / 1024 / 1024,
+			"total_allocated_memory_mb": float64(totalAllocatedRAM) / 1024 / 1024,
+			"reclaimable_memory_mb":     float64(reclaimableRAM) / 1024 / 1024,
+			"containers":                items,
+		}
+		b, _ := json.MarshalIndent(resp, "", "  ")
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+// mcpGetSystemDiagnosticsHandler implements "get_system_diagnostics"
+func mcpGetSystemDiagnosticsHandler(cli *client.Client) server.ToolHandlerFunc {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var memStats runtime.MemStats
+		runtime.ReadMemStats(&memStats)
+
+		globalContainerListMu.RLock()
+		totalCtrs := globalContainersCount
+		runningCtrs := globalRunningCount
+		globalContainerListMu.RUnlock()
+
+		liveStatsMu.RLock()
+		cachedStatsCount := len(liveStatsCache)
+		liveStatsMu.RUnlock()
+
+		var dbSizeBytes int64
+		if fi, err := os.Stat("lighthouse.db"); err == nil {
+			dbSizeBytes = fi.Size()
+		} else if fi, err := os.Stat("/data/lighthouse.db"); err == nil {
+			dbSizeBytes = fi.Size()
+		}
+
+		data := map[string]interface{}{
+			"go_version":             runtime.Version(),
+			"num_cpu":                runtime.NumCPU(),
+			"goroutines":             runtime.NumGoroutine(),
+			"memory_alloc_mb":        float64(memStats.Alloc) / 1024 / 1024,
+			"memory_sys_mb":          float64(memStats.Sys) / 1024 / 1024,
+			"gc_cycles":              memStats.NumGC,
+			"active_websockets":      atomic.LoadInt64(&activeWSConnections),
+			"monitored_containers":   runningCtrs,
+			"total_containers":       totalCtrs,
+			"cached_container_stats": cachedStatsCount,
+			"database_size_mb":       float64(dbSizeBytes) / 1024 / 1024,
+			"poll_healthy":           atomic.LoadInt64(&lastPollErrorUnix) == 0 || atomic.LoadInt64(&lastPollSuccessUnix) > atomic.LoadInt64(&lastPollErrorUnix),
+		}
+		b, _ := json.MarshalIndent(data, "", "  ")
+		return mcp.NewToolResultText(string(b)), nil
 	}
 }

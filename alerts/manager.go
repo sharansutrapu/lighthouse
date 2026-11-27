@@ -401,10 +401,15 @@ func (am *AlertManager) processContainerEvent(msg events.Message) { //nolint:goc
 		}
 
 		// Walk the comma-separated event list; support "health_status" prefix
-		// matching (the Docker action is "health_status: healthy" etc.).
+		// and exact status matching (e.g. action "health_status: unhealthy").
 		for _, ev := range splitTrim(rule.EventTypes, ",") {
-			switch {
-			case ev == action || (ev == "health_status" && strings.HasPrefix(action, "health_status")):
+			matched := ev == action ||
+				(ev == "health_status" && strings.HasPrefix(action, "health_status")) ||
+				(ev == "unhealthy" && action == "health_status: unhealthy") ||
+				(ev == "healthy" && action == "health_status: healthy") ||
+				(strings.HasPrefix(ev, "health_status") && action == ev)
+
+			if matched {
 				if action == "die" || action == "oom" || action == "kill" || action == "stop" || strings.Contains(action, "unhealthy") {
 					am.downStateMu.Lock()
 					am.downState[containerName] = true
@@ -1036,15 +1041,43 @@ func (am *AlertManager) evaluateMetrics() {
 				am.triggerAlert(rule, cName, "metric_cpu", details)
 			}
 
-			// Memory Check: compare as percentage of container memory limit.
-			// current.Memory is bytes; we need the limit from Docker stats.
-			// Since we don't store the limit, we use system total memory as a proxy
-			// and compare usage percentage against the threshold (0-100).
+			// Memory Check: supports both percentage of memory limit (threshold <= 100)
+			// and absolute MB threshold (threshold > 100).
 			if rule.MetricMemThreshold > 0 {
 				currentMemMB := float64(current.Memory) / 1024 / 1024
 				ruleMemMB := float64(rule.MetricMemThreshold)
-				if currentMemMB > ruleMemMB {
-					details := fmt.Sprintf("High Memory Detected: %.0f MB (Threshold: %.0f MB)", currentMemMB, ruleMemMB)
+				var triggered bool
+				var details string
+
+				// When threshold is <= 100, evaluate against container memory limit (or host memory if unlimited)
+				if rule.MetricMemThreshold <= 100 {
+					var containerLimit uint64
+					if am.cli != nil {
+						if insp, err := am.cli.ContainerInspect(am.ctx, cid, client.ContainerInspectOptions{}); err == nil && insp.Container.HostConfig != nil && insp.Container.HostConfig.Memory > 0 {
+							containerLimit = uint64(insp.Container.HostConfig.Memory)
+						}
+					}
+					if containerLimit == 0 {
+						if vmStat, err := memVirtualMemory(); err == nil && vmStat.Total > 0 {
+							containerLimit = vmStat.Total
+						}
+					}
+					if containerLimit > 0 {
+						memPercent := (float64(current.Memory) / float64(containerLimit)) * 100.0
+						if memPercent > float64(rule.MetricMemThreshold) {
+							triggered = true
+							details = fmt.Sprintf("High Memory Detected: %.1f%% used (Threshold: %d%%)", memPercent, rule.MetricMemThreshold)
+						}
+					}
+				}
+
+				// If not triggered via percentage, check if absolute MB usage exceeds threshold
+				if !triggered && currentMemMB > ruleMemMB {
+					triggered = true
+					details = fmt.Sprintf("High Memory Detected: %.0f MB (Threshold: %.0f MB)", currentMemMB, ruleMemMB)
+				}
+
+				if triggered {
 					am.triggerAlert(rule, cName, "metric_mem", details)
 				}
 			}
