@@ -386,7 +386,17 @@ func main() {
 	}))
 	e.Use(middleware.Recover())
 	e.Use(securityHeadersMiddleware())
-	e.Use(middleware.RateLimiter(middleware.NewRateLimiterMemoryStore(rate.Limit(50))))
+	e.Use(middleware.RateLimiterWithConfig(middleware.RateLimiterConfig{
+		Skipper: func(c echo.Context) bool {
+			p := c.Request().URL.Path
+			return strings.HasPrefix(p, "/assets/") || strings.HasPrefix(p, "/favicon") || p == "/" || p == "/health"
+		},
+		Store: middleware.NewRateLimiterMemoryStoreWithConfig(middleware.RateLimiterMemoryStoreConfig{
+			Rate:      rate.Limit(100),
+			Burst:     200,
+			ExpiresIn: 3 * time.Minute,
+		}),
+	}))
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
 		AllowOriginFunc: func(origin string) (bool, error) {
 			return corsOriginAllowed(origin), nil
