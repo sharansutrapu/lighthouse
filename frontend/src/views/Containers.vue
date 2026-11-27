@@ -75,6 +75,20 @@
             </svg>
             Refresh
           </button>
+          <button class="action-chip btn-sm" @click="checkUpdates" :disabled="checkingUpdates" title="Check upstream image updates">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" :class="{ spinning: checkingUpdates }">
+              <polyline points="23 4 23 10 17 10"></polyline>
+              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+            </svg>
+            {{ checkingUpdates ? 'Checking...' : 'Check Updates' }}
+          </button>
+          <button class="btn btn-primary btn-sm" @click="createModalOpen = true" style="margin-left: 0.25rem;">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5">
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+            Create Container
+          </button>
         </div>
       </div>
 
@@ -86,6 +100,13 @@
         embedded
       />
     </section>
+
+    <!-- Container Creation Wizard Modal -->
+    <ContainerCreateModal
+      v-if="createModalOpen"
+      @close="createModalOpen = false"
+      @created="fetchContainers"
+    />
   </div>
 </template>
 
@@ -96,14 +117,39 @@
 import { ref, computed, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import ContainerTable from "../components/ContainerTable.vue";
+import ContainerCreateModal from "../components/ContainerCreateModal.vue";
 import { useContainers } from "../composables/useContainers";
 import { sharedState } from "../utils/sharedState";
+import { apiFetch } from "../utils/apiFetch";
 
 const stateFilter = ref("all");
 const searchQuery = ref("");
 const route = useRoute();
 const router = useRouter();
 const nodeFilter = ref(typeof route.query.node === "string" ? route.query.node : "all");
+const createModalOpen = ref(false);
+const checkingUpdates = ref(false);
+const updateResults = ref([]);
+
+const checkUpdates = async () => {
+  checkingUpdates.value = true;
+  try {
+    const res = await apiFetch("/api/updates/check");
+    if (res.ok) {
+      updateResults.value = await res.json();
+      const updatesAvailable = updateResults.value.filter((u) => u.has_update);
+      if (updatesAvailable.length > 0) {
+        alert(`${updatesAvailable.length} container(s) have upstream image updates available!`);
+      } else {
+        alert("All containers are up to date!");
+      }
+    }
+  } catch (err) {
+    alert("Check updates failed: " + err.message);
+  } finally {
+    checkingUpdates.value = false;
+  }
+};
 
 const { containers, loading, fetchContainers } = useContainers();
 

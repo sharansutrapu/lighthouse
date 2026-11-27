@@ -111,6 +111,20 @@
         </router-link>
 
         <router-link
+          to="/stacks"
+          class="nav-link"
+          :class="{ active: route.path === '/stacks' }"
+          :data-tooltip="isSidebarCollapsed ? 'Stacks' : null"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+            <polyline points="2 17 12 22 22 17"></polyline>
+            <polyline points="2 12 12 17 22 12"></polyline>
+          </svg>
+          Stacks
+        </router-link>
+
+        <router-link
           v-if="sharedState.deploymentMode === 'hub' && sharedState.currentUser?.is_admin"
           to="/nodes"
           class="nav-link"
@@ -166,6 +180,21 @@
             <polyline points="21 15 16 10 5 21"></polyline>
           </svg>
           Images
+        </router-link>
+
+        <router-link
+          to="/registries"
+          class="nav-link"
+          :class="{ active: route.path === '/registries' }"
+          :data-tooltip="isSidebarCollapsed ? 'Registries' : null"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+            <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+            <line x1="6" y1="6" x2="6.01" y2="6"></line>
+            <line x1="6" y1="18" x2="6.01" y2="18"></line>
+          </svg>
+          Registries
         </router-link>
 
         <router-link

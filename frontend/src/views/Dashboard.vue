@@ -24,6 +24,10 @@
             <AppIcon name="containers" />
             All containers
           </router-link>
+          <button class="dash-action-btn" @click="diskReclaimModalOpen = true" title="Inspect and clean up reclaimable disk space">
+            <AppIcon name="trash" />
+            Disk Reclaim
+          </button>
           <button class="dash-action-btn primary" @click="refresh" :disabled="isRefreshing">
             <AppIcon name="refresh" :class="{ spinning: isRefreshing }" />
             Refresh
@@ -385,6 +389,13 @@
       </div>
       <ContainerTable :state-filter="stateFilter" :search-query="searchQuery" embedded />
     </section>
+
+    <!-- Disk Reclaim Wizard Modal -->
+    <DiskReclaimModal
+      v-if="diskReclaimModalOpen"
+      @close="diskReclaimModalOpen = false"
+      @reclaimed="refresh"
+    />
   </div>
 </template>
 
@@ -397,8 +408,11 @@ import { ref, computed, watch, onMounted } from "vue";
 import { showToast } from "../utils/sharedState";
 import AppIcon from "../components/AppIcon.vue";
 import ContainerTable from "../components/ContainerTable.vue";
+import DiskReclaimModal from "../components/DiskReclaimModal.vue";
 import { useContainers } from "../composables/useContainers";
 import { sharedState, formatBytes } from "../utils/sharedState";
+
+const diskReclaimModalOpen = ref(false);
 import { secureStorage } from "../utils/storage";
 import { apiFetch } from "../utils/apiFetch";
 

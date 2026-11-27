@@ -183,6 +183,36 @@
         </article>
       </section>
 
+      <!-- Dynamic Resource Tuning (docker update) -->
+      <section v-if="container.state === 'running' && userCanStart(sharedState.currentUser)" class="resource-tuning-section" style="margin-top: 1rem;">
+        <article class="panel glass">
+          <div class="panel-head" style="display: flex; justify-content: space-between; align-items: center;">
+            <div style="display: flex; align-items: center; gap: 0.6rem;">
+              <AppIcon name="cpu" :size="20" />
+              <h2 style="margin: 0; font-size: 1.05rem;">Live Resource Tuning (docker update)</h2>
+            </div>
+            <button class="btn btn-primary btn-sm" @click="applyResourceTuning" :disabled="isTuning">
+              <AppIcon name="refresh" :size="14" :class="{ spinning: isTuning }" />
+              {{ isTuning ? 'Applying...' : 'Apply Live Changes' }}
+            </button>
+          </div>
+          <div class="tuning-inputs" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; padding: 1rem 0;">
+            <div class="form-group" style="margin: 0;">
+              <label style="display: block; font-size: 0.8rem; color: #94a3b8; margin-bottom: 0.35rem;">
+                Memory Limit (MB) <small>(0 = Unlimited)</small>
+              </label>
+              <input type="number" v-model.number="tuningMemMB" class="form-input" placeholder="e.g. 512" style="width: 100%; padding: 0.5rem 0.75rem; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; color: white;" />
+            </div>
+            <div class="form-group" style="margin: 0;">
+              <label style="display: block; font-size: 0.8rem; color: #94a3b8; margin-bottom: 0.35rem;">
+                CPU Shares <small>(1024 = Normal weight)</small>
+              </label>
+              <input type="number" v-model.number="tuningCPUShares" class="form-input" placeholder="e.g. 1024" style="width: 100%; padding: 0.5rem 0.75rem; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; color: white;" />
+            </div>
+          </div>
+        </article>
+      </section>
+
       <section v-if="container.capabilities?.inspect !== false" class="detail-panels">
         <article class="panel">
           <div class="panel-head">
@@ -377,6 +407,11 @@
           </div>
         </article>
       </section>
+
+      <!-- In-Browser File Explorer -->
+      <section v-if="container.state === 'running'" class="file-explorer-section" style="margin-top: 1.5rem;">
+        <ContainerFileExplorer :container-id="container.id" />
+      </section>
     </template>
 
     <div v-else class="detail-empty">
@@ -501,10 +536,41 @@ import {
   userCanDelete,
   userCanShell,
 } from "../utils/sharedState";
+import ContainerFileExplorer from "../components/ContainerFileExplorer.vue";
 
 const route = useRoute();
 const router = useRouter();
 const containerId = computed(() => route.params.id);
+
+const tuningMemMB = ref(0);
+const tuningCPUShares = ref(0);
+const isTuning = ref(false);
+
+const applyResourceTuning = async () => {
+  if (!container.value) return;
+  isTuning.value = true;
+  try {
+    const res = await apiFetch(`/api/containers/${container.value.id}/update`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        memory_mb: tuningMemMB.value || 0,
+        cpu_shares: tuningCPUShares.value || 0
+      })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast("Container resources updated live successfully!");
+      if (fetchContainers) fetchContainers();
+    } else {
+      alert("Update failed: " + (data.error || res.statusText));
+    }
+  } catch (err) {
+    alert("Request error: " + err.message);
+  } finally {
+    isTuning.value = false;
+  }
+};
 
 const {
   containers,

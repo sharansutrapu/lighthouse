@@ -1,12 +1,16 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -17,6 +21,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/moby/moby/api/pkg/stdcopy"
+	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 
 	"gorm.io/gorm"
@@ -209,6 +214,67 @@ func registerMCPRoutes(r *echo.Group, cli *client.Client) {
 	mcpServer.AddTool(mcp.NewTool("get_system_info",
 		mcp.WithDescription("Get host system diagnostic information, Docker engine version, Docker Compose version, CPU/Memory stats snapshot, and polling health."),
 	), mcpGetSystemInfoHandler(cli))
+
+	// ─── Stacks & Compose ───────────────────────────────────────────────
+	mcpServer.AddTool(mcp.NewTool("list_stacks",
+		mcp.WithDescription("List all interactive Docker Compose stacks managed in LightHouse with running container counts and status."),
+	), mcpListStacksHandler(cli))
+
+	mcpServer.AddTool(mcp.NewTool("deploy_stack",
+		mcp.WithDescription("Deploy a Docker Compose stack by name or ID (runs `docker compose up -d`)."),
+		mcp.WithString("stack_name", mcp.Required(), mcp.Description("Name or ID of the stack to deploy.")),
+	), mcpDeployStackHandler(cli))
+
+	mcpServer.AddTool(mcp.NewTool("stop_stack",
+		mcp.WithDescription("Stop a Docker Compose stack (runs `docker compose stop`)."),
+		mcp.WithString("stack_name", mcp.Required(), mcp.Description("Name or ID of the stack to stop.")),
+	), mcpStopStackHandler(cli))
+
+	// ─── Container Management & File Tools ──────────────────────────────
+	mcpServer.AddTool(mcp.NewTool("create_container",
+		mcp.WithDescription("Create and optionally start a new Docker container with specified image, ports, envs, volumes, restart policy, and resource limits."),
+		mcp.WithString("name", mcp.Required(), mcp.Description("Container name.")),
+		mcp.WithString("image", mcp.Required(), mcp.Description("Image tag (e.g. redis:alpine).")),
+		mcp.WithString("command", mcp.Description("Optional startup command.")),
+		mcp.WithBoolean("start", mcp.Description("Start container immediately after creation (default true).")),
+	), mcpCreateContainerHandler(cli))
+
+	mcpServer.AddTool(mcp.NewTool("update_container_resources",
+		mcp.WithDescription("Dynamically tune CPU and memory resource limits on a running container via docker update."),
+		mcp.WithString("container_id", mcp.Required(), mcp.Description("Container ID or name.")),
+		mcp.WithNumber("memory_mb", mcp.Description("Memory limit in megabytes.")),
+		mcp.WithNumber("cpu_shares", mcp.Description("CPU shares weight (e.g. 1024).")),
+	), mcpUpdateContainerResourcesHandler(cli))
+
+	mcpServer.AddTool(mcp.NewTool("read_container_file",
+		mcp.WithDescription("Read text file content from inside a container filesystem (e.g. /etc/nginx/nginx.conf, /app/.env)."),
+		mcp.WithString("container_id", mcp.Required(), mcp.Description("Container ID or name.")),
+		mcp.WithString("path", mcp.Required(), mcp.Description("Absolute file path inside the container.")),
+	), mcpReadContainerFileHandler(cli))
+
+	mcpServer.AddTool(mcp.NewTool("write_container_file",
+		mcp.WithDescription("Write or update text file content inside a container filesystem."),
+		mcp.WithString("container_id", mcp.Required(), mcp.Description("Container ID or name.")),
+		mcp.WithString("path", mcp.Required(), mcp.Description("Absolute file path inside the container.")),
+		mcp.WithString("content", mcp.Required(), mcp.Description("Full text content to write.")),
+	), mcpWriteContainerFileHandler(cli))
+
+	// ─── Registries & Disk Clean-Up ─────────────────────────────────────
+	mcpServer.AddTool(mcp.NewTool("list_registries",
+		mcp.WithDescription("List private Docker registries configured in LightHouse."),
+	), mcpListRegistriesHandler())
+
+	mcpServer.AddTool(mcp.NewTool("get_disk_usage",
+		mcp.WithDescription("Get detailed Docker disk usage and reclaimable space breakdown across images, containers, volumes, and build cache."),
+	), mcpGetDiskUsageHandler(cli))
+
+	mcpServer.AddTool(mcp.NewTool("prune_system",
+		mcp.WithDescription("Execute system clean-up to reclaim unused disk space across containers, images, volumes, and build cache."),
+		mcp.WithBoolean("prune_images", mcp.Description("Prune unused/dangling images.")),
+		mcp.WithBoolean("prune_containers", mcp.Description("Prune stopped containers.")),
+		mcp.WithBoolean("prune_volumes", mcp.Description("Prune unused volumes.")),
+		mcp.WithBoolean("prune_build_cache", mcp.Description("Prune Docker build cache.")),
+	), mcpPruneSystemHandler(cli))
 
 	// Create SSE server
 	sseServer := server.NewSSEServer(mcpServer,
@@ -2269,5 +2335,284 @@ func mcpGetSystemInfoHandler(cli *client.Client) server.ToolHandlerFunc {
 
 		b, _ := json.MarshalIndent(info, "", "  ")
 		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+// mcpListStacksHandler implements "list_stacks"
+func mcpListStacksHandler(cli *client.Client) server.ToolHandlerFunc {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var stacks []db.Stack
+		if err := db.GormDB.Find(&stacks).Error; err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to fetch stacks: %v", err)), nil
+		}
+		b, _ := json.MarshalIndent(stacks, "", "  ")
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+// mcpDeployStackHandler implements "deploy_stack"
+func mcpDeployStackHandler(cli *client.Client) server.ToolHandlerFunc {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		stackName := getMCPStringParam(request, "stack_name")
+		if stackName == "" {
+			return mcp.NewToolResultError("stack_name is required"), nil
+		}
+		var stack db.Stack
+		if err := db.GormDB.Where("name = ? OR id = ?", stackName, stackName).First(&stack).Error; err != nil {
+			return mcp.NewToolResultError("Stack not found"), nil
+		}
+		if !CanStart {
+			return mcp.NewToolResultError("Host server policy forbids container start operations (ALLOW_START=false)"), nil
+		}
+		out, err := runComposeCommand(stack.Name, stack.ComposeContent, stack.EnvContent, "up", "-d", "--remove-orphans")
+		if err != nil {
+			db.GormDB.Model(&stack).Update("status", "failed")
+			return mcp.NewToolResultError(fmt.Sprintf("Deploy failed: %s", string(out))), nil
+		}
+		db.GormDB.Model(&stack).Update("status", "running")
+		return mcp.NewToolResultText(fmt.Sprintf("Stack %s successfully deployed:\n%s", stack.Name, string(out))), nil
+	}
+}
+
+// mcpStopStackHandler implements "stop_stack"
+func mcpStopStackHandler(cli *client.Client) server.ToolHandlerFunc {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		stackName := getMCPStringParam(request, "stack_name")
+		var stack db.Stack
+		if err := db.GormDB.Where("name = ? OR id = ?", stackName, stackName).First(&stack).Error; err != nil {
+			return mcp.NewToolResultError("Stack not found"), nil
+		}
+		if !CanStop {
+			return mcp.NewToolResultError("Host server policy forbids container stop operations (ALLOW_STOP=false)"), nil
+		}
+		out, err := runComposeCommand(stack.Name, stack.ComposeContent, stack.EnvContent, "stop")
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Stop failed: %s", string(out))), nil
+		}
+		db.GormDB.Model(&stack).Update("status", "stopped")
+		return mcp.NewToolResultText(fmt.Sprintf("Stack %s stopped successfully", stack.Name)), nil
+	}
+}
+
+// mcpCreateContainerHandler implements "create_container"
+func mcpCreateContainerHandler(cli *client.Client) server.ToolHandlerFunc {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if !CanStart {
+			return mcp.NewToolResultError("Host server policy forbids container start operations (ALLOW_START=false)"), nil
+		}
+		name := getMCPStringParam(request, "name")
+		imageName := getMCPStringParam(request, "image")
+		command := getMCPStringParam(request, "command")
+		start := true
+		if args := getMCPArguments(request); args != nil {
+			if val, ok := args["start"].(bool); ok {
+				start = val
+			}
+		}
+		if name == "" || imageName == "" {
+			return mcp.NewToolResultError("name and image are required"), nil
+		}
+		cfg := &container.Config{Image: imageName}
+		if command != "" {
+			cfg.Cmd = strings.Fields(command)
+		}
+		hostCfg := &container.HostConfig{
+			RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyUnlessStopped},
+		}
+		createOpts := client.ContainerCreateOptions{
+			Config:     cfg,
+			HostConfig: hostCfg,
+			Name:       name,
+		}
+		resp, err := cli.ContainerCreate(ctx, createOpts)
+		if err != nil {
+			// Try pulling image
+			if reader, pullErr := cli.ImagePull(ctx, imageName, client.ImagePullOptions{}); pullErr == nil {
+				_, _ = io.Copy(io.Discard, reader)
+				_ = reader.Close()
+				resp, err = cli.ContainerCreate(ctx, createOpts)
+			}
+		}
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to create container: %v", err)), nil
+		}
+		if start {
+			_, _ = cli.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{})
+		}
+		return mcp.NewToolResultText(fmt.Sprintf("Container %s created successfully with ID %s (started: %t)", name, resp.ID[:12], start)), nil
+	}
+}
+
+// mcpUpdateContainerResourcesHandler implements "update_container_resources"
+func mcpUpdateContainerResourcesHandler(cli *client.Client) server.ToolHandlerFunc {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		id := getMCPStringParam(request, "container_id")
+		if id == "" {
+			return mcp.NewToolResultError("container_id is required"), nil
+		}
+		upCfg := container.Resources{}
+		if mem := getMCPIntParam(request, "memory_mb", 0); mem > 0 {
+			upCfg.Memory = int64(mem) * 1024 * 1024
+		}
+		if cpu := getMCPIntParam(request, "cpu_shares", 0); cpu > 0 {
+			upCfg.CPUShares = int64(cpu)
+		}
+		updateOpts := client.ContainerUpdateOptions{
+			Resources: &upCfg,
+		}
+		resp, err := cli.ContainerUpdate(ctx, id, updateOpts)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to update container resources: %v", err)), nil
+		}
+		b, _ := json.Marshal(resp)
+		return mcp.NewToolResultText(fmt.Sprintf("Container %s resources updated: %s", id, string(b))), nil
+	}
+}
+
+// mcpReadContainerFileHandler implements "read_container_file"
+func mcpReadContainerFileHandler(cli *client.Client) server.ToolHandlerFunc {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		id := getMCPStringParam(request, "container_id")
+		filePath := getMCPStringParam(request, "path")
+		if id == "" || filePath == "" {
+			return mcp.NewToolResultError("container_id and path are required"), nil
+		}
+		result, err := cli.CopyFromContainer(ctx, id, client.CopyFromContainerOptions{
+			SourcePath: filePath,
+		})
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed reading path: %v", err)), nil
+		}
+		defer result.Content.Close()
+		if result.Stat.Mode.IsDir() {
+			return mcp.NewToolResultError("Target path is a directory, not a file"), nil
+		}
+		tarReader := tar.NewReader(result.Content)
+		for {
+			header, err := tarReader.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return mcp.NewToolResultError("Failed parsing archive"), nil
+			}
+			if !header.FileInfo().IsDir() {
+				data, _ := io.ReadAll(io.LimitReader(tarReader, 2*1024*1024))
+				return mcp.NewToolResultText(string(data)), nil
+			}
+		}
+		return mcp.NewToolResultError("File not found in container"), nil
+	}
+}
+
+// mcpWriteContainerFileHandler implements "write_container_file"
+func mcpWriteContainerFileHandler(cli *client.Client) server.ToolHandlerFunc {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if !AllowShell {
+			return mcp.NewToolResultError("Host server policy forbids container file writes (ALLOW_SHELL=false)"), nil
+		}
+		id := getMCPStringParam(request, "container_id")
+		filePath := getMCPStringParam(request, "path")
+		content := getMCPStringParam(request, "content")
+		if id == "" || filePath == "" {
+			return mcp.NewToolResultError("container_id and path are required"), nil
+		}
+		dir := filepath.Dir(filePath)
+		base := filepath.Base(filePath)
+		var tarBuf bytes.Buffer
+		tw := tar.NewWriter(&tarBuf)
+		_ = tw.WriteHeader(&tar.Header{
+			Name: base,
+			Mode: 0644,
+			Size: int64(len(content)),
+		})
+		_, _ = tw.Write([]byte(content))
+		_ = tw.Close()
+		_, err := cli.CopyToContainer(ctx, id, client.CopyToContainerOptions{
+			DestinationPath: dir,
+			Content:         &tarBuf,
+		})
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to copy file to container: %v", err)), nil
+		}
+		return mcp.NewToolResultText(fmt.Sprintf("Successfully wrote %d bytes to %s in container %s", len(content), filePath, id)), nil
+	}
+}
+
+// mcpListRegistriesHandler implements "list_registries"
+func mcpListRegistriesHandler() server.ToolHandlerFunc {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var registries []db.Registry
+		db.GormDB.Find(&registries)
+		var views []RegistryView
+		for _, r := range registries {
+			views = append(views, RegistryView{
+				ID:          r.ID,
+				Name:        r.Name,
+				URL:         r.URL,
+				Username:    r.Username,
+				HasPassword: r.Password != "",
+				IsDefault:   r.IsDefault,
+			})
+		}
+		b, _ := json.MarshalIndent(views, "", "  ")
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+// mcpGetDiskUsageHandler implements "get_disk_usage"
+func mcpGetDiskUsageHandler(cli *client.Client) server.ToolHandlerFunc {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		usage, err := cli.DiskUsage(ctx, client.DiskUsageOptions{})
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed getting disk usage: %v", err)), nil
+		}
+		resp := SystemDiskUsageResponse{
+			ImagesCount:           int(usage.Images.TotalCount),
+			ImagesSize:            usage.Images.TotalSize,
+			ImagesReclaimable:     usage.Images.Reclaimable,
+			ContainersCount:       int(usage.Containers.TotalCount),
+			ContainersSize:        usage.Containers.TotalSize,
+			VolumesCount:          int(usage.Volumes.TotalCount),
+			VolumesSize:           usage.Volumes.TotalSize,
+			VolumesReclaimable:    usage.Volumes.Reclaimable,
+			BuildCacheCount:       int(usage.BuildCache.TotalCount),
+			BuildCacheSize:        usage.BuildCache.TotalSize,
+			BuildCacheReclaimable: usage.BuildCache.Reclaimable,
+			TotalReclaimable:      usage.Images.Reclaimable + usage.Volumes.Reclaimable + usage.BuildCache.Reclaimable,
+		}
+		b, _ := json.MarshalIndent(resp, "", "  ")
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+// mcpPruneSystemHandler implements "prune_system"
+func mcpPruneSystemHandler(cli *client.Client) server.ToolHandlerFunc {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if !CanDelete {
+			return mcp.NewToolResultError("Host server policy forbids resource deletion (ALLOW_DELETE=false)"), nil
+		}
+		var totalReclaimed uint64
+		if getMCPBoolParam(request, "prune_containers") {
+			if r, err := cli.ContainerPrune(ctx, client.ContainerPruneOptions{}); err == nil {
+				totalReclaimed += r.Report.SpaceReclaimed
+			}
+		}
+		if getMCPBoolParam(request, "prune_images") {
+			if r, err := cli.ImagePrune(ctx, client.ImagePruneOptions{}); err == nil {
+				totalReclaimed += r.Report.SpaceReclaimed
+			}
+		}
+		if getMCPBoolParam(request, "prune_volumes") {
+			if r, err := cli.VolumePrune(ctx, client.VolumePruneOptions{}); err == nil {
+				totalReclaimed += r.Report.SpaceReclaimed
+			}
+		}
+		if getMCPBoolParam(request, "prune_build_cache") {
+			if r, err := cli.BuildCachePrune(ctx, client.BuildCachePruneOptions{}); err == nil {
+				totalReclaimed += r.Report.SpaceReclaimed
+			}
+		}
+		return mcp.NewToolResultText(fmt.Sprintf("System prune complete. Reclaimed %d bytes of disk space.", totalReclaimed)), nil
 	}
 }

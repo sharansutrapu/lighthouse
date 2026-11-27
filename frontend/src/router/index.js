@@ -19,6 +19,18 @@ const routes = [
     component: () => import('../views/Containers.vue'),
     meta: { requiresAuth: true, layout: 'main', title: 'Container Management' }
   },
+  { 
+    path: '/stacks', 
+    name: 'Stacks', 
+    component: () => import('../views/Stacks.vue'),
+    meta: { requiresAuth: true, layout: 'main', title: 'Stack Studio (Compose)' }
+  },
+  { 
+    path: '/registries', 
+    name: 'Registries', 
+    component: () => import('../views/Registries.vue'),
+    meta: { requiresAuth: true, layout: 'main', title: 'Private Registries' }
+  },
   {
     path: '/nodes',
     name: 'Nodes',

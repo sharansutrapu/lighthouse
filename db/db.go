@@ -286,6 +286,41 @@ type ApiToken struct {
 	LastUsed  time.Time `json:"last_used"`
 }
 
+// Stack represents an interactive Docker Compose stack managed directly through
+// the In-Browser Stack Studio (Dockge & Portainer Stacks parity).
+type Stack struct {
+	ID             uint      `gorm:"primaryKey" json:"id"`
+	Name           string    `gorm:"uniqueIndex;not null" json:"name"`
+	ComposeContent string    `gorm:"type:text" json:"compose_content"`
+	EnvContent     string    `gorm:"type:text" json:"env_content"`
+	Status         string    `gorm:"default:'stopped'" json:"status"` // "running", "stopped", "failed", "pending"
+	CreatedAt      time.Time `gorm:"autoCreateTime" json:"created_at"`
+	UpdatedAt      time.Time `gorm:"autoUpdateTime" json:"updated_at"`
+}
+
+// Registry stores private Docker registry credentials (Docker Hub, GHCR, AWS ECR, Harbor).
+type Registry struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	Name      string    `gorm:"uniqueIndex;not null" json:"name"`
+	URL       string    `gorm:"not null" json:"url"`
+	Username  string    `json:"username"`
+	Password  string    `json:"-"`
+	IsDefault bool      `gorm:"default:false" json:"is_default"`
+	CreatedAt time.Time `gorm:"autoCreateTime" json:"created_at"`
+	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updated_at"`
+}
+
+// UpdateRollbackLog records canary update attempts and automated rollback events.
+type UpdateRollbackLog struct {
+	ID            uint      `gorm:"primaryKey" json:"id"`
+	ContainerName string    `json:"container_name"`
+	OldImageID    string    `json:"old_image_id"`
+	NewImageID    string    `json:"new_image_id"`
+	Status        string    `json:"status"` // "success", "rolled_back", "failed"
+	Message       string    `json:"message"`
+	Timestamp     time.Time `gorm:"autoCreateTime" json:"timestamp"`
+}
+
 // OnAuditLogged can be set to be called whenever an audit log is created.
 var OnAuditLogged func(action, resource, status, details string)
 
@@ -366,6 +401,9 @@ func InitDB(dataSourceName string) error {
 		&GitProject{},
 		&GitDeployment{},
 		&ApiToken{},
+		&Stack{},
+		&Registry{},
+		&UpdateRollbackLog{},
 	)
 	if err != nil {
 		log.Printf("AutoMigrate failed: %v", err)

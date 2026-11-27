@@ -580,6 +580,11 @@ func main() {
 	RegisterImageRoutes(r, cli)
 	RegisterVolumeRoutes(r, cli)
 	RegisterNetworkRoutes(r, cli)
+	RegisterStackRoutes(r, cli)
+	RegisterContainerExtraRoutes(r, cli)
+	RegisterRegistryRoutes(r, cli)
+	RegisterUpdateRoutes(r, cli)
+	RegisterSystemPruneRoutes(r, cli)
 	registerApiTokenRoutes(r)
 	registerMCPRoutes(r, cli)
 
